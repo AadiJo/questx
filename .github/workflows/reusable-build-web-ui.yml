@@ -1,0 +1,60 @@
+name: Build Web UI
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: 'Version string to use (optional, auto-generated if not provided)'
+        required: false
+        type: string
+    outputs:
+      artifact-id:
+        description: 'The artifact ID for the built web UI'
+        value: ${{ jobs.build-web-ui.outputs.artifact-id }}
+
+jobs:
+  build-web-ui:
+    name: Build Web UI
+    runs-on: ubuntu-latest
+    outputs:
+      artifact-id: ${{ steps.upload-web-ui.outputs.artifact-id }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          sparse-checkout: |
+            unity/Assets/StreamingAssets/ui
+            questx-web-ui
+            .github
+          sparse-checkout-cone-mode: false
+          lfs: true
+      
+      - name: Determine Version
+        id: version-info
+        uses: ./.github/actions/determine-version
+        with:
+          version: ${{ inputs.version }}
+        
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'  # Using Node.js 22 LTS (Jod)
+          cache: 'npm'
+          cache-dependency-path: 'questx-web-ui/package-lock.json'
+          
+      - name: Install dependencies
+        working-directory: ./questx-web-ui
+        run: npm ci
+        
+      - name: Build UI
+        working-directory: ./questx-web-ui
+        run: npm run build
+        
+      - name: Upload artifact
+        id: upload-web-ui
+        uses: actions/upload-artifact@v4
+        with:
+          name: questx-web-ui-${{ steps.version-info.outputs.version }}
+          path: unity/Assets/StreamingAssets/ui
+          retention-days: 7

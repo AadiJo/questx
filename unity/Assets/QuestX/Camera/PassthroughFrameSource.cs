@@ -1,0 +1,915 @@
+using System;
+using System.Collections;
+using System.Threading;
+using System.Threading.Tasks;
+using LibJpegTurboUnity;
+using Meta.XR;
+using QuestX.Config;
+using QuestX.Network;
+using QuestX.Utils;
+using QuestX.WebServer;
+using UnityEngine;
+using static QuestX.Config.Config;
+using static QuestX.Core.QuestXConstants;
+
+namespace QuestX.Camera
+{
+    /// <summary>
+    /// Handles capturing frames from PassthroughCameraAccess and encoding them for streaming.
+    /// Extracted from VideoStreamProvider.
+    /// </summary>
+    public class PassthroughFrameSource : VideoStreamProvider.IFrameSource
+    {
+        /// <summary>
+        /// Available FPS options for video streaming. Sourced from
+        /// <c>QuestXConstants.VideoStream.SUPPORTED_FPS</c> (imported via the
+        /// file-level <c>using static</c> directive) so the Camera tab dropdown and
+        /// the AprilTag tab dropdown stay in lock-step.
+        /// </summary>
+        private static readonly int[] FpsOptions = VideoStream.SUPPORTED_FPS;
+
+        /// <summary>
+        /// Time without an encoded frame before asking the camera arbiter to reapply its
+        /// winning reservation.
+        /// </summary>
+        private const long CameraRecoveryIntervalMs = 5000;
+
+        /// <summary>
+        /// MonoBehaviour host for running coroutines.
+        /// </summary>
+        private readonly MonoBehaviour coroutineHost;
+
+        /// <summary>
+        /// Meta SDK passthrough camera accessor. Used for frame reads (GetTexture);
+        /// the camera's enable state and resolution are owned by <see cref="cameraArbiter"/>.
+        /// </summary>
+        private readonly PassthroughCameraAccess cameraAccess;
+
+        /// <summary>
+        /// Single owner of camera enable/resolution. PFS reserves at low priority;
+        /// the AprilTag detector reserves at high priority and wins ties.
+        /// </summary>
+        private readonly CameraResourceManager cameraArbiter;
+
+        /// <summary>
+        /// Stable identifier used by this PFS instance with the arbiter. Multiple PFS
+        /// instances (not currently expected) would each need a distinct id.
+        /// </summary>
+        private const string CameraArbiterRequesterId = "PassthroughFrameSource";
+
+        /// <summary>
+        /// NetworkTables camera source for publishing stream info.
+        /// </summary>
+        private readonly INtCameraSource cameraSource;
+
+        /// <summary>
+        /// Configuration manager for settings.
+        /// </summary>
+        private readonly IConfigManager configManager;
+
+        /// <summary>
+        /// Main thread synchronization context for marshalling Unity API calls.
+        /// </summary>
+        private readonly SynchronizationContext mainThreadContext;
+
+        /// <summary>
+        /// Whether the frame source has been initialized.
+        /// </summary>
+        private bool isInitialized;
+
+        /// <summary>
+        /// Whether high quality streaming is enabled.
+        /// </summary>
+        private bool isHighQualityStreamEnabled;
+
+        /// <summary>
+        /// Cached base URL for stream endpoints.
+        /// </summary>
+        private string baseUrl;
+
+        /// <summary>
+        /// Whether frame capture is currently paused due to no active connections.
+        /// </summary>
+        private bool isPaused;
+
+        /// <summary>
+        /// JPEG compression quality (1-100). Higher values mean better quality and larger files.
+        /// </summary>
+        private int compressionQuality = 75;
+
+        /// <summary>
+        /// Total number of frame acquisition or JPEG encoding failures since startup.
+        /// </summary>
+        private int captureFailureCount;
+
+        /// <summary>
+        /// Number of consecutive capture failures since the last encoded frame.
+        /// </summary>
+        private int consecutiveCaptureFailures;
+
+        /// <summary>
+        /// UTC Unix timestamp, in milliseconds, of the last successfully encoded frame.
+        /// Zero until the first frame is produced.
+        /// </summary>
+        private long lastSuccessfulFrameTimestampMs;
+
+        /// <summary>
+        /// UTC Unix timestamp, in milliseconds, of the last camera recovery request.
+        /// </summary>
+        private long lastCameraRecoveryTimestampMs;
+
+        /// <summary>
+        /// Protects the multi-field <see cref="EncodedFrame"/> value shared between the
+        /// Unity capture thread and HTTP worker threads.
+        /// </summary>
+        private readonly object frameLock = new object();
+
+        private EncodedFrame currentFrame;
+
+        /// <summary>
+        /// Function that returns whether frame capture should be paused.
+        /// Set by VideoStreamProvider to control capture based on its state.
+        /// </summary>
+        public Func<bool> ShouldBePaused { get; set; } = () => true;
+
+        /// <summary>
+        /// Maximum desired framerate for capture/stream pacing
+        /// </summary>
+        public int MaxFrameRate => Math.Max(1, cameraSource?.Mode.Fps ?? 15);
+
+        /// <summary>
+        /// Gets whether the frame source is currently available for streaming.
+        /// </summary>
+        public bool IsAvailable => isInitialized;
+
+        /// <summary>
+        /// Gets the total number of recoverable capture/encode failures.
+        /// </summary>
+        public int CaptureFailureCount => Volatile.Read(ref captureFailureCount);
+
+        /// <summary>
+        /// Gets the number of failures since the last successfully encoded frame.
+        /// </summary>
+        public int ConsecutiveCaptureFailures => Volatile.Read(ref consecutiveCaptureFailures);
+
+        /// <summary>
+        /// Gets the UTC Unix timestamp, in milliseconds, of the last encoded frame.
+        /// </summary>
+        public long LastSuccessfulFrameTimestampMs =>
+            Interlocked.Read(ref lastSuccessfulFrameTimestampMs);
+
+        /// <summary>
+        /// The current frame
+        /// </summary>
+        public EncodedFrame CurrentFrame
+        {
+            get
+            {
+                lock (frameLock)
+                {
+                    return currentFrame;
+                }
+            }
+            private set
+            {
+                lock (frameLock)
+                {
+                    currentFrame = value;
+                }
+            }
+        }
+
+        /// <summary>
+        /// The base URL for the web server.
+        /// </summary>
+        public string BaseUrl
+        {
+            get => baseUrl;
+            set
+            {
+                if (string.Equals(baseUrl, value))
+                {
+                    return;
+                }
+
+                baseUrl = value;
+                cameraSource.Streams = string.IsNullOrEmpty(baseUrl)
+                    ? Array.Empty<string>()
+                    : new[] { $"mjpg:{BaseUrl}/video" };
+            }
+        }
+
+        /// <summary>
+        /// Delay between frame captures in seconds.
+        /// </summary>
+        private float FrameDelaySeconds => 1.0f / Math.Max(1, MaxFrameRate);
+
+        /// <summary>
+        /// Reference to the running frame capture coroutine.
+        /// </summary>
+        private Coroutine frameCaptureCoroutine;
+
+        /// <summary>
+        /// Changes the video mode and compression quality based on requested parameters. The best matching mode that
+        /// meets or exceeds the requested parameters will be selected.
+        /// </summary>
+        /// <param name="width">Requested width, or null if not specified</param>
+        /// <param name="height">Requested height, or null if not specified</param>
+        /// <param name="fps">Requested FPS, or null if not specified</param>
+        /// <param name="compression">Requested compression quality (1-100), or null if not specified</param>
+        public async Task SetModeAndCompression(int? width, int? height, int? fps, int? compression)
+        {
+            // Save the config, which will trigger the change event handler to apply the changes to the stream
+            if (width.HasValue || height.HasValue || fps.HasValue || compression.HasValue)
+            {
+                // Use the compression quality if it was specified, otherwise use the current quality
+                var quality = compression.HasValue
+                    ? Math.Clamp(compression.Value, 1, 100)
+                    : compressionQuality;
+
+                // Find the best matching mode
+                var bestMatch = FindBestMatchingMode(width, height, fps);
+                if (bestMatch.HasValue)
+                {
+                    QueuedLogger.Log(
+                        $"Setting mode config to {bestMatch.Value} with quality {quality}"
+                    );
+                    await configManager.SetPassthroughStreamModeAsync(
+                        new StreamMode(
+                            bestMatch.Value.Width,
+                            bestMatch.Value.Height,
+                            bestMatch.Value.Fps,
+                            quality
+                        )
+                    );
+                }
+                else
+                {
+                    // There was no suitable mode found, keep the current mode
+                    var currentMode = cameraSource.Mode;
+                    await configManager.SetPassthroughStreamModeAsync(
+                        new StreamMode(
+                            currentMode.Width,
+                            currentMode.Height,
+                            currentMode.Fps,
+                            quality
+                        )
+                    );
+                }
+            }
+        }
+
+        /// <summary>
+        /// Applies video mode and compression quality changes but does not persist to config.
+        /// </summary>
+        /// <param name="width">Requested width, or null if not specified</param>
+        /// <param name="height">Requested height, or null if not specified</param>
+        /// <param name="fps">Requested FPS, or null if not specified</param>
+        /// <param name="compression">Requested compression quality (1-100), or null if not specified</param>
+        private void ApplyModeAndCompression(int? width, int? height, int? fps, int? compression)
+        {
+            // Apply compression if specified
+            if (compression.HasValue && compressionQuality != compression.Value)
+            {
+                compressionQuality = Math.Clamp(compression.Value, 1, 100);
+                QueuedLogger.Log($"Switching compression quality: {compressionQuality}");
+            }
+
+            if (cameraSource?.Modes == null || cameraSource.Modes.Length == 0)
+            {
+                QueuedLogger.LogWarning("No video modes available");
+                return;
+            }
+
+            // If no mode parameters specified, keep current mode
+            if (width.HasValue || height.HasValue || fps.HasValue)
+            {
+                // Find the best matching mode
+                VideoMode? bestMatch = FindBestMatchingMode(width, height, fps);
+                if (bestMatch.HasValue && !cameraSource.Mode.Equals(bestMatch.Value))
+                {
+                    QueuedLogger.Log($"Switching to mode: {bestMatch.Value}");
+                    cameraSource.Mode = bestMatch.Value;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Gets the available video modes.
+        /// </summary>
+        /// <returns>Array of available video modes.</returns>
+        public VideoMode[] GetAvailableModes()
+        {
+            return cameraSource?.Modes ?? Array.Empty<VideoMode>();
+        }
+
+        /// <summary>
+        /// Finds the best matching video mode that is closest to the requested parameters, without exceeding them.
+        /// </summary>
+        /// <param name="reqWidth">Requested width, or null to use the current width</param>
+        /// <param name="reqheight">Requested height, or null to use the current height</param>
+        /// <param name="reqFps">Requested FPS, or null to use the current FPS</param>
+        /// <returns>Best matching mode, or null if no suitable mode found</returns>
+        private VideoMode? FindBestMatchingMode(int? reqWidth, int? reqheight, int? reqFps)
+        {
+            // If no parameters are specified, there's nothing to match against.
+            if (!reqWidth.HasValue && !reqheight.HasValue && !reqFps.HasValue)
+            {
+                return null;
+            }
+
+            // If any parameter is not specified, use the current mode's value for matching.
+            var currentMode = cameraSource.Mode;
+            var width = reqWidth ?? currentMode.Width;
+            var height = reqheight ?? currentMode.Height;
+            var fps = reqFps ?? currentMode.Fps;
+
+            VideoMode? exactMatch = null;
+            VideoMode? bestMatch = null;
+            long bestScore = long.MaxValue;
+
+            foreach (var mode in cameraSource.Modes)
+            {
+                // Restrict pixel count and fps unless high quality is enabled
+                if (
+                    !isHighQualityStreamEnabled
+                    && (
+                        (mode.Width * mode.Height) > VideoStream.MAX_LOW_QUAL_STREAM_PIXEL_COUNT
+                        || mode.Fps > VideoStream.MAX_LOW_QUAL_FRAMERATE
+                    )
+                )
+                {
+                    continue;
+                }
+
+                // If a parameter is exceeded, skip this mode.
+                if (mode.Width > width || mode.Height > height || mode.Fps > fps)
+                {
+                    continue;
+                }
+
+                // Check for exact match
+                if (mode.Width == width && mode.Height == height && mode.Fps == fps)
+                {
+                    exactMatch = mode;
+                    break;
+                }
+
+                // Calculate how close this mode is to the requested parameters
+                // Lower is better (closer to what was requested)
+                int pixelCountDiff = (width * height) - (mode.Width * mode.Height);
+                int fpsDiff = fps - mode.Fps;
+
+                // Total score (pixel count difference + weighted (100X) FPS difference)
+                int totalDiff = pixelCountDiff + (fpsDiff * 100);
+                if (totalDiff < bestScore)
+                {
+                    bestScore = totalDiff;
+                    bestMatch = mode;
+                }
+            }
+            QueuedLogger.Log($"Best match result: Exact={exactMatch}, Best={bestMatch}");
+            return exactMatch ?? bestMatch;
+        }
+
+        /// <summary>
+        /// Creates a new PassthroughFrameSource.
+        /// </summary>
+        /// <param name="coroutineHost">MonoBehaviour for coroutine execution</param>
+        /// <param name="cameraAccess">Provides access to the PassthroughCamera through Meta's SDK</param>
+        /// <param name="cameraArbiter">Single owner of camera enable/resolution. PFS reserves at low priority.</param>
+        /// <param name="cameraSource">The network table source that will expose this camera stream</param>
+        /// <param name="configManager">The config manager to update/querry config values</param>
+        public PassthroughFrameSource(
+            MonoBehaviour coroutineHost,
+            PassthroughCameraAccess cameraAccess,
+            CameraResourceManager cameraArbiter,
+            INtCameraSource cameraSource,
+            IConfigManager configManager
+        )
+        {
+            this.coroutineHost = coroutineHost;
+            this.cameraAccess = cameraAccess;
+            this.cameraArbiter = cameraArbiter;
+            this.cameraSource = cameraSource;
+            this.configManager = configManager;
+
+            // Capture main thread context for marshalling Unity API calls
+            mainThreadContext = SynchronizationContext.Current;
+
+            // Attach to ConfigManager callbacks
+            configManager.OnEnablePassthroughStreamChanged += OnEnablePassthroughStreamChanged;
+            configManager.OnPassthroughStreamModeChanged += OnPassthroughStreamModeChanged;
+            configManager.OnEnableHighQualityStreamsChanged +=
+                OnEnableHighQualityPassthroughStreamChanged;
+        }
+
+        /// <summary>
+        /// Handles video mode changes by requesting the new resolution from the
+        /// camera arbiter. The arbiter may decline (return a different resolution)
+        /// if a higher-priority requester (AprilTag detector) has the camera locked.
+        /// </summary>
+        /// <param name="mode">The new video mode.</param>
+        private void OnSelectedModeChanged(VideoMode mode)
+        {
+            QueuedLogger.Log($"Changed mode: {mode}");
+            var requested = new Vector2Int(mode.Width, mode.Height);
+            var applied = cameraArbiter.Reserve(
+                CameraArbiterRequesterId,
+                requested,
+                CameraRequestPriority.Low
+            );
+            if (applied != requested)
+            {
+                QueuedLogger.Log(
+                    $"PassthroughFrameSource requested {requested.x}x{requested.y} "
+                        + $"but camera arbiter applied {applied.x}x{applied.y} "
+                        + "(higher-priority requester active)"
+                );
+            }
+        }
+
+        /// <summary>
+        /// Handles stream mode configuration changes.
+        /// </summary>
+        /// <param name="streamMode">The new stream mode configuration.</param>
+        private void OnPassthroughStreamModeChanged(StreamMode streamMode)
+        {
+            if (!isInitialized)
+            {
+                return;
+            }
+
+            QueuedLogger.Log($"Stream mode changed to {streamMode}");
+
+            InvokeOnMainThread(() =>
+            {
+                // Apply without persisting (already persisted by the config manager)
+                ApplyModeAndCompression(
+                    streamMode.Width,
+                    streamMode.Height,
+                    streamMode.Framerate,
+                    streamMode.Quality
+                );
+
+                // Check if the applied mode matches the requested mode. This handles case where the config value is
+                // not valid. For example, high quality streaming could be disabled and the mode exceeded the allowed
+                // resolution or the stored value could be invalid after a system or app update.
+                var currentMode = cameraSource.Mode;
+                if (
+                    streamMode.Width != currentMode.Width
+                    || streamMode.Height != currentMode.Height
+                    || streamMode.Framerate != currentMode.Fps
+                )
+                {
+                    // The applied mode is different, the config value was not valid. Persist the actual applied mode.
+                    var appliedStreamMode = new StreamMode(
+                        currentMode.Width,
+                        currentMode.Height,
+                        currentMode.Fps,
+                        compressionQuality
+                    );
+                    configManager.SetPassthroughStreamModeAsync(appliedStreamMode);
+                }
+            });
+        }
+
+        /// <summary>
+        /// Handles high quality stream enable/disable config changes.
+        /// </summary>
+        /// <param name="enabled">Whether high quality streaming should be enabled.</param>
+        private async void OnEnableHighQualityPassthroughStreamChanged(bool enabled)
+        {
+            // Stream quality might need to be downgraded if high quality was just disabled
+            bool checkForDowngrade = isHighQualityStreamEnabled && !enabled;
+            isHighQualityStreamEnabled = enabled;
+
+            // If high quality is disabled, check if we need to downgrade the resolution
+            if (checkForDowngrade)
+            {
+                var currentMode = cameraSource.Mode;
+                if (
+                    currentMode.Width * currentMode.Height
+                        > VideoStream.MAX_LOW_QUAL_STREAM_PIXEL_COUNT
+                    || currentMode.Fps > VideoStream.MAX_LOW_QUAL_FRAMERATE
+                )
+                {
+                    QueuedLogger.Log("High quality stream disabled, downgrading stream mode");
+                    // Downgrade to best matching low quality mode
+                    await SetModeAndCompression(
+                        currentMode.Width,
+                        currentMode.Height,
+                        currentMode.Fps,
+                        compressionQuality
+                    );
+                }
+            }
+        }
+
+        /// <summary>
+        /// Handles passthrough stream enable/disable config changes.
+        /// </summary>
+        /// <param name="enabled">Whether streaming should be enabled.</param>
+        private async void OnEnablePassthroughStreamChanged(bool enabled)
+        {
+            if (cameraAccess is null)
+            {
+                QueuedLogger.Log("Disabled - cameraAccess is unset");
+                return;
+            }
+
+            switch (enabled)
+            {
+                // Setting to enabled when already running
+                case true when isInitialized:
+                {
+                    QueuedLogger.Log("Already initialized, skipping");
+                    break;
+                }
+                // Setting to disabled when already not running
+                case false when !isInitialized:
+                {
+                    QueuedLogger.Log("Already disabled, skipping");
+                    break;
+                }
+                // Setting to enabled when not running
+                case true when !isInitialized:
+                {
+                    if (cameraSource is null)
+                    {
+                        QueuedLogger.LogError(
+                            "CameraSource was null! Cannot initialize passthrough"
+                        );
+                        break;
+                    }
+
+                    QueuedLogger.Log("Initializing passthrough camera...");
+
+                    cameraSource.Description = "Quest Headset Camera";
+
+                    // Populate the list of modes from the supported resolutions
+                    var supportedResolutions = PassthroughCameraAccess.GetSupportedResolutions(
+                        cameraAccess.CameraPosition
+                    );
+                    var modes = new VideoMode[supportedResolutions.Length * FpsOptions.Length];
+                    int i = 0;
+                    foreach (var resolution in supportedResolutions)
+                    {
+                        foreach (var fps in FpsOptions)
+                        {
+                            modes[i++] = new VideoMode(
+                                PixelFormat.MJPEG,
+                                resolution.x,
+                                resolution.y,
+                                fps
+                            );
+                        }
+                    }
+
+                    cameraSource.Modes = modes;
+                    cameraSource.SelectedModeChanged += OnSelectedModeChanged;
+
+                    // Load video mode and quality from config
+                    var streamMode = await configManager.GetPassthroughStreamModeAsync();
+                    compressionQuality = streamMode.Quality;
+
+                    // Find best matching mode for the configured stream mode
+                    var bestMatch = FindBestMatchingMode(
+                        streamMode.Width,
+                        streamMode.Height,
+                        streamMode.Framerate
+                    );
+
+                    if (bestMatch.HasValue)
+                    {
+                        cameraSource.Mode = bestMatch.Value;
+                        QueuedLogger.Log(
+                            $"Selected mode {bestMatch.Value} with quality {compressionQuality}"
+                        );
+                    }
+                    else
+                    {
+                        // Fallback to default mode if no match found
+                        cameraSource.Mode = cameraSource.Modes[3];
+                        QueuedLogger.LogWarning(
+                            $"Could not find matching mode for {streamMode}, using {cameraSource.Mode}"
+                        );
+                    }
+
+                    // Start initialization coroutine
+                    frameCaptureCoroutine = coroutineHost.StartCoroutine(FrameCaptureCoroutine());
+                    isInitialized = true;
+                    cameraSource.IsConnected = true;
+
+                    break;
+                }
+                // Setting to disabled when running
+                case false when isInitialized:
+                {
+                    QueuedLogger.Log("Disabling Passthrough");
+
+                    // Remove callback from cameraSource so a stale mode change can't re-reserve
+                    cameraSource.SelectedModeChanged -= OnSelectedModeChanged;
+
+                    // Stop Coroutine
+                    if (frameCaptureCoroutine != null)
+                    {
+                        coroutineHost.StopCoroutine(frameCaptureCoroutine);
+                        frameCaptureCoroutine = null;
+                    }
+
+                    // Release our camera reservation. If the AprilTag detector is also
+                    // active and holding a high-priority reservation, the camera stays on
+                    // at the AprilTag-pinned resolution; otherwise it shuts down.
+                    cameraArbiter.Release(CameraArbiterRequesterId);
+
+                    isInitialized = false;
+                    cameraSource.IsConnected = false;
+                    break;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Captures frames from the passthrough camera at the requested frame rate and encodes them as JPEG.
+        /// </summary>
+        public IEnumerator FrameCaptureCoroutine()
+        {
+            QueuedLogger.Log("Initializing LJPGT");
+            LJTCompressor compressor = null;
+
+            while (true)
+            {
+                // Check if the desired pause state has changed and sync it
+
+                bool shouldBePaused = GetShouldBePaused();
+
+                if (shouldBePaused && !isPaused)
+                {
+                    isPaused = true;
+                    CurrentFrame = default;
+                    QueuedLogger.Log("Paused capture");
+                }
+                else if (!shouldBePaused && isPaused)
+                {
+                    isPaused = false;
+                    Interlocked.Exchange(
+                        ref lastCameraRecoveryTimestampMs,
+                        DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                    );
+                    QueuedLogger.Log("Resumed capture");
+                }
+
+                // If paused, yield until unpaused
+                if (isPaused)
+                {
+                    yield return null;
+                    continue;
+                }
+
+                CaptureAttempt result = TryCaptureFrame(ref compressor);
+                yield return result == CaptureAttempt.NotReady
+                    ? null
+                    : new WaitForSeconds(FrameDelaySeconds);
+            }
+        }
+
+        /// <summary>
+        /// Attempts to acquire and encode one frame. All SDK, texture readback, and
+        /// compressor failures are contained here so a transient fault cannot terminate
+        /// <see cref="FrameCaptureCoroutine"/>.
+        /// </summary>
+        private CaptureAttempt TryCaptureFrame(ref LJTCompressor compressor)
+        {
+            try
+            {
+                // The camera arbiter briefly disables the camera while applying a new
+                // resolution. Likewise, the SDK may need several frames before reporting
+                // an update after it is re-enabled. Neither condition is a failure.
+                if (!cameraAccess.enabled || !cameraAccess.IsUpdatedThisFrame)
+                {
+                    TryRecoverStalledCamera();
+                    return CaptureAttempt.NotReady;
+                }
+
+                Texture texture = cameraAccess.GetTexture();
+                Texture2D texture2D = ResolveTexture2D(texture);
+                if (texture2D == null)
+                {
+                    RecordCaptureFailure("The camera returned no encodable texture");
+                    TryRecoverStalledCamera();
+                    return CaptureAttempt.Failed;
+                }
+
+                compressor ??= new LJTCompressor();
+                byte[] rawJpeg = compressor.EncodeJPG(texture2D, compressionQuality);
+                if (rawJpeg == null || rawJpeg.Length == 0)
+                {
+                    RecordCaptureFailure("The JPEG compressor returned an empty frame");
+                    compressor = null;
+                    TryRecoverStalledCamera();
+                    return CaptureAttempt.Failed;
+                }
+
+                CurrentFrame = new EncodedFrame(Time.frameCount, rawJpeg);
+                Interlocked.Exchange(ref consecutiveCaptureFailures, 0);
+                Interlocked.Exchange(
+                    ref lastSuccessfulFrameTimestampMs,
+                    DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                );
+                lastWarnedTextureType = null;
+                return CaptureAttempt.Succeeded;
+            }
+            catch (Exception ex)
+            {
+                // Recreate the compressor after any exception. This is harmless for
+                // camera/readback faults and avoids reusing native encoder state after an
+                // encoding failure.
+                compressor = null;
+                string permissionHint =
+                    ex is NullReferenceException
+                        ? " Verify that the 'Headset Cameras' app permission is enabled."
+                        : string.Empty;
+                RecordCaptureFailure($"Frame capture or JPEG encoding failed.{permissionHint}", ex);
+                TryRecoverStalledCamera();
+                return CaptureAttempt.Failed;
+            }
+        }
+
+        /// <summary>
+        /// Periodically bounces the camera through the arbiter when an active stream has
+        /// produced no frames. The arbiter always reapplies the highest-priority request,
+        /// preserving AprilTag's resolution lock.
+        /// </summary>
+        private void TryRecoverStalledCamera()
+        {
+            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            long lastFrame = Interlocked.Read(ref lastSuccessfulFrameTimestampMs);
+            long lastRecovery = Interlocked.Read(ref lastCameraRecoveryTimestampMs);
+            long baseline = Math.Max(lastFrame, lastRecovery);
+            if (baseline == 0)
+            {
+                Interlocked.CompareExchange(ref lastCameraRecoveryTimestampMs, now, 0);
+                return;
+            }
+            if (now - baseline < CameraRecoveryIntervalMs)
+            {
+                return;
+            }
+            if (
+                Interlocked.CompareExchange(ref lastCameraRecoveryTimestampMs, now, lastRecovery)
+                != lastRecovery
+            )
+            {
+                return;
+            }
+
+            QueuedLogger.LogWarning(
+                "No passthrough frame has been encoded for 5 seconds; reapplying the active camera reservation"
+            );
+            cameraArbiter.ReapplyCurrentResolution();
+        }
+
+        /// <summary>
+        /// Reads the provider's pause callback without allowing an unexpected callback
+        /// exception to terminate frame capture.
+        /// </summary>
+        private bool GetShouldBePaused()
+        {
+            try
+            {
+                return ShouldBePaused?.Invoke() ?? true;
+            }
+            catch (Exception ex)
+            {
+                RecordCaptureFailure("Failed to query stream pause state", ex);
+                return true;
+            }
+        }
+
+        /// <summary>
+        /// Records a recoverable failure, with rate-limited logging to avoid flooding the
+        /// device log during an extended camera outage.
+        /// </summary>
+        private void RecordCaptureFailure(string message, Exception ex = null)
+        {
+            Interlocked.Increment(ref captureFailureCount);
+            int consecutive = Interlocked.Increment(ref consecutiveCaptureFailures);
+            if (consecutive == 1 || consecutive % 60 == 0)
+            {
+                string detail = ex == null ? string.Empty : $" {ex.GetType().Name}: {ex.Message}";
+                QueuedLogger.LogError(
+                    $"{message}{detail} (consecutive failures: {consecutive}; capture will retry)"
+                );
+            }
+        }
+
+        private enum CaptureAttempt
+        {
+            NotReady,
+            Succeeded,
+            Failed,
+        }
+
+        /// <summary>
+        /// Cached Texture2D used as a readback target when <c>cameraAccess.GetTexture()</c>
+        /// returns a RenderTexture. Re-allocated only when the source RT dimensions change.
+        /// </summary>
+        private Texture2D rgbaReadbackCache;
+
+        /// <summary>
+        /// Tracks the last "unexpected texture type" name we logged so we only log once per
+        /// distinct type. Without this the coroutine would spam the log at frame rate when
+        /// the SDK steady-states on something we can't handle.
+        /// </summary>
+        private string lastWarnedTextureType;
+
+        /// <summary>
+        /// Resolves whatever <see cref="PassthroughCameraAccess.GetTexture"/> returned into a
+        /// Texture2D suitable for libjpeg-turbo encoding.
+        ///
+        /// The Meta SDK normally returns a Texture2D for the passthrough RGB camera, but on
+        /// the first frame or two after a camera bounce (especially via the
+        /// CameraResourceManager arbiter) it can transiently return a RenderTexture while
+        /// the underlying Android Camera2 pipeline initializes. Returning RenderTexture is
+        /// also the documented path for some YUV420 -> RGBA conversion modes added in v83.
+        ///
+        /// Returns null when the SDK gave us nothing usable; the coroutine treats that as
+        /// "skip this frame, try again next iteration".
+        /// </summary>
+        private Texture2D ResolveTexture2D(Texture source)
+        {
+            if (source == null)
+            {
+                return null;
+            }
+            if (source is Texture2D direct)
+            {
+                return direct;
+            }
+            if (source is RenderTexture rt)
+            {
+                if (
+                    rgbaReadbackCache == null
+                    || rgbaReadbackCache.width != rt.width
+                    || rgbaReadbackCache.height != rt.height
+                )
+                {
+                    if (rgbaReadbackCache != null)
+                    {
+                        UnityEngine.Object.Destroy(rgbaReadbackCache);
+                    }
+                    rgbaReadbackCache = new Texture2D(
+                        rt.width,
+                        rt.height,
+                        TextureFormat.RGBA32,
+                        mipChain: false
+                    );
+                }
+                var prev = RenderTexture.active;
+                try
+                {
+                    RenderTexture.active = rt;
+                    rgbaReadbackCache.ReadPixels(
+                        new Rect(0, 0, rt.width, rt.height),
+                        0,
+                        0,
+                        recalculateMipMaps: false
+                    );
+                    rgbaReadbackCache.Apply(updateMipmaps: false, makeNoLongerReadable: false);
+                    return rgbaReadbackCache;
+                }
+                finally
+                {
+                    RenderTexture.active = prev;
+                }
+            }
+            // Anything else (a Cubemap, RenderTextureArray, etc.) - log once per type and bail.
+            string typeName = source.GetType().Name;
+            if (lastWarnedTextureType != typeName)
+            {
+                QueuedLogger.LogError(
+                    $"GetTexture returned an unsupported texture type ({typeName}); frames will be skipped until the SDK returns a Texture2D or RenderTexture."
+                );
+                lastWarnedTextureType = typeName;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Invokes an action on the main thread using the captured SynchronizationContext.
+        /// Falls back to direct invocation if no context was captured.
+        /// </summary>
+        private void InvokeOnMainThread(Action action)
+        {
+            if (mainThreadContext == null)
+            {
+                action();
+            }
+            else
+            {
+                mainThreadContext.Post(_ => action(), null);
+            }
+        }
+    }
+}

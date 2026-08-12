@@ -1,0 +1,188 @@
+---
+title: Robot Code Setup
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import CodeBlock from '@theme/CodeBlock';
+import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
+
+export const VendorDepUrl = () => {
+    const {siteConfig} = useDocusaurusContext();
+    const v = siteConfig.customFields.questxLibVersion;
+    return `https://maven.questx.gg/snapshots/gg/questx/questxlib-json/${v}/questxlib-json-${v}.json`;
+};
+
+export const VendorDepCodeBlock = () => {
+    const url = VendorDepUrl();
+    return <CodeBlock>{url}</CodeBlock>;
+};
+
+export const GradlewCodeBlock = () => {
+    const url = VendorDepUrl();
+    return <CodeBlock>{`# Windows\n.\\gradlew vendordep --url=${url}\n\n# macOS / Linux\n./gradlew vendordep --url=${url}`}</CodeBlock>;
+};
+
+# Robot Code Setup
+
+QuestX publishes measurements; the robot owns the field-pose estimate. The Java library exposes local Quest VIO and field-relative AprilTag solves as separate timestamped streams.
+
+## Install the vendor dependency
+
+<Tabs>
+  <TabItem value="vscode" label="VS Code" default>
+
+1. Open **WPILib: Manage Vendor Libraries**.
+2. Choose **Install new libraries (online)**.
+3. Paste:
+
+<VendorDepCodeBlock />
+
+  </TabItem>
+  <TabItem value="gradle" label="Command line">
+
+<GradlewCodeBlock />
+
+  </TabItem>
+</Tabs>
+
+## Create and service QuestX
+
+```java
+import gg.questx.questx.QuestX;
+
+private final QuestX questX = new QuestX();
+
+@Override
+public void robotPeriodic() {
+  questX.commandPeriodic();
+}
+```
+
+`commandPeriodic()` processes command responses and connection, tracking, and battery callbacks. Call it even when you consume measurements elsewhere.
+
+## Mount transform
+
+QuestX reports the headset camera pose. Define the transform from robot center to the headset using WPILib coordinates: X forward, Y left, Z up.
+
+```java
+private static final Transform3d ROBOT_TO_QUEST =
+    new Transform3d(0.30, 0.0, 0.50, new Rotation3d());
+```
+
+A field-relative Quest camera pose becomes a robot-center pose with:
+
+```java
+Pose3d robotPose = questPose.transformBy(ROBOT_TO_QUEST.inverse());
+```
+
+### Measuring `ROBOT_TO_QUEST`
+
+Measure the headset position from the robot estimator's origin along X (forward), Y (left), and Z (up). Include a `Rotation3d` if the headset is not level and forward-facing. A rigid mount matters: motion between the headset and chassis appears as sensor motion.
+
+## AprilTag measurements
+
+Drain the queue so short-lived measurements are not lost. Apply team-specific rejection before updating the drive estimator.
+
+```java
+for (AprilTagFrame frame : questX.getAllUnreadAprilTagFrames()) {
+  boolean qualityOk =
+      frame.tagCount() >= 1
+          && frame.inlierRatio() >= 0.50
+          && frame.averageTagDistanceMeters() <= 6.0;
+
+  if (!qualityOk) {
+    continue;
+  }
+
+  Pose3d robotPose = frame.fieldPose3d().transformBy(ROBOT_TO_QUEST.inverse());
+
+  drivePoseEstimator.addVisionMeasurement(
+      robotPose.toPose2d(),
+      frame.measurementTimestamp(),
+      frame.pose2dStdDevs());
+}
+```
+
+`measurementTimestamp()` is the queued NetworkTables server timestamp translated into the robot clock. Use it for latency compensation. The transmitted capture and app timestamps are diagnostic values.
+
+The bundled standard deviations are a starting model, not a mandatory acceptance decision. Tune them from logs and consider tag count, inlier ratio, distance, robot motion, and innovation from the current estimate.
+
+### Field-Bounds Filtering
+
+Reject camera-derived robot poses outside the official field dimensions (plus a small tolerance) before calling `addVisionMeasurement()`. Also consider rejecting excessive innovation from the current drivetrain estimate; log the sequence ID and rule that rejected it.
+
+## Local VIO measurements
+
+VIO is smooth and high-rate, but its origin is arbitrary. Consume it as a local-motion sensor:
+
+```java
+for (VioFrame frame : questX.getAllUnreadVioFrames()) {
+  if (!frame.isTracking()) {
+    continue;
+  }
+
+  if (frame.trackingEpoch() != activeTrackingEpoch) {
+    activeTrackingEpoch = frame.trackingEpoch();
+    resetLocalVioAlignment(frame);
+    continue;
+  }
+
+  updateRobotOwnedFusion(frame);
+}
+```
+
+Your robot-side fusion layer must maintain the rigid transform from the current VIO epoch to the field. Establish it from a trusted field observation and never calculate a VIO delta across an epoch boundary.
+
+:::note
+`setPose()` is deprecated in the split-measurement architecture. It does not field-align raw VIO. Reset the robot's estimator or its local-VIO alignment instead.
+:::
+
+### Setting Robot Pose
+
+Seed or reset the drivetrain pose estimator directly from the known autonomous starting pose. Then initialize the current local-VIO-to-field alignment against that state or the first trusted AprilTag measurement. Do not push that pose into the Quest as a substitute for robot-side alignment.
+
+## Freshness and connection
+
+The last NetworkTables value persists after disconnect. Use `isConnected()`, `isTracking()`, sequence IDs, and measurement timestamps before accepting data.
+
+```java
+if (!questX.isConnected()) {
+  // Fall back to drivetrain-only localization and alert the driver.
+}
+
+double vioAgeMillis = questX.getVioLatency();
+double aprilTagAgeMillis = questX.getAprilTagLatency();
+```
+
+## Useful APIs
+
+| API | Purpose |
+|---|---|
+| `getAllUnreadVioFrames()` | Drain local VIO measurements |
+| `getAllUnreadAprilTagFrames()` | Drain field-relative tag measurements |
+| `getLatestVioFrame()` | Inspect the newest VIO sample |
+| `getLatestAprilTagFrame()` | Inspect the newest tag solve |
+| `getVioLatency()` | Age of the newest VIO sample |
+| `getAprilTagLatency()` | Age of the newest tag sample |
+| `isConnected()` | VIO stream is fresh and NT is connected |
+| `isTracking()` | Latest VIO sample reports valid tracking |
+| `commandPeriodic()` | Service callbacks and command responses |
+
+The old `PoseFrame` and `getAllUnreadPoseFrames()` APIs are retained temporarily for source compatibility with older Quest apps, but the new app does not publish a Quest-side fused pose.
+
+## Debugging
+
+Use the Quest web status page alongside robot logs. It shows:
+
+- VIO and AprilTag publish counts;
+- tracking state and epoch;
+- tag IDs, corner inliers, distance, uncertainty, and measurement age;
+- detector and passthrough camera failures;
+- MJPEG client count and last-frame age.
+
+Log every robot-side measurement decision with its sequence ID and rejection reason. That makes it possible to distinguish a Quest detector issue from a robot estimator policy issue.
+
+### Publishing Diagnostics
+
+Publish `isConnected()`, `isTracking()`, both latency values, active tracking epoch, latest sequence IDs, tag quality, and each rejection reason to your normal robot telemetry. Pair those values with the Quest web status page when debugging dropouts.

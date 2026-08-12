@@ -1,0 +1,145 @@
+name: CI
+
+on:
+  pull_request_target:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+# ----------------------- DETECT CHANGES ----------------------- #
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      java-changed: ${{ steps.changes.outputs.java }}
+      csharp-changed: ${{ steps.changes.outputs.csharp }}
+      proto-changed: ${{ steps.changes.outputs.proto }}
+      web-ui-changed: ${{ steps.changes.outputs.web-ui }}
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: dorny/paths-filter@v3
+        id: changes
+        with:
+          filters: |
+            java:
+              - 'questx-lib/**/*.java'
+              - 'questx-lib/**/*.gradle'
+              - '.github/**'
+            csharp:
+              - 'unity/**/*.cs'
+              - 'unity/**/*.json'
+              - 'unity/**/*.unity'
+              - 'unity/**/*.meta'
+              - '.github/**'
+            proto:
+              - 'protos/*.proto'
+            web-ui:
+              - 'questx-web-ui/**'
+              - 'unity/Assets/StreamingAssets/ui/**'
+
+
+# ----------------------- JAVA ----------------------- #
+  build-proto-java:
+    if: |
+      needs.detect-changes.outputs.proto-changed == 'true' ||
+      needs.detect-changes.outputs.csharp-changed == 'true' ||
+      needs.detect-changes.outputs.java-changed == 'true' ||
+      needs.detect-changes.outputs.web-ui-changed == 'true'
+    needs: [detect-changes]
+    uses: ./.github/workflows/reusable-build-proto-java.yml
+
+  format-java:
+    if: needs.detect-changes.outputs.java-changed == 'true'
+    needs: [detect-changes, build-proto-java]
+    uses: ./.github/workflows/reusable-format-java.yml
+
+  build-java:
+    if: |
+      always() &&
+      (needs.detect-changes.outputs.java-changed == 'true' ||
+      needs.detect-changes.outputs.csharp-changed == 'true' ||
+      needs.detect-changes.outputs.web-ui-changed == 'true') &&
+      needs.build-proto-java.result == 'success' &&
+      needs.format-java.result != 'failure'
+    needs: [detect-changes, build-proto-java, format-java]
+    uses: ./.github/workflows/reusable-build-java.yml
+
+  publish-java:
+    if: |
+      always() &&
+      vars.MAVEN_PUBLISH_ENABLED == 'true' &&
+      needs.build-java.result == 'success'
+    needs: [build-java]
+    uses: ./.github/workflows/reusable-publish-java.yml
+    secrets:
+      MAVEN_USERNAME: ${{ secrets.MAVEN_USERNAME }}
+      MAVEN_PASSWORD: ${{ secrets.MAVEN_PASSWORD }}
+
+# ----------------------- C# ----------------------- #
+  build-proto-csharp:
+    if: |
+      needs.detect-changes.outputs.proto-changed == 'true' ||
+      needs.detect-changes.outputs.csharp-changed == 'true' ||
+      needs.detect-changes.outputs.java-changed == 'true' ||
+      needs.detect-changes.outputs.web-ui-changed == 'true'
+    needs: [detect-changes]
+    uses: ./.github/workflows/reusable-build-proto-csharp.yml
+    
+  format-csharp:
+    if: needs.detect-changes.outputs.csharp-changed == 'true'
+    needs: [detect-changes, build-proto-csharp, build-web-ui]
+    uses: ./.github/workflows/reusable-format-csharp.yml
+
+  build-csharp:
+    if: |
+      always() &&
+      vars.UNITY_CI_ENABLED == 'true' &&
+      (needs.detect-changes.outputs.csharp-changed == 'true' ||
+      needs.detect-changes.outputs.java-changed == 'true' ||
+      needs.detect-changes.outputs.web-ui-changed == 'true') &&
+      needs.build-proto-csharp.result == 'success' &&
+      needs.build-web-ui.result == 'success' &&
+      needs.format-csharp.result != 'failure'
+    needs: [detect-changes, build-proto-csharp, build-web-ui, format-csharp]
+    uses: ./.github/workflows/reusable-build-csharp.yml
+    secrets:
+      UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+      UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+      UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+
+# ----------------------- WEB UI ----------------------- #
+  build-web-ui:
+    if: |
+      needs.detect-changes.outputs.web-ui-changed == 'true' ||
+      needs.detect-changes.outputs.csharp-changed == 'true' ||
+      needs.detect-changes.outputs.java-changed == 'true'
+    needs: [detect-changes]
+    uses: ./.github/workflows/reusable-build-web-ui.yml
+
+  # ----------------------- SUMMARY ----------------------- #
+  ci-summary:
+    if: always()
+    needs:
+      - detect-changes
+      - format-java
+      - build-java
+      - format-csharp
+      - build-csharp
+      - build-proto-java
+      - build-proto-csharp
+      - build-web-ui
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate CI Summary
+        run: |
+          echo "# CI Pipeline Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Changes Detected" >> $GITHUB_STEP_SUMMARY
+          echo "- Java: \`${{ needs.detect-changes.outputs.java-changed }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- C#: \`${{ needs.detect-changes.outputs.csharp-changed }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Proto: \`${{ needs.detect-changes.outputs.proto-changed }}\`" >> $GITHUB_STEP_SUMMARY

@@ -1,0 +1,21 @@
+{
+  "fileName": "questxlib.json",
+  "name": "questxlib",
+  "version": "${questx_version}",
+  "uuid": "${questx_uuid}",
+  "frcYear": "${frc_year}",
+  "mavenUrls": [
+    "https://maven.questx.gg/releases",
+    "https://maven.questx.gg/snapshots"
+  ],
+  "jsonUrl": "${json_url}",
+  "javaDependencies": [
+    {
+      "groupId": "gg.questx",
+      "artifactId": "questxlib-java",
+      "version": "${questx_version}"
+    }
+  ],
+    "cppDependencies": [],
+    "jniDependencies": []
+}

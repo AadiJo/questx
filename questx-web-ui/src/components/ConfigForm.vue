@@ -1,0 +1,474 @@
+<template>
+  <div class="config-form">
+    <!-- Loading State -->
+    <div v-if="configStore.isLoading" class="loading-container">
+      <div class="spinner"></div>
+      <p>Loading configuration...</p>
+    </div>
+
+    <!-- Error State -->
+    <div v-else-if="configStore.error" class="error-container card">
+      <h3>⚠️ Error</h3>
+      <p>{{ configStore.error }}</p>
+      <button @click="loadData">Retry</button>
+    </div>
+
+    <!-- Configuration Form with Tabs -->
+    <div v-else-if="configStore.config" class="config-content">
+      <!-- Tab Navigation -->
+      <div class="tabs-container card">
+        <div class="tabs-nav">
+          <button
+            v-for="tab in tabs"
+            :key="tab"
+            :class="['tab-button', { active: activeTab === tab }]"
+            @click="activeTab = tab"
+          >
+            {{ tab }}
+          </button>
+        </div>
+
+        <!-- Tab Content -->
+        <div class="tab-content">
+          <!-- Status Tab -->
+          <div v-show="activeTab === 'Status'" class="tab-panel">
+            <StatusView />
+          </div>
+          
+          <!-- Logs Tab -->
+          <div v-show="activeTab === 'Logs'" class="tab-panel">
+            <LogsView />
+          </div>
+          
+          <!-- Camera Tab -->
+          <div v-show="activeTab === 'Camera'" class="tab-panel">
+            <CameraView />
+          </div>
+          
+          <!-- AprilTag Tab -->
+          <div v-show="activeTab === 'AprilTag'" class="tab-panel">
+            <AprilTagView />
+          </div>
+          
+          <!-- Settings Tab -->
+          <div v-show="activeTab === 'Settings'" class="tab-panel">
+            <div class="settings-grid">
+              <!-- Team Number -->
+              <ConfigField
+                title="Team Number"
+                :field-class="{ 'field-override-active': isDebugIPActive }"
+                control-class="input-control"
+              >
+                <template #badge>
+                  <span v-if="isDebugIPActive" class="override-badge">OVERRIDDEN</span>
+                </template>
+                <template #description>
+                  <template v-if="isDebugIPActive">
+                    <strong>Enter a team number and click Apply to clear the IP override</strong>
+                  </template>
+                  <template v-else>
+                    FRC team number (1-25599)
+                  </template>
+                </template>
+                <input
+                  type="number"
+                  :value="pendingTeamNumber ?? configStore.config.teamNumber"
+                  @input="handleTeamNumberInput"
+                  @keyup.enter="submitTeamNumber"
+                  min="1"
+                  max="25599"
+                />
+                <button 
+                  v-if="hasTeamNumberChanged"
+                  @click="submitTeamNumber"
+                  class="submit-button"
+                >
+                  Apply
+                </button>
+              </ConfigField>
+
+              <!-- Debug IP Override -->
+              <ConfigField
+                title="Debug IP Override"
+                description="Override robot IP for testing (leave empty for team number)"
+                :field-class="{ 'field-warning': isDebugIPActive }"
+                control-class="input-control"
+              >
+                <template #badge>
+                  <span v-if="isDebugIPActive" class="debug-badge">DEBUG MODE</span>
+                </template>
+                <input
+                  type="text"
+                  :value="pendingDebugIP ?? configStore.config.debugIpOverride"
+                  @input="handleDebugIPInput"
+                  @keyup.enter="submitDebugIP"
+                  placeholder="e.g., 10.0.0.2"
+                />
+                <button 
+                  v-if="hasDebugIPChanged"
+                  @click="submitDebugIP"
+                  class="submit-button"
+                >
+                  Apply
+                </button>
+              </ConfigField>
+
+
+              <!-- Pose Reset Timeout -->
+              <ConfigField
+                title="Pose Reset Timeout"
+                control-class="input-control"
+              >
+                <template #description>
+                  How stale a pose reset request can be (milliseconds).
+                  <div class="warning-text">
+                    <strong>Warning:</strong> Values above the default (120ms) can cause unexpected
+                    behavior. Missed resets are usually caused by loop overruns in user code —
+                    fix those before changing this value.
+                  </div>
+                </template>
+                <input
+                  type="number"
+                  :value="pendingPoseResetTimeout ?? configStore.config.allowedPoseResetTimeoutMs"
+                  @input="handlePoseResetTimeoutInput"
+                  @keyup.enter="submitPoseResetTimeout"
+                  min="1"
+                />
+                <button
+                  v-if="hasPoseResetTimeoutChanged"
+                  @click="submitPoseResetTimeout"
+                  class="submit-button"
+                >
+                  Apply
+                </button>
+              </ConfigField>
+              <!-- Auto Start on Boot -->
+              <ConfigField
+                title="Auto Start on Boot"
+                description="Start QuestX when headset boots"
+                control-class="checkbox-control"
+              >
+                <label class="checkbox-label">
+                  <input
+                    type="checkbox"
+                    :checked="configStore.config.enableAutoStartOnBoot"
+                    @change="handleAutoStartChange"
+                  />
+                  {{ configStore.config.enableAutoStartOnBoot ? 'Enabled' : 'Disabled' }}
+                </label>
+              </ConfigField>
+
+              <!-- Debug Logging -->
+              <ConfigField
+                title="Debug Logging"
+                description="Enable verbose debug logging"
+                control-class="checkbox-control"
+              >
+                <label class="checkbox-label">
+                  <input
+                    type="checkbox"
+                    :checked="configStore.config.enableDebugLogging"
+                    @change="handleDebugLoggingChange"
+                  />
+                  {{ configStore.config.enableDebugLogging ? 'Enabled' : 'Disabled' }}
+                </label>
+              </ConfigField>
+
+              <!-- Passthrough Stream enable/disable lives on the Camera tab now (next to
+                   the resolution / FPS controls it gates). The High Quality toggle stays
+                   here in Settings because it has app-wide implications (CPU, battery,
+                   network) beyond just the visual stream. -->
+
+              <!-- High Quality Passthrough Stream -->
+              <ConfigField
+                title="High Quality Passthrough Stream"
+                control-class="checkbox-control"
+              >
+                <template #description>
+                  Enable high quality streaming for the passthrough camera.
+                  <div class="warning-text">
+                    <strong>Warning:</strong> High quality streaming can put heavy load on the headset CPU, leading to
+                    degraded tracking frequency, rapid battery drain, and network instability.
+                  </div>
+                </template>
+                <label class="checkbox-label">
+                  <input
+                    type="checkbox"
+                    :checked="configStore.config.enableHighQualityStream"
+                    @change="handleHighQualityStreamChange"
+                  />
+                  {{ configStore.config.enableHighQualityStream ? 'Enabled' : 'Disabled' }}
+                </label>
+              </ConfigField>
+
+              <!-- Reset to Defaults -->
+              <ConfigField
+                title="Reset Configuration"
+                description="Reset all settings to defaults"
+                field-class="reset-field"
+              >
+                <button @click="handleReset" class="danger">Reset to Defaults</button>
+              </ConfigField>
+
+              <!-- Database Management -->
+              <ConfigField
+                title="Database Management"
+                description="Download or upload the configuration database"
+                field-class="database-field"
+                control-class="database-buttons"
+              >
+                <button @click="handleDownloadDatabase" class="secondary">Download Database</button>
+                <label class="secondary upload-label">
+                  Upload Database
+                  <input type="file" accept=".db" @change="handleUploadDatabase" hidden />
+                </label>
+              </ConfigField>
+            </div>
+
+
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Empty State -->
+    <div v-else class="empty-container card">
+      <p>No configuration available</p>
+      <button @click="loadData">Load Configuration</button>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { useConfigStore } from '../stores/config'
+import { configApi } from '../api/config'
+import StatusView from './StatusView.vue'
+import LogsView from './LogsView.vue'
+import CameraView from './CameraView.vue'
+import ConfigField from './ConfigField.vue'
+import AprilTagView from './AprilTagView.vue'
+
+const configStore = useConfigStore()
+const activeTab = ref<string>('Status')
+const tabs = ['Status', 'Logs', 'Camera', 'AprilTag', 'Settings']
+let pollInterval: number | null = null
+
+const pendingTeamNumber = ref<number | null>(null)
+const pendingDebugIP = ref<string | null>(null)
+const pendingPoseResetTimeout = ref<number | null>(null)
+
+const isDebugIPActive = computed(() => {
+  return configStore.config?.debugIpOverride && configStore.config.debugIpOverride.length > 0
+})
+
+const hasTeamNumberChanged = computed(() => {
+  return pendingTeamNumber.value !== null && pendingTeamNumber.value !== configStore.config?.teamNumber
+})
+
+const hasDebugIPChanged = computed(() => {
+  return pendingDebugIP.value !== null && pendingDebugIP.value !== configStore.config?.debugIpOverride
+})
+
+const hasPoseResetTimeoutChanged = computed(() => {
+  return pendingPoseResetTimeout.value !== null && pendingPoseResetTimeout.value !== configStore.config?.allowedPoseResetTimeoutMs
+})
+
+onMounted(async () => {
+  await loadData()
+  
+  pollInterval = setInterval(async () => {
+    await configStore.loadConfig(false)
+    if (configStore.config) {
+      if (pendingTeamNumber.value === configStore.config.teamNumber) pendingTeamNumber.value = null
+      if (pendingDebugIP.value === configStore.config.debugIpOverride) pendingDebugIP.value = null
+      if (pendingPoseResetTimeout.value === configStore.config.allowedPoseResetTimeoutMs) pendingPoseResetTimeout.value = null
+    }
+  }, 3000) as unknown as number
+})
+
+onUnmounted(() => {
+  if (pollInterval !== null) clearInterval(pollInterval)
+})
+
+async function loadData() {
+  await configStore.loadConfig()
+}
+
+function handleTeamNumberInput(event: Event) {
+  const target = event.target as HTMLInputElement
+  const value = parseInt(target.value)
+  if (!isNaN(value)) pendingTeamNumber.value = value
+}
+
+async function submitTeamNumber() {
+  if (pendingTeamNumber.value !== null) {
+    await configStore.updateTeamNumber(pendingTeamNumber.value)
+    pendingTeamNumber.value = null
+  }
+}
+
+function handleDebugIPInput(event: Event) {
+  const target = event.target as HTMLInputElement
+  pendingDebugIP.value = target.value
+}
+
+async function submitDebugIP() {
+  if (pendingDebugIP.value !== null) {
+    await configStore.updateDebugIpOverride(pendingDebugIP.value)
+    pendingDebugIP.value = null
+  }
+}
+
+function handlePoseResetTimeoutInput(event: Event) {
+  const target = event.target as HTMLInputElement
+  const value = parseInt(target.value)
+  if (!isNaN(value)) pendingPoseResetTimeout.value = value
+}
+
+async function submitPoseResetTimeout() {
+  if (pendingPoseResetTimeout.value !== null) {
+    await configStore.updateAllowedPoseResetTimeoutMs(pendingPoseResetTimeout.value)
+    pendingPoseResetTimeout.value = null
+  }
+}
+
+async function handleAutoStartChange(event: Event) {
+  const target = event.target as HTMLInputElement
+  await configStore.updateEnableAutoStartOnBoot(target.checked)
+}
+
+async function handleDebugLoggingChange(event: Event) {
+  const target = event.target as HTMLInputElement
+  await configStore.updateEnableDebugLogging(target.checked)
+}
+
+async function handleHighQualityStreamChange(event: Event) {
+  const target = event.target as HTMLInputElement
+  await configStore.updateEnableHighQualityStream(target.checked)
+}
+
+async function handleReset() {
+  if (confirm('Reset all settings to defaults?')) {
+    await configStore.resetToDefaults()
+  }
+}
+
+async function handleDownloadDatabase() {
+  try {
+    await configApi.downloadDatabase()
+  } catch (error) {
+    alert('Failed to download database: ' + (error as Error).message)
+  }
+}
+
+async function handleUploadDatabase(event: Event) {
+  const target = event.target as HTMLInputElement
+  const file = target.files?.[0]
+  if (!file) return
+  
+  if (!confirm('Upload this database? The app will need to restart to apply changes.')) {
+    target.value = ''
+    return
+  }
+  
+  try {
+    const result = await configApi.uploadDatabase(file)
+    alert(result.message)
+  } catch (error) {
+    alert('Failed to upload database: ' + (error as Error).message)
+  }
+  target.value = ''
+}
+</script>
+
+<style scoped>
+.config-form {
+  width: 100%;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.loading-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 4rem 2rem;
+  gap: 1.5rem;
+}
+
+.error-container, .empty-container {
+  padding: 3rem 2rem;
+  text-align: center;
+}
+
+.error-container h3 {
+  color: var(--danger-color);
+  margin-bottom: 1rem;
+}
+
+.tabs-container {
+  padding: 0;
+  overflow: hidden;
+}
+
+.tabs-nav {
+  display: flex;
+  background: var(--bg-tertiary);
+  border-bottom: 2px solid var(--border-color);
+}
+
+.tab-button {
+  flex: 1;
+  padding: 1rem 1.5rem;
+  background: transparent;
+  border: none;
+  border-bottom: 3px solid transparent;
+  color: var(--text-secondary);
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.tab-button:hover {
+  background: var(--card-bg);
+  color: var(--primary-color);
+}
+
+.tab-button.active {
+  color: var(--text-primary);
+  background: var(--card-bg);
+  border-bottom-color: var(--primary-color);
+}
+
+.tab-content {
+  padding: 2rem;
+  min-height: 400px;
+}
+
+.debug-badge, .override-badge {
+  font-size: 0.7rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  font-weight: 700;
+}
+
+.debug-badge {
+  background: var(--danger-color);
+  color: white;
+}
+
+.override-badge {
+  background: var(--text-secondary);
+  color: white;
+}
+
+.warning-text {
+  color: var(--warning-color);
+  margin-top: 0.5rem;
+}
+
+.upload-label {
+  display: inline-block;
+}
+</style>

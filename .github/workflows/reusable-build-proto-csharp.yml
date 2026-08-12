@@ -1,0 +1,49 @@
+name: Build Proto (C#)
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: 'Version string to use (optional, auto-generated if not provided)'
+        required: false
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          sparse-checkout: |
+            unity
+            protos
+            .github
+          sparse-checkout-cone-mode: false
+
+      - name: Determine Version
+        id: version-info
+        uses: ./.github/actions/determine-version
+        with:
+          version: ${{ inputs.version }}
+
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Generate C# Proto Files
+        run: |
+          mkdir -p unity/Assets/QuestX/Generated
+          protoc --proto_path=protos \
+                 --csharp_out=unity/Assets/QuestX/Generated \
+                 protos/*.proto
+
+      - name: Upload Generated Proto Files
+        uses: actions/upload-artifact@v4
+        with:
+          name: questx-proto-csharp-${{ steps.version-info.outputs.version }}
+          path: unity/Assets/QuestX/Generated
+          retention-days: 7

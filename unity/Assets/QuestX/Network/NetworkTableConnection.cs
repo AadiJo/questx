@@ -1,0 +1,722 @@
+using System;
+using System.Net;
+using System.Net.Sockets;
+using QuestX.Config;
+using QuestX.Core;
+using QuestX.Native.NTCore;
+using QuestX.Protos.Generated;
+using QuestX.QuestX.Geometry;
+using QuestX.Utils;
+using UnityEngine;
+using Quaternion = UnityEngine.Quaternion;
+
+namespace QuestX.Network
+{
+    /// <summary>
+    /// Interface for NetworkTables connection management.
+    /// </summary>
+    public interface INetworkTableConnection
+    {
+        /// <summary>
+        /// Fired when connection is established.
+        /// </summary>
+        public event Action OnConnect;
+
+        /// <summary>
+        /// Fired when connection is lost.
+        /// </summary>
+        public event Action OnDisconnect;
+
+        /// <summary>
+        /// Fired when the local IP address changes.
+        /// </summary>
+        public event Action<string> OnIpAddressChanged;
+
+        /// <summary>
+        /// Gets whether the connection is currently established.
+        /// </summary>
+        bool IsConnected { get; }
+
+        /// <summary>
+        /// Gets whether the connection is ready to connect.
+        /// </summary>
+        /// <returns>true when either an IP or team number has been set</returns>
+        bool IsReadyToConnect { get; }
+
+        /// <summary>
+        /// Gets the current NT time
+        /// </summary>
+        long NtNow { get; }
+
+        /// <summary>
+        /// Caches the last known IP address to detect changes
+        /// </summary>
+        string IpAddress { get; }
+
+        /// <summary>
+        /// Publishes legacy, Quest-side fused frame data to NetworkTables.
+        /// </summary>
+        /// <param name="frameCount">Current frame index</param>
+        /// <param name="timeStamp">Current timestamp</param>
+        /// <param name="pose">Current field-relative position of the Quest headset</param>
+        /// <param name="isTracking">Is the headset is currently tracking its position</param>
+        [Obsolete("Use PublishVioData and PublishAprilTagData instead.")]
+        void PublishFrameData(int frameCount, double timeStamp, Pose3d pose, bool isTracking);
+
+        /// <summary>
+        /// Publishes an unfused, local-frame VIO measurement to NetworkTables.
+        /// </summary>
+        void PublishVioData(
+            long captureTimestampMicros,
+            double appTimestamp,
+            Pose3d pose,
+            bool isTracking,
+            uint trackingEpoch
+        );
+
+        /// <summary>
+        /// Publishes a field-relative AprilTag measurement and its quality metadata.
+        /// </summary>
+        void PublishAprilTagData(
+            long captureTimestampMicros,
+            double appTimestamp,
+            Pose3d pose,
+            int[] tagIds,
+            uint inlierCount,
+            uint cornerCount,
+            double inlierRatio,
+            double averageTagDistanceMeters,
+            double xStdDevMeters,
+            double yStdDevMeters,
+            double zStdDevMeters,
+            double rollStdDevRadians,
+            double pitchStdDevRadians,
+            double yawStdDevRadians
+        );
+
+        /// <summary>
+        /// Gets the number of VIO measurements successfully handed to NTCore.
+        /// </summary>
+        ulong VioPublishCount { get; }
+
+        /// <summary>
+        /// Gets the number of AprilTag measurements successfully handed to NTCore.
+        /// </summary>
+        ulong AprilTagPublishCount { get; }
+
+        /// <summary>
+        /// Publishes device data to NetworkTables.
+        /// </summary>
+        /// <param name="trackingLostCounter">Number of tracking lost events this session</param>
+        /// <param name="batteryPercent">Current battery percentage</param>
+        void PublishDeviceData(int trackingLostCounter, int batteryPercent);
+
+        /// <summary>
+        /// Returns a camera source with the given sub-topic
+        /// </summary>
+        /// <param name="name">The name of the camera source</param>
+        /// <returns>An ICameraSource for the given topic or null</returns>
+        INtCameraSource CreateCameraSource(string name);
+
+        /// <summary>
+        /// Gets all command requests from the robot since the last read, or an empty array if none available
+        /// </summary>
+        /// <returns>All command requests since the last read</returns>
+        TimestampedValue<ProtobufQuestXCommand>[] GetCommandRequests();
+
+        /// <summary>
+        /// Sends a command processing success response back to the robot
+        /// </summary>
+        /// <param name="commandId">command_id</param>
+        void SendCommandSuccessResponse(uint commandId);
+
+        /// <summary>
+        /// Sends a command processing error response back to the robot
+        /// </summary>
+        /// <param name="commandId">command_id</param>
+        /// <param name="errorMessage">error message</param>
+        void SendCommandErrorResponse(uint commandId, string errorMessage);
+
+        /// <summary>
+        /// Performs periodic updates including connection polling and logging.
+        /// </summary>
+        void Periodic();
+
+        /// <summary>
+        /// Populates subscribed events with initial values
+        /// </summary>
+        void Initialize();
+    }
+
+    /// <summary>
+    /// Manages NetworkTables connections for communication with an FRC robot.
+    /// </summary>
+    public class NetworkTableConnection : INetworkTableConnection
+    {
+        #region Fields
+        /// <summary>
+        /// ConfigManager for reading team number and IP override
+        /// </summary>
+        private readonly IConfigManager configManager;
+
+        /// <summary>
+        /// NetworkTables connection for FRC data communication
+        /// </summary>
+        private readonly NtInstance ntInstance;
+
+        /// <summary>
+        /// Logger for NetworkTables internal messages
+        /// </summary>
+        private PolledLogger ntInstanceLogger;
+
+        /// <summary>
+        /// Publisher for frame data (position/rotation updates)
+        /// </summary>
+        private readonly ProtobufPublisher<ProtobufQuestXFrameData> frameDataPublisher;
+
+        /// <summary>
+        /// Publisher for unfused Quest VIO measurements.
+        /// </summary>
+        private readonly ProtobufPublisher<ProtobufQuestXVioData> vioDataPublisher;
+
+        /// <summary>
+        /// Publisher for field-relative AprilTag measurements.
+        /// </summary>
+        private readonly ProtobufPublisher<ProtobufQuestXAprilTagData> aprilTagDataPublisher;
+
+        /// <summary>
+        /// Publisher for device data (tracking status, battery, etc.)
+        /// </summary>
+        private readonly ProtobufPublisher<ProtobufQuestXDeviceData> deviceDataPublisher;
+
+        /// <summary>
+        /// Publisher for command responses (Quest to robot)
+        /// </summary>
+        private readonly ProtobufPublisher<ProtobufQuestXCommandResponse> commandResponsePublisher;
+
+        /// <summary>
+        /// Subscriber for command requests (robot to Quest)
+        /// </summary>
+        private readonly ProtobufSubscriber<ProtobufQuestXCommand> commandRequestSubscriber;
+
+        /// <summary>
+        /// Publisher for video streams
+        /// </summary>
+        private StringArrayPublisher streamsPublisher;
+
+        /// <summary>
+        /// Flag indicating if a team number has been set
+        /// </summary>
+        private bool teamNumberSet = false;
+
+        /// <summary>
+        /// Flag indicating if an IP address has been set
+        /// </summary>
+        private bool ipAddressSet = false;
+
+        /// <summary>
+        /// Tracks previous connection state for change detection
+        /// </summary>
+        private bool wasConnected;
+        #endregion
+
+        /// <summary>
+        /// Initializes a new NetworkTables connection with publishers and subscribers for QuestX communication.
+        ///
+        /// QUESTX COMMUNICATION TOPICS:
+        /// Publishers (Quest → Robot):
+        /// - /QuestX/vioData: High-frequency local VIO measurements
+        /// - /QuestX/aprilTagData: Field-relative AprilTag measurements
+        /// - /QuestX/deviceData: Device status updates (3Hz)
+        /// - /QuestX/response: Command execution results
+        ///
+        /// Subscribers (Robot → Quest):
+        /// - /QuestX/request: Commands from robot (pose resets, etc.)
+        ///
+        /// PROTOBUF SERIALIZATION:
+        /// Uses Protocol Buffers for efficient, versioned message serialization.
+        /// This provides type safety, backward compatibility, and compact encoding.
+        /// </summary>
+        public NetworkTableConnection(IConfigManager configManager)
+        {
+            this.configManager = configManager;
+
+            // Create NetworkTables instance with QuestX namespace
+            // This isolates QuestX topics from other NetworkTables data
+            ntInstance = new NtInstance(QuestXConstants.Topics.NT_BASE_PATH);
+
+            /*
+             * PUBLISHER SETUP - Quest sends data TO robot
+             * Each publisher is configured with:
+             * - Topic name: Hierarchical path for organization
+             * - Protobuf schema: Ensures type safety and versioning
+             * - Publisher options: Reliability, frequency, etc.
+             */
+
+            // Legacy publisher is retained so the deprecated compatibility method remains
+            // binary-compatible. The app no longer calls PublishFrameData.
+            frameDataPublisher = ntInstance.GetProtobufPublisher<ProtobufQuestXFrameData>(
+                QuestXConstants.Topics.FRAME_DATA,
+                ProtobufQuestXFrameData.Descriptor,
+                QuestXConstants.Network.NtPublisherSettings
+            );
+
+            vioDataPublisher = ntInstance.GetProtobufPublisher<ProtobufQuestXVioData>(
+                QuestXConstants.Topics.VIO_DATA,
+                ProtobufQuestXVioData.Descriptor,
+                QuestXConstants.Network.NtPublisherSettings
+            );
+
+            aprilTagDataPublisher = ntInstance.GetProtobufPublisher<ProtobufQuestXAprilTagData>(
+                QuestXConstants.Topics.APRIL_TAG_DATA,
+                ProtobufQuestXAprilTagData.Descriptor,
+                QuestXConstants.Network.NtPublisherSettings
+            );
+
+            // Low-frequency device status (3Hz) - robot uses this for diagnostics
+            deviceDataPublisher = ntInstance.GetProtobufPublisher<ProtobufQuestXDeviceData>(
+                QuestXConstants.Topics.DEVICE_DATA,
+                ProtobufQuestXDeviceData.Descriptor,
+                QuestXConstants.Network.NtPublisherSettings
+            );
+
+            // Command responses - Quest confirms command execution to robot
+            commandResponsePublisher =
+                ntInstance.GetProtobufPublisher<ProtobufQuestXCommandResponse>(
+                    QuestXConstants.Topics.COMMAND_RESPONSE,
+                    ProtobufQuestXCommandResponse.Descriptor,
+                    QuestXConstants.Network.NtPublisherSettings
+                );
+
+            // Video streams - dashboards use this to expose video streams
+            streamsPublisher = ntInstance.GetStringArrayPublisher(
+                QuestXConstants.Topics.VIDEO_STREAMS,
+                QuestXConstants.Network.NtPublisherSettings
+            );
+
+            // Publish the QuestX application version
+            ntInstance
+                .GetStringEntry(
+                    QuestXConstants.Topics.VERSION,
+                    new PubSubOptions { Periodic = 0.01 }
+                )
+                .Set(Application.version);
+
+            /*
+             * SUBSCRIBER SETUP - Quest receives data FROM robot
+             * Robot can send commands like pose resets, calibration requests, etc.
+             */
+            commandRequestSubscriber = ntInstance.GetProtobufSubscriber<ProtobufQuestXCommand>(
+                QuestXConstants.Topics.COMMAND_REQUEST,
+                "questx.protos.commands.ProtobufQuestXCommand",
+                new PubSubOptions
+                {
+                    SendAll = true,
+                    KeepDuplicates = true,
+                    Periodic = 0.005,
+                    PollStorage = 20,
+                }
+            );
+
+            // Attach local methods to config event methods
+            configManager.OnTeamNumberChanged += OnTeamNumberChanged;
+            configManager.OnDebugIpOverrideChanged += OnDebugIpOverrideChanged;
+            configManager.OnEnableDebugLoggingChanged += OnEnableDebugLoggingChanged;
+        }
+
+        #region Properties
+
+        /// <summary>
+        /// Caches the last known IP address to detect changes
+        /// </summary>
+        public string IpAddress { get; private set; } = "127.0.0.1";
+
+        /// <summary>
+        /// Gets whether the connection is currently established.
+        /// </summary>
+        public bool IsConnected => ntInstance.IsConnected();
+
+        /// <summary>
+        /// Gets whether the connection is currently established.
+        /// </summary>
+        public bool IsReadyToConnect => teamNumberSet || ipAddressSet;
+
+        /// <summary>
+        /// Gets the current NT time
+        /// </summary>
+        public long NtNow => ntInstance.Now();
+
+        /// <inheritdoc />
+        public ulong VioPublishCount { get; private set; }
+
+        /// <inheritdoc />
+        public ulong AprilTagPublishCount { get; private set; }
+        #endregion
+
+        #region Event Publishers
+        /// <summary>
+        /// Fired when connection is established.
+        /// </summary>
+        public event Action OnConnect;
+
+        /// <summary>
+        /// Fired when connection is lost.
+        /// </summary>
+        public event Action OnDisconnect;
+
+        /// <summary>
+        /// Fired when the local IP address changes.
+        /// </summary>
+        public event Action<string> OnIpAddressChanged;
+        #endregion
+
+        #region Event Subscribers
+        /// <summary>
+        /// Changes to team number resolution mode and triggers an asynchronous connection reset
+        /// </summary>
+        /// <param name="teamNumber">The team number to resolve</param>
+        private void OnTeamNumberChanged(int teamNumber)
+        {
+            // Skip if -1 (indicates debug IP override in use)
+            if (teamNumber.Equals(-1))
+                return;
+
+            // Standard mode: Use team number to resolve robot address
+            QueuedLogger.Log($"Setting Team number to {teamNumber}");
+            ntInstance.SetTeamNumber(teamNumber, QuestXConstants.Network.NT_SERVER_PORT);
+            teamNumberSet = true;
+            ipAddressSet = false;
+        }
+
+        /// <summary>
+        /// Changes to direct IP override mode for debugging.
+        /// </summary>
+        /// <param name="ipOverride">The IP address to connect to directly</param>
+        private void OnDebugIpOverrideChanged(string ipOverride)
+        {
+            // Skip if empty (indicates team number being used)
+            if (string.IsNullOrEmpty(ipOverride))
+                return;
+
+            // Debug mode: Use direct IP address (bypasses team number resolution)
+            QueuedLogger.LogWarning(
+                $"[DEBUG MODE] Using IP Override: {ipOverride} - This should only be used for debugging!"
+            );
+            ntInstance.SetAddresses(
+                new (string addr, int port)[]
+                {
+                    (ipOverride, QuestXConstants.Network.NT_SERVER_PORT),
+                }
+            );
+            ipAddressSet = true;
+            teamNumberSet = false;
+        }
+
+        /// <summary>
+        /// Updates the internal logger's verbosity level.
+        /// </summary>
+        /// <param name="enableDebugLogging">Whether to enable debug-level logging</param>
+        private void OnEnableDebugLoggingChanged(bool enableDebugLogging)
+        {
+            ntInstanceLogger = ntInstance.CreateLogger(
+                enableDebugLogging
+                    ? QuestXConstants.Logging.NT_LOG_LEVEL_MIN_DEBUG
+                    : QuestXConstants.Logging.NT_LOG_LEVEL_MIN_STANDARD,
+                QuestXConstants.Logging.NT_LOG_LEVEL_MAX
+            );
+        }
+        #endregion
+
+        #region Data Publishing Methods
+
+        /// <summary>
+        /// Reusable frame data object to avoid allocations
+        /// </summary>
+        private readonly ProtobufQuestXFrameData frameData = new();
+
+        /// <summary>
+        /// Reusable VIO message and its next sequence ID.
+        /// </summary>
+        private readonly ProtobufQuestXVioData vioData = new();
+        private ulong nextVioSequenceId;
+
+        /// <summary>
+        /// Reusable AprilTag message, uncertainty message, and next sequence ID.
+        /// </summary>
+        private readonly ProtobufQuestXAprilTagData aprilTagData = new();
+        private readonly ProtobufQuestXPoseStdDevs aprilTagPoseStdDevs = new();
+        private ulong nextAprilTagSequenceId;
+
+        /// <summary>
+        /// Publishes current frame data to NetworkTables including position, rotation, and timing information
+        /// </summary>
+        /// <param name="frameCount">Unity frame count</param>
+        /// <param name="timeStamp">Unity time stamp</param>
+        /// <param name="pose">Current VR headset position</param>
+        /// <param name="isTracking">Is the headset is currently tracking its position</param>
+        [Obsolete("Use PublishVioData and PublishAprilTagData instead.")]
+        public void PublishFrameData(int frameCount, double timeStamp, Pose3d pose, bool isTracking)
+        {
+            frameData.FrameCount = frameCount;
+            frameData.Timestamp = timeStamp;
+            frameData.Pose3D = pose.ToProtobuf();
+            frameData.IsTracking = isTracking;
+
+            // Publish data
+            frameDataPublisher.Set(frameData);
+        }
+
+        /// <inheritdoc />
+        public void PublishVioData(
+            long captureTimestampMicros,
+            double appTimestamp,
+            Pose3d pose,
+            bool isTracking,
+            uint trackingEpoch
+        )
+        {
+            vioData.SequenceId = nextVioSequenceId++;
+            vioData.CaptureTimestampMicros = captureTimestampMicros;
+            vioData.AppTimestamp = appTimestamp;
+            vioData.Pose3D = pose.ToProtobuf();
+            vioData.IsTracking = isTracking;
+            vioData.TrackingEpoch = trackingEpoch;
+
+            if (vioDataPublisher.Set(vioData, captureTimestampMicros))
+            {
+                VioPublishCount++;
+            }
+        }
+
+        /// <inheritdoc />
+        public void PublishAprilTagData(
+            long captureTimestampMicros,
+            double appTimestamp,
+            Pose3d pose,
+            int[] tagIds,
+            uint inlierCount,
+            uint cornerCount,
+            double inlierRatio,
+            double averageTagDistanceMeters,
+            double xStdDevMeters,
+            double yStdDevMeters,
+            double zStdDevMeters,
+            double rollStdDevRadians,
+            double pitchStdDevRadians,
+            double yawStdDevRadians
+        )
+        {
+            aprilTagData.SequenceId = nextAprilTagSequenceId++;
+            aprilTagData.CaptureTimestampMicros = captureTimestampMicros;
+            aprilTagData.AppTimestamp = appTimestamp;
+            aprilTagData.Pose3D = pose.ToProtobuf();
+            aprilTagData.TagIds.Clear();
+            if (tagIds != null)
+            {
+                aprilTagData.TagIds.Add(tagIds);
+            }
+            aprilTagData.TagCount = (uint)(tagIds?.Length ?? 0);
+            aprilTagData.InlierCount = inlierCount;
+            aprilTagData.CornerCount = cornerCount;
+            aprilTagData.InlierRatio = inlierRatio;
+            aprilTagData.AverageTagDistanceMeters = averageTagDistanceMeters;
+
+            aprilTagPoseStdDevs.XMeters = xStdDevMeters;
+            aprilTagPoseStdDevs.YMeters = yStdDevMeters;
+            aprilTagPoseStdDevs.ZMeters = zStdDevMeters;
+            aprilTagPoseStdDevs.RollRadians = rollStdDevRadians;
+            aprilTagPoseStdDevs.PitchRadians = pitchStdDevRadians;
+            aprilTagPoseStdDevs.YawRadians = yawStdDevRadians;
+            aprilTagData.PoseStdDevs = aprilTagPoseStdDevs;
+
+            if (aprilTagDataPublisher.Set(aprilTagData, captureTimestampMicros))
+            {
+                AprilTagPublishCount++;
+            }
+        }
+
+        /// <summary>
+        /// Reusable device data object to avoid allocations
+        /// </summary>
+        private readonly ProtobufQuestXDeviceData deviceData = new();
+
+        /// <summary>
+        /// Publishes current device data to NetworkTables including tracking status and battery level
+        /// </summary>
+        /// <param name="trackingLostCounter">Number of times tracking was lost this session</param>
+        /// <param name="batteryPercent">Current battery percentage</param>
+        public void PublishDeviceData(int trackingLostCounter, int batteryPercent)
+        {
+            deviceData.TrackingLostCounter = trackingLostCounter;
+            deviceData.BatteryPercent = batteryPercent;
+
+            // Publish data
+            deviceDataPublisher.Set(deviceData);
+        }
+
+        /// <summary>
+        /// Returns a camera source with the given sub-topic
+        /// </summary>
+        /// <param name="name">The sub-topic for the camera source</param>
+        /// <returns>An ICameraSource for the given topic or null</returns>
+        public INtCameraSource CreateCameraSource(string name)
+        {
+            return new NtCameraSource(ntInstance, name);
+        }
+
+        #endregion
+
+        #region Command Processing
+
+        /// <summary>
+        /// Default command returned when no command is available from the robot
+        /// </summary>
+        private readonly ProtobufQuestXCommand defaultCommand = new()
+        {
+            Type = QuestXCommandType.CommandTypeUnspecified,
+            CommandId = 0,
+        };
+
+        /// <summary>
+        /// Gets all command requests from the robot since the last read, or an empty array if none available
+        /// </summary>
+        /// <returns>All command requests since the last read</returns>
+        public TimestampedValue<ProtobufQuestXCommand>[] GetCommandRequests()
+        {
+            return commandRequestSubscriber.ReadQueueValues();
+        }
+
+        /// <summary>
+        /// Sends a command response back to the robot
+        /// </summary>
+        /// <param name="response">The response containing success status and any error messages</param>
+        private void SetCommandResponse(ProtobufQuestXCommandResponse response)
+        {
+            commandResponsePublisher.Set(response);
+        }
+
+        /// <summary>
+        /// Sends a command processing success response back to the robot
+        /// </summary>
+        /// <param name="commandId">command_id</param>
+        public void SendCommandSuccessResponse(uint commandId)
+        {
+            SetCommandResponse(
+                new ProtobufQuestXCommandResponse { CommandId = commandId, Success = true }
+            );
+        }
+
+        /// <summary>
+        /// Sends a command processing error response back to the robot
+        /// </summary>
+        /// <param name="commandId">command_id</param>
+        /// <param name="errorMessage">error message</param>
+        public void SendCommandErrorResponse(uint commandId, string errorMessage)
+        {
+            SetCommandResponse(
+                new ProtobufQuestXCommandResponse
+                {
+                    CommandId = commandId,
+                    Success = false,
+                    ErrorMessage = errorMessage,
+                }
+            );
+        }
+
+        #endregion
+
+        #region Lifecycle
+        /// <summary>
+        /// Populates event subscribers with initial data. Should be called AFTER all other classes subscribe.
+        /// </summary>
+        public void Initialize()
+        {
+            OnIpAddressChanged?.Invoke(IpAddress);
+            if (IsConnected)
+            {
+                OnConnect?.Invoke();
+            }
+            else
+            {
+                OnDisconnect?.Invoke();
+            }
+        }
+
+        /// <summary>
+        /// Performs periodic updates including connection polling and logging.
+        /// </summary>
+        public void Periodic()
+        {
+            PollForNewIpAddress();
+            PollForConnectionStatus();
+            PollInternalNtLog();
+        }
+
+        /// <summary>
+        /// Checks for changes in the local IP address and raises event if changed.
+        /// </summary>
+        private void PollForNewIpAddress()
+        {
+            var hostEntry = Dns.GetHostEntry(Dns.GetHostName());
+            foreach (var ip in hostEntry.AddressList)
+            {
+                // We only care about local IP address
+                if (ip.AddressFamily == AddressFamily.InterNetwork)
+                {
+                    // If it is the same as the previous, ignore
+                    if (IpAddress.Equals(ip.ToString()))
+                        continue;
+
+                    IpAddress = ip.ToString();
+                    QueuedLogger.Log($"Got new IP Address: {IpAddress}");
+                    OnIpAddressChanged?.Invoke(IpAddress);
+                    break;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Monitors connection state and raises connect/disconnect events.
+        /// </summary>
+        private void PollForConnectionStatus()
+        {
+            switch (IsConnected)
+            {
+                case true when !wasConnected:
+                    // If we connected and weren't previously
+                    QueuedLogger.Log("Connected to NT4");
+                    wasConnected = true;
+                    OnConnect?.Invoke();
+                    break;
+                case false when wasConnected:
+                    // If we disconnected and were previously
+                    QueuedLogger.Log("Disconnected from NT4");
+                    wasConnected = false;
+                    OnDisconnect?.Invoke();
+                    break;
+            }
+        }
+
+        /// <summary>
+        /// Processes and logs any pending NetworkTables internal messages.
+        /// Respects the enableDebugLogging tunable - when disabled, only WARNING and above are logged.
+        /// </summary>
+        private void PollInternalNtLog()
+        {
+            if (ntInstanceLogger == null)
+            {
+                QueuedLogger.LogWarning("NT Instance logger not initialized");
+                return;
+            }
+            var messages = ntInstanceLogger.PollForMessages();
+            if (messages == null)
+                return;
+
+            foreach (var message in messages)
+            {
+                QueuedLogger.Log($"[NTCoreInternal/{message.filename}] {message.message}");
+            }
+        }
+        #endregion
+    }
+}

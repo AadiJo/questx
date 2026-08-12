@@ -1,0 +1,25 @@
+{
+    "name": "QuestX",
+    "rootNamespace": "QuestX",
+    "references": [
+        "Unity.TextMeshPro",
+        "Unity.InputSystem",
+        "Oculus.VR",
+        "meta.xr.mrutilitykit",
+        "Unity.Burst",
+        "Unity.Collections"
+    ],
+    "includePlatforms": [
+        "Android",
+        "Editor",
+        "WindowsStandalone64"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": true,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

@@ -1,0 +1,671 @@
+using Meta.XR;
+using QuestX.Camera;
+using QuestX.Commands;
+using QuestX.Config;
+using QuestX.Network;
+using QuestX.QuestX.AprilTag;
+using QuestX.QuestX.Geometry;
+using QuestX.UI;
+using QuestX.Utils;
+using QuestX.WebServer;
+using TMPro;
+using UnityEngine;
+using UnityEngine.UI;
+using Quaternion = UnityEngine.Quaternion;
+
+namespace QuestX.Core
+{
+    /// <summary>
+    /// Main controller class for QuestX application.
+    /// Manages streaming of VR motion data to a FRC robot through NetworkTables.
+    /// Orchestrates pose tracking, reset operations, and network communication.
+    /// </summary>
+    public class QuestX : MonoBehaviour
+    {
+        #region Fields
+        /// <summary>
+        /// Current frame index from Unity's Time.frameCount
+        /// </summary>
+        private int frameCount;
+
+        /// <summary>
+        /// Current timestamp from Unity's Time.time
+        /// </summary>
+        private double timeStamp;
+
+        /// <summary>NetworkTables time captured with the current VIO sample.</summary>
+        private long vioCaptureTimestampMicros;
+
+        /// <summary>
+        /// Increments whenever the local VIO coordinate frame is recentered or reset.
+        /// Consumers must not calculate pose deltas across an epoch boundary.
+        /// </summary>
+        private uint trackingEpoch;
+
+        /// <summary>
+        /// Reference to the OVR Camera Rig for tracking
+        /// </summary>
+        [SerializeField]
+        private OVRCameraRig cameraRig;
+
+        /// <summary>
+        /// Input field for team number entry
+        /// </summary>
+        [SerializeField]
+        private TMP_InputField teamInput;
+
+        /// <summary>
+        /// Checkbox for auto start on boot
+        /// </summary>
+        [SerializeField]
+        private Toggle autoStartToggle;
+
+        /// <summary>
+        /// QuestX build version text
+        /// </summary>
+        [Tooltip("QuestX build version.")]
+        [SerializeField]
+        private TMP_Text versionText;
+
+        /// <summary>
+        /// IP address text
+        /// </summary>
+        [SerializeField]
+        private TMP_Text ipAddressText;
+
+        /// <summary>
+        /// ConState text
+        /// </summary>
+        [SerializeField]
+        private TMP_Text conStateText;
+
+        /// <summary>
+        /// posXText text
+        /// </summary>
+        [SerializeField]
+        private TMP_Text posXText;
+
+        /// <summary>
+        /// posYText text
+        /// </summary>
+        [SerializeField]
+        private TMP_Text posYText;
+
+        /// <summary>
+        /// posZText text
+        /// </summary>
+        [SerializeField]
+        private TMP_Text posZText;
+
+        /// <summary>
+        /// X rotation text
+        /// </summary>
+        [SerializeField]
+        private TMP_Text xRotText;
+
+        /// <summary>
+        /// Y rotation text
+        /// </summary>
+        [SerializeField]
+        private TMP_Text yRotText;
+
+        /// <summary>
+        /// Z rotation text
+        /// </summary>
+        [SerializeField]
+        private TMP_Text zRotText;
+
+        /// <summary>
+        /// Button to update team number
+        /// </summary>
+        [SerializeField]
+        private Button teamUpdateButton;
+
+        /// <summary>
+        /// Reference to the VR camera transform
+        /// </summary>
+        [Tooltip("Location of the user's head. Assign OVRCameraRig's CenterEyeAnchor.")]
+        [SerializeField]
+        private Transform vrCamera;
+
+        /// <summary>
+        /// Reference to the VR camera root transform
+        /// </summary>
+        [SerializeField]
+        private Transform vrCameraRoot;
+
+        /// <summary>
+        /// Reference to the reset position transform
+        /// </summary>
+        [SerializeField]
+        private Transform resetTransform;
+
+        /// <summary>
+        /// The UI transform to keep in view with Tagalong
+        /// </summary>
+        [Tooltip("The UI to be kept in view with the Tagalong feature.")]
+        [SerializeField]
+        private Transform tagalongUiTransform;
+
+        /// <summary>
+        /// An object that manages access to the headset camera.
+        /// </summary>
+        [Header("Passthrough Camera")]
+        [SerializeField]
+        private PassthroughCameraAccess cameraAccess;
+
+        /// <summary>
+        /// The current pose of the HMD
+        /// </summary>
+        private Pose3d pose;
+
+        /// <summary>
+        /// Current battery percentage of the device
+        /// </summary>
+        private int batteryPercent;
+
+        /// <summary>
+        /// Counter for display update delay
+        /// </summary>
+        private int delayCounter;
+
+        /// <summary>
+        /// Increments once every time tracking is lost after having it acquired
+        /// </summary>
+        private int trackingLostEvents;
+
+        ///<summary>
+        /// Whether we have tracking
+        /// </summary>
+        private bool currentlyTracking;
+
+        ///<summary>
+        /// Whether we had tracking
+        /// </summary>
+        private bool hadTracking;
+
+        ///<summary>
+        /// Whether awake has completed
+        /// </summary>
+        private bool initialized;
+
+        #region Component References
+
+        /// <summary>
+        /// Reference to the network table connection component
+        /// </summary>
+        private INetworkTableConnection networkTableConnection;
+
+        /// <summary>
+        /// Reference to the command processor component
+        /// </summary>
+        private ICommandProcessor commandProcessor;
+
+        /// <summary>
+        /// Reference to the UI manager component
+        /// </summary>
+        private IUIManager uiManager;
+
+        /// <summary>
+        /// Reference to the tag-along UI component to keep the UI in view
+        /// </summary>
+        private ITagAlongUI tagAlongUI;
+
+        /// <summary>
+        /// Reference to the database manager to manage setting changes
+        /// </summary>
+        private IConfigManager configManager;
+
+        /// <summary>
+        /// Reference to the web server manager component
+        /// </summary>
+        private IWebServerManager webServerManager;
+
+        /// <summary>
+        /// Captures passthrough frames for streaming.
+        /// </summary>
+        private PassthroughFrameSource passthroughFrameSource;
+
+        /// <summary>
+        /// Single owner of camera enable/resolution. Both <see cref="passthroughFrameSource"/>
+        /// and <see cref="aprilTagManager"/> reserve through this arbiter; AprilTag wins ties.
+        /// </summary>
+        private CameraResourceManager cameraArbiter;
+
+        private AprilTagManager aprilTagManager;
+
+        #endregion
+
+        #endregion
+
+        #region Unity Lifecycle Methods
+        /// <summary>
+        /// Initializes the connection and UI components
+        /// </summary>
+        private async void Awake()
+        {
+            QueuedLogger.Initialize();
+            FileManager.Initialize();
+            // Disable stack traces for Log-level logging
+            Application.SetStackTraceLogType(LogType.Log, StackTraceLogType.None);
+
+            versionText.text = Application.version;
+
+            configManager = new ConfigManager();
+
+            networkTableConnection = new NetworkTableConnection(configManager);
+
+            uiManager = new UIManager(
+                configManager,
+                networkTableConnection,
+                teamInput,
+                ipAddressText,
+                conStateText,
+                posXText,
+                posYText,
+                posZText,
+                xRotText,
+                yRotText,
+                zRotText,
+                teamUpdateButton,
+                autoStartToggle
+            );
+
+            OVRManager.display.RecenteredPose += OnVioRecenter;
+
+            // Construct the camera arbiter before any subsystem that touches the camera.
+            // Both PassthroughFrameSource (Low priority) and AprilTagManager (High priority)
+            // route enable/resolution changes through this single owner.
+            cameraArbiter = new CameraResourceManager(cameraAccess);
+
+            // Open the SQLite connection now (without firing events) so we can read the
+            // user-selected AprilTag field layout file before constructing the
+            // AprilTagFieldLayout / AprilTagManager. Field layout is "boot only" - the
+            // value is read once at startup and changes require a restart to apply.
+            await configManager.OpenAsync();
+
+            var aprilTagFieldLayout = new AprilTagFieldLayout(0.1651); // TODO: no magic numbers
+            string requestedFieldLayout = await configManager.GetAprilTagFieldLayoutFileAsync();
+            await aprilTagFieldLayout.LoadJsonFromFileAsync(requestedFieldLayout);
+            aprilTagManager = new AprilTagManager(
+                configManager,
+                cameraAccess,
+                cameraArbiter,
+                aprilTagFieldLayout,
+                this,
+                () => networkTableConnection.NtNow
+            );
+            aprilTagManager.MeasurementAvailable += OnAprilTagMeasurementAvailable;
+
+            passthroughFrameSource = new PassthroughFrameSource(
+                this,
+                cameraAccess,
+                cameraArbiter,
+                networkTableConnection.CreateCameraSource("Passthrough"),
+                configManager
+            );
+
+            // Initialize web server manager with settings from WebServerConstants
+            webServerManager = new WebServerManager(
+                configManager,
+                networkTableConnection,
+                vrCamera,
+                vrCameraRoot,
+                passthroughFrameSource,
+                cameraArbiter,
+                cameraAccess,
+                resetTransform
+            );
+
+            commandProcessor = new CommandProcessor(
+                networkTableConnection,
+                vrCamera,
+                vrCameraRoot,
+                resetTransform,
+                configManager
+            );
+            tagAlongUI = new TagAlongUI(vrCamera, tagalongUiTransform);
+
+            await configManager.InitializeAsync();
+            await webServerManager.InitializeAsync();
+
+            networkTableConnection.Initialize();
+
+            // Set Oculus display frequency
+            OVRPlugin.systemDisplayFrequency = QuestXConstants.Display.DISPLAY_FREQUENCY;
+            // Schedule "SlowUpdate" loop for non loop critical applications
+            InvokeRepeating(nameof(SlowUpdate), 0, 1f / QuestXConstants.Timing.SLOW_UPDATE_HZ);
+            InvokeRepeating(nameof(MainUpdate), 0, 1f / QuestXConstants.Timing.MAIN_UPDATE_HZ);
+
+            initialized = true;
+        }
+
+        /// <summary>
+        /// Main update loop that runs at high frequency (100Hz) for time-critical operations.
+        /// This is the core of the QuestX system, responsible for:
+        /// 1. Capturing VR headset pose data (position/rotation) from the Oculus SDK
+        /// 2. Converting Unity coordinates to FRC field coordinates
+        /// 3. Publishing pose data to NetworkTables for robot consumption
+        /// 4. Processing incoming commands from the robot (pose resets, etc.)
+        ///
+        /// Performance Note: This runs 100 times per second, so all operations here
+        /// must be lightweight. Heavy operations should go in SlowUpdate().
+        /// </summary>
+        private void MainUpdate()
+        {
+            // Update tracking status and count tracking loss events
+            CheckTrackingLoss();
+
+            // Collect current VR headset pose data from Oculus tracking system
+            // This includes position (x,y,z) and rotation (quaternion) in Unity world space
+            UpdateFrameData();
+
+            // Convert Unity coordinates to FRC field coordinates and publish to NetworkTables
+            // The robot subscribes to this data to know where the headset is on the field
+            networkTableConnection.PublishVioData(
+                vioCaptureTimestampMicros,
+                timeStamp,
+                pose,
+                currentlyTracking,
+                trackingEpoch
+            );
+
+            // Check for and execute any pending commands from the robot
+            // Commands include pose resets, calibration requests, etc.
+            commandProcessor.ProcessCommands();
+
+            // Update the UI position to keep it in view of the user
+            tagAlongUI.Periodic();
+        }
+
+        /// <summary>
+        /// Slower update loop that runs at 3Hz for non-critical operations.
+        /// This handles expensive operations that don't need to run every frame:
+        /// 1. NetworkTables internal logging and diagnostics
+        /// 2. UI updates (connection status, IP address, team number display)
+        /// 3. Device health monitoring (tracking status, battery level)
+        /// 4. Log message processing and output to Unity console
+        ///
+        /// Design Rationale: Running these operations at 3Hz instead of 100Hz
+        /// significantly reduces CPU overhead while maintaining responsive UI updates.
+        /// </summary>
+        private void SlowUpdate()
+        {
+            // Poll for connection status, logging, ip address changes, etc.
+            networkTableConnection.Periodic();
+
+            // Update UI elements like connection status, IP address display, team number validation
+            // UI updates don't need to be real-time, 3Hz provides smooth visual feedback
+            uiManager.UpdatePositionText(pose);
+
+            // Monitor device health: tracking status, battery level, tracking loss events
+            // This data helps diagnose issues but doesn't need high-frequency updates
+            UpdateDeviceData();
+            networkTableConnection.PublishDeviceData(trackingLostEvents, batteryPercent);
+
+            // Update web server with current pose data (it handles everything else internally)
+            var (frcPosition, frcRotation) = Conversions.ProtobufPose3dToUnity(pose.ToProtobuf());
+            webServerManager?.Periodic(
+                frcPosition,
+                frcRotation,
+                currentlyTracking,
+                trackingLostEvents,
+                trackingEpoch,
+                aprilTagManager.GetDiagnosticsSnapshot()
+            );
+
+            // Update the list of video streams
+            UpdateCameraServers();
+
+            // Flush queued log messages to Unity console
+            // Batching log output improves performance and reduces console spam
+            QueuedLogger.Flush();
+        }
+
+        /// <summary>
+        /// Cleans up resources on application shutdown.
+        /// Stops the web server and releases resources.
+        /// </summary>
+        private void OnDestroy()
+        {
+            OVRManager.display.RecenteredPose -= OnVioRecenter;
+            if (aprilTagManager != null)
+            {
+                aprilTagManager.MeasurementAvailable -= OnAprilTagMeasurementAvailable;
+            }
+            configManager.CloseAsync();
+            webServerManager?.Shutdown();
+        }
+
+        /// <summary>
+        /// Called when application focus changes (Quest OS brings app to foreground/background).
+        /// With focusaware=false, this should rarely trigger, but provides defense-in-depth.
+        /// Maintains data streaming continuity even if focus events occur.
+        /// </summary>
+        private void OnApplicationFocus(bool hasFocus)
+        {
+            if (!initialized)
+                return;
+
+            if (hasFocus)
+            {
+                QueuedLogger.Log("[QuestX] Application regained focus - data streaming continuing");
+
+                // Ensure update loops are running
+                if (!IsInvoking(nameof(MainUpdate)))
+                {
+                    QueuedLogger.LogWarning(
+                        "[QuestX] MainUpdate was stopped - restarting at 120Hz"
+                    );
+                    InvokeRepeating(
+                        nameof(MainUpdate),
+                        0,
+                        1f / QuestXConstants.Timing.MAIN_UPDATE_HZ
+                    );
+                }
+
+                if (!IsInvoking(nameof(SlowUpdate)))
+                {
+                    QueuedLogger.LogWarning("[QuestX] SlowUpdate was stopped - restarting at 3Hz");
+                    InvokeRepeating(
+                        nameof(SlowUpdate),
+                        0,
+                        1f / QuestXConstants.Timing.SLOW_UPDATE_HZ
+                    );
+                }
+            }
+            else
+            {
+                QueuedLogger.Log(
+                    "[QuestX] Application lost focus - data streaming continuing (focusaware=false)"
+                );
+                // Do NOT pause operations - continue streaming data to robot
+                // With focusaware=false, we intentionally keep running in background
+            }
+
+            // Flush logs immediately on state change for debugging
+            QueuedLogger.Flush();
+        }
+
+        /// <summary>
+        /// Called when application is paused/resumed by Quest OS.
+        /// With focusaware=false and runInBackground=true, this should rarely trigger.
+        /// Provides defensive logging and state monitoring.
+        /// </summary>
+        private void OnApplicationPause(bool isPaused)
+        {
+            if (!initialized)
+                return;
+
+            if (isPaused)
+            {
+                QueuedLogger.LogWarning(
+                    "[QuestX] Application paused - attempting to continue data streaming"
+                );
+
+                // Check NetworkTables connection status
+                if (!networkTableConnection.IsConnected)
+                {
+                    QueuedLogger.LogError("[QuestX] NetworkTables disconnected during pause event");
+                }
+
+                // Log tracking status
+                if (!currentlyTracking)
+                {
+                    QueuedLogger.LogWarning("[QuestX] VR tracking lost during pause event");
+                }
+            }
+            else
+            {
+                QueuedLogger.Log("[QuestX] Application resumed - verifying systems");
+
+                // Verify NetworkTables connection
+                if (networkTableConnection.IsConnected)
+                {
+                    QueuedLogger.Log("[QuestX] NetworkTables connection active");
+                }
+                else
+                {
+                    QueuedLogger.LogError(
+                        "[QuestX] NetworkTables connection lost - may need manual reconnection"
+                    );
+                }
+
+                // Verify VR tracking
+                if (currentlyTracking)
+                {
+                    QueuedLogger.Log("[QuestX] VR tracking active");
+                }
+                else
+                {
+                    QueuedLogger.LogWarning(
+                        "[QuestX] VR tracking inactive - put headset on to resume tracking"
+                    );
+                }
+
+                // Verify update loops are running
+                if (IsInvoking(nameof(MainUpdate)) && IsInvoking(nameof(SlowUpdate)))
+                {
+                    QueuedLogger.Log("[QuestX] Update loops running normally");
+                }
+                else
+                {
+                    QueuedLogger.LogError("[QuestX] Update loops stopped - attempting restart");
+                }
+            }
+
+            // Flush logs immediately for debugging
+            QueuedLogger.Flush();
+        }
+
+        #endregion
+
+        #region Private Methods
+        /// <summary>
+        /// Captures the current VR headset pose data from the Oculus tracking system.
+        ///
+        /// This function extracts:
+        /// - Frame count: Unity's internal frame counter for data synchronization
+        /// - Timestamp: Unity's time since startup for temporal correlation
+        /// - Position: 3D position of the headset's center eye point in the local tracking frame
+        /// - Rotation: Quaternion representing the headset's orientation in that local frame
+        ///
+        /// Technical Details:
+        /// - Uses OVRCameraRig.centerEyeAnchor which provides the averaged position between left/right eyes
+        /// - Local position is in meters, with Unity's Y-up coordinate system
+        /// - Rotation quaternion represents the headset's orientation relative to the tracking origin
+        /// - This data will be converted to FRC field coordinates before transmission to the robot
+        ///
+        /// Using local pose is important: the legacy pose-reset command moves the camera-rig
+        /// root for display purposes, but must not field-align or otherwise mutate raw VIO.
+        /// </summary>
+        private void UpdateFrameData()
+        {
+            // Unity's frame counter - useful for detecting dropped frames or synchronization issues
+            frameCount = Time.frameCount;
+
+            // Capture both clocks beside the pose. NT time is used for estimator latency
+            // compensation; app time remains useful for Quest-side diagnostics.
+            vioCaptureTimestampMicros = networkTableConnection.NtNow;
+            timeStamp = Time.timeAsDouble;
+
+            pose = new Pose3d(
+                Conversions.UnityToFrc3d(
+                    cameraRig.centerEyeAnchor.localPosition,
+                    cameraRig.centerEyeAnchor.localRotation
+                )
+            );
+        }
+
+        /// <summary>
+        /// Handles the OVR tracking recenter event (Quest logo long-press).
+        /// Marks a discontinuity in the local VIO frame for downstream consumers.
+        /// </summary>
+        private void OnVioRecenter()
+        {
+            OnTrackingOriginChanged();
+        }
+
+        private void OnTrackingOriginChanged()
+        {
+            trackingEpoch++;
+            QueuedLogger.LogWarning(
+                $"VIO coordinate frame changed; publishing tracking epoch {trackingEpoch}"
+            );
+        }
+
+        private void OnAprilTagMeasurementAvailable(AprilTagMeasurement measurement)
+        {
+            networkTableConnection.PublishAprilTagData(
+                measurement.CaptureTimestampMicros,
+                measurement.AppTimestamp,
+                measurement.Pose,
+                measurement.TagIds,
+                (uint)measurement.InlierCount,
+                (uint)measurement.CornerCount,
+                measurement.InlierRatio,
+                measurement.AverageTagDistanceMeters,
+                measurement.XStdDevMeters,
+                measurement.YStdDevMeters,
+                measurement.ZStdDevMeters,
+                measurement.RollStdDevRadians,
+                measurement.PitchStdDevRadians,
+                measurement.YawStdDevRadians
+            );
+        }
+
+        /// <summary>
+        /// Updates the current device data from the VR headset
+        /// </summary>
+        private void UpdateDeviceData()
+        {
+            batteryPercent = (int)(SystemInfo.batteryLevel * 100);
+        }
+
+        /// <summary>
+        /// Checks to see if tracking is lost, and increments a counter if so
+        /// </summary>
+        private void CheckTrackingLoss()
+        {
+            currentlyTracking = OVRManager.tracker.isPositionTracked;
+
+            // Increment the tracking loss counter if we have tracking loss
+            if (!currentlyTracking && hadTracking)
+            {
+                trackingLostEvents++;
+                QueuedLogger.LogWarning($"Tracking Lost! Times this session: {trackingLostEvents}");
+            }
+
+            hadTracking = currentlyTracking;
+        }
+
+        /// <summary>
+        /// Updates the list of streams
+        /// </summary>
+        private void UpdateCameraServers()
+        {
+            passthroughFrameSource.BaseUrl = webServerManager.BaseUrl;
+        }
+        #endregion
+    }
+}

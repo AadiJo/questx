@@ -1,0 +1,66 @@
+name: Build Java
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: 'Version string to use (optional, auto-generated if not provided)'
+        required: false
+        type: string
+    outputs:
+      version:
+        description: 'The version string used for this build'
+        value: ${{ jobs.build.outputs.version }}
+      artifact-id:
+        description: 'The artifact ID for the JAR'
+        value: ${{ jobs.build.outputs.artifact-id }}
+
+env:
+  GRADLE_OPTS: -Dorg.gradle.daemon=false -Dorg.gradle.workers.max=2
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: questx-lib
+    outputs:
+      version: ${{ steps.version-info.outputs.version }}
+      artifact-id: ${{ steps.upload-jar.outputs.artifact-id }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          sparse-checkout: |
+            questx-lib
+            .github
+          sparse-checkout-cone-mode: false
+
+      - name: Determine Version
+        id: version-info
+        uses: ./.github/actions/determine-version
+        with:
+          version: ${{ inputs.version }}
+
+      - name: Setup Java and Gradle
+        uses: ./.github/actions/setup-java-gradle
+        with:
+          version: ${{ steps.version-info.outputs.version }}
+          working-directory: questx-lib
+          cache-key-prefix: gradle-lib
+
+      - name: Build Library
+        run: |
+          gradle build \
+            -Pversion="${{ steps.version-info.outputs.version }}" \
+            -PversionType="${{ steps.version-info.outputs.version-type }}"
+
+      - name: Upload JAR Artifact
+        id: upload-jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: questx-jar-${{ steps.version-info.outputs.version }}
+          path: questx-lib/build/libs/*.jar
+          retention-days: 7

@@ -1,0 +1,391 @@
+﻿using System;
+using System.Buffers.Text;
+using System.IO;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+using EmbedIO;
+using UnityEngine;
+
+namespace QuestX.WebServer
+{
+    /// <summary>
+    /// A JPEG-encoded video frame with frame number.
+    /// </summary>
+    public struct EncodedFrame
+    {
+        /// <summary>
+        /// The frame number. Corresponds with Time.frameCount.
+        /// </summary>
+        public readonly int frameNumber;
+
+        /// <summary>
+        /// A JPEG encoded frame.
+        /// </summary>
+        public readonly byte[] frameData;
+
+        /// <summary>
+        /// Creates a new encoded frame.
+        /// </summary>
+        /// <param name="frameNumber">Unity frame count.</param>
+        /// <param name="frameData">JPEG encoded image data.</param>
+        public EncodedFrame(int frameNumber, byte[] frameData)
+        {
+            this.frameNumber = frameNumber;
+            this.frameData = frameData;
+        }
+    }
+
+    /// <summary>
+    /// Provides MJPEG video streaming over HTTP.
+    /// </summary>
+    public class VideoStreamProvider
+    {
+        /// <summary>
+        /// Interface for frame sources that provide encoded video frames.
+        /// </summary>
+        public interface IFrameSource
+        {
+            /// <summary>
+            /// Maximum desired framerate for capture/stream pacing
+            /// </summary>
+            int MaxFrameRate { get; }
+
+            /// <summary>
+            /// The current frame
+            /// </summary>
+            EncodedFrame CurrentFrame { get; }
+
+            /// <summary>
+            /// Gets the available video modes.
+            /// </summary>
+            /// <returns>Array of available video modes, or null if not initialized</returns>
+            Network.VideoMode[] GetAvailableModes();
+
+            /// <summary>
+            /// Called when stream starts with requested video parameters from query string.
+            /// </summary>
+            /// <param name="width">Requested width, or null if not specified</param>
+            /// <param name="height">Requested height, or null if not specified</param>
+            /// <param name="fps">Requested FPS, or null if not specified</param>
+            /// <param name="compression">Requested compression quality (1-100), or null if not specified</param>
+            Task SetModeAndCompression(int? width, int? height, int? fps, int? compression);
+
+            /// <summary>
+            /// Gets whether the frame source is currently available for streaming.
+            /// </summary>
+            bool IsAvailable { get; }
+
+            /// <summary>
+            /// Function that returns whether the frame source should currently be paused.
+            /// Evaluated by the frame source to stay synchronized with provider state.
+            /// </summary>
+            Func<bool> ShouldBePaused { get; set; }
+        }
+
+        #region Fields
+
+        /// <summary>
+        /// MIME boundary string for multipart responses.
+        /// </summary>
+        private const string Boundary = "frame";
+
+        /// <summary>
+        /// Initial buffer size for frame data.
+        /// </summary>
+        private const int InitialBufferSize = 32 * 1024;
+
+        /// <summary>
+        /// UTF-8 encoding for header strings.
+        /// </summary>
+        private static readonly Encoding DefaultEncoding = Encoding.UTF8;
+
+        /// <summary>
+        /// Pre-encoded header start bytes for MJPEG frames.
+        /// </summary>
+        private static readonly byte[] HeaderStartBytes = DefaultEncoding.GetBytes(
+            "\r\n--" + Boundary + "\r\n" + "Content-Type: image/jpeg\r\n" + "Content-Length: "
+        );
+
+        /// <summary>
+        /// Pre-encoded header end bytes.
+        /// </summary>
+        private static readonly byte[] HeaderEndBytes = DefaultEncoding.GetBytes("\r\n\r\n");
+
+        /// <summary>
+        /// Source providing encoded video frames.
+        /// </summary>
+        private readonly IFrameSource frameSource;
+
+        /// <summary>
+        /// Count of currently connected streaming clients.
+        /// </summary>
+        private int connectedClients;
+
+        #endregion
+
+        #region Properties
+
+        /// <summary>
+        /// Gets the frame source for accessing video properties.
+        /// </summary>
+        public IFrameSource FrameSource => frameSource;
+
+        /// <summary>
+        /// Maximum framerate from the frame source, defaults to 15 fps.
+        /// </summary>
+        private int MaxFrameRate => Math.Max(1, frameSource?.MaxFrameRate ?? 15);
+
+        /// <summary>
+        /// Delay between frames based on max framerate.
+        /// </summary>
+        private TimeSpan FrameDelay => TimeSpan.FromSeconds(1.0f / MaxFrameRate);
+
+        /// <summary>
+        /// Gets the number of clients currently registered with the MJPEG stream.
+        /// </summary>
+        public int ConnectedClientCount => Math.Max(0, Volatile.Read(ref connectedClients));
+
+        #endregion
+
+        /// <summary>
+        /// Creates a new video stream provider.
+        /// </summary>
+        /// <param name="frameSource">Source providing encoded frames.</param>
+        public VideoStreamProvider(IFrameSource frameSource)
+        {
+            this.frameSource = frameSource;
+
+            // Frame source will poll this function to determine if it should be paused
+            if (frameSource != null)
+            {
+                frameSource.ShouldBePaused = () => Volatile.Read(ref connectedClients) <= 0;
+            }
+
+            Debug.Log("[VideoStreamProvider] Created");
+        }
+
+        #region Public Methods
+
+        /// <summary>
+        /// Handles an HTTP request by streaming MJPEG frames.
+        /// </summary>
+        /// <param name="context">The HTTP context to stream to.</param>
+        /// <returns>A task that completes when streaming ends.</returns>
+        public async Task HandleStreamAsync(IHttpContext context)
+        {
+            if (frameSource is null)
+            {
+                context.Response.StatusCode = 503;
+                context.Response.StatusDescription = "Service unavailable";
+                await context.SendStringAsync(
+                    "The stream is unavailable",
+                    "text/plain",
+                    Encoding.UTF8
+                );
+                return;
+            }
+
+            // Parse compression quality from query string
+            int? compression = null;
+            if (int.TryParse(context.Request.QueryString["compression"], out int parsed))
+            {
+                compression = Math.Clamp(parsed, 1, 100);
+            }
+
+            // Parse resolution and FPS from query string
+            int? width = null;
+            int? height = null;
+
+            // Parse resolution in format "320x240"
+            if (context.Request.QueryString["resolution"] != null)
+            {
+                string resolutionStr = context.Request.QueryString["resolution"];
+                string[] parts = resolutionStr.Split('x', 'X');
+                if (parts.Length == 2)
+                {
+                    if (int.TryParse(parts[0], out int parsedWidth))
+                    {
+                        width = parsedWidth;
+                    }
+                    if (int.TryParse(parts[1], out int parsedHeight))
+                    {
+                        height = parsedHeight;
+                    }
+                }
+            }
+
+            int? fps = null;
+            if (int.TryParse(context.Request.QueryString["fps"], out int parsedFps))
+            {
+                fps = parsedFps;
+            }
+
+            // Notify frame source of stream start with requested parameters
+            await frameSource.SetModeAndCompression(width, height, fps, compression);
+
+            bool clientRegistered = false;
+            try
+            {
+                if (!TryRegisterClient(out int currentCount))
+                {
+                    context.Response.StatusCode = 503;
+                    context.Response.StatusDescription = "Too many stream clients";
+                    await context.SendStringAsync(
+                        "The stream has reached its client limit",
+                        "text/plain",
+                        Encoding.UTF8
+                    );
+                    return;
+                }
+                clientRegistered = true;
+
+                context.Response.StatusCode = 200;
+                // The boundary parameter names the token itself. The required leading
+                // "--" is added only to each multipart delimiter in HeaderStartBytes.
+                context.Response.ContentType = "multipart/x-mixed-replace; boundary=" + Boundary;
+                context.Response.SendChunked = true;
+
+                Debug.Log(
+                    $"[VideoStreamProvider] Client connected (total clients: {currentCount})"
+                );
+
+                using (Stream responseStream = context.OpenResponseStream(preferCompression: false))
+                using (MemoryStream memStream = new MemoryStream(InitialBufferSize))
+                {
+                    int lastFrame = 0;
+
+                    while (
+                        !context.CancellationToken.IsCancellationRequested
+                        && frameSource.IsAvailable
+                    )
+                    {
+                        var frame = frameSource.CurrentFrame;
+                        if (lastFrame < frame.frameNumber)
+                        {
+                            try
+                            {
+                                // Reset the content of memStream
+                                memStream.SetLength(0);
+                                WriteFrame(memStream, frame.frameData);
+
+                                // Copy the buffer into the response stream
+                                memStream.Position = 0;
+                                memStream.CopyTo(responseStream);
+                                responseStream.Flush();
+
+                                // Don't re-send the same frame
+                                lastFrame = frame.frameNumber;
+                            }
+                            catch (IOException)
+                            {
+                                // Failed to write back to the client client, it probably disconnected - exit gracefully
+                                break;
+                            }
+                        }
+
+                        await Task.Delay(FrameDelay, context.CancellationToken);
+                    }
+                }
+            }
+            finally
+            {
+                if (clientRegistered)
+                {
+                    int remainingCount = ReleaseClient();
+
+                    Debug.Log(
+                        $"[VideoStreamProvider] Client disconnected (remaining clients: {remainingCount})"
+                    );
+                }
+            }
+        }
+
+        /// <summary>
+        /// Atomically registers a client without allowing the counter to overflow into a
+        /// negative value.
+        /// </summary>
+        private bool TryRegisterClient(out int clientCount)
+        {
+            while (true)
+            {
+                int current = Volatile.Read(ref connectedClients);
+                if (current < 0)
+                {
+                    Interlocked.CompareExchange(ref connectedClients, 0, current);
+                    continue;
+                }
+                if (current == int.MaxValue)
+                {
+                    clientCount = current;
+                    return false;
+                }
+
+                clientCount = current + 1;
+                if (
+                    Interlocked.CompareExchange(ref connectedClients, clientCount, current)
+                    == current
+                )
+                {
+                    return true;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Atomically unregisters one client, saturating at zero as a defensive guard
+        /// against duplicate cleanup.
+        /// </summary>
+        private int ReleaseClient()
+        {
+            while (true)
+            {
+                int current = Volatile.Read(ref connectedClients);
+                if (current <= 0)
+                {
+                    if (current < 0)
+                    {
+                        Interlocked.CompareExchange(ref connectedClients, 0, current);
+                    }
+                    Debug.LogWarning(
+                        "[VideoStreamProvider] Ignored client cleanup because the client count was already zero"
+                    );
+                    return 0;
+                }
+
+                int remaining = current - 1;
+                if (
+                    Interlocked.CompareExchange(ref connectedClients, remaining, current) == current
+                )
+                {
+                    return remaining;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Writes a single MJPEG frame to the stream.
+        /// </summary>
+        /// <param name="stream">Output stream.</param>
+        /// <param name="jpegData">JPEG encoded image data.</param>
+        private static void WriteFrame(Stream stream, byte[] jpegData)
+        {
+            // Use Utf8Formatter to avoid memory allocations each frame for ToString() and GetBytes()
+            Span<byte> lengthBuffer = stackalloc byte[9];
+            if (!Utf8Formatter.TryFormat(jpegData.Length, lengthBuffer, out int strLen))
+            {
+                Debug.Log("[VideoStreamProvider] Returned false");
+                return;
+            }
+
+            stream.Write(HeaderStartBytes);
+            // Write the string representation of the ContentLength to the stream
+            stream.Write(lengthBuffer[..strLen]);
+            stream.Write(HeaderEndBytes);
+            stream.Write(jpegData);
+            stream.Flush();
+        }
+
+        #endregion
+    }
+}

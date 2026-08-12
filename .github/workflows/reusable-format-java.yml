@@ -1,0 +1,42 @@
+name: Format Check (Java)
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: 'Version string to use (optional, auto-generated if not provided)'
+        required: false
+        type: string
+
+jobs:
+  format:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: questx-lib
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          sparse-checkout: |
+            questx-lib
+            .github
+          sparse-checkout-cone-mode: false
+
+      - name: Determine Version
+        id: version-info
+        uses: ./.github/actions/determine-version
+        with:
+          version: ${{ inputs.version }}
+    
+      - name: Setup Java and Gradle
+        uses: ./.github/actions/setup-java-gradle
+        with:
+          version: ${{ steps.version-info.outputs.version }}
+          working-directory: questx-lib
+          cache-key-prefix: gradle-lib
+
+      - name: Check Java Formatting
+        run: gradle spotlessJavaCheck

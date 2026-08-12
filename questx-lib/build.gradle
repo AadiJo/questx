@@ -1,0 +1,318 @@
+plugins {
+    id 'java'
+    id 'maven-publish'
+    id 'edu.wpi.first.GradleRIO' version '2025.3.2'
+    id 'com.diffplug.spotless' version '6.20.0'
+    id 'com.github.gmazzo.buildconfig' version '6.0.7'
+}
+
+// Version and build configuration
+ext {
+    version = project.findProperty('version') ?: '2025-1.0.0-dev'
+    versionType = project.findProperty('versionType') ?: 'dev'
+    frcYear = project.findProperty('frcYear') ?: '2025'
+    wpilibVersion = project.findProperty('wpilibVersion') ?: '2025.3.2'
+
+    // Vendor dependency configuration
+    vendorUuid = 'a706fe68-86e5-4aed-92c5-ce05aca007f0'
+    mavenGroupId = 'gg.questx'
+    artifactId = 'questxlib-java'
+
+    // Repository configuration
+    mavenRepoUrl = project.findProperty('mavenRepoUrl') ?: 'https://maven.questx.gg/'
+
+    // Determine if snapshot based on mavenRepository parameter (from CI) or release type
+    mavenRepository = project.findProperty('mavenRepository') ?: null
+    isSnapshot = mavenRepository == 'snapshots' ||
+            (mavenRepository == null && (versionType in ['dev', 'snapshot', 'pr'] || version.contains('-SNAPSHOT')))
+}
+
+// Set the project version and base name for all archives globally
+version = ext.version
+archivesBaseName = ext.artifactId
+
+// Java configuration
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+    withSourcesJar()
+    withJavadocJar()
+}
+
+repositories {
+    mavenLocal()
+    mavenCentral()
+    maven {
+        name = "WPILib"
+        url = "https://frcmaven.wpi.edu/artifactory/release/"
+    }
+    if (project.hasProperty('mavenRepoUrl')) {
+        maven {
+            name = "QuestXRepo"
+            url = mavenRepoUrl + (isSnapshot ? "/snapshots" : "/releases")
+        }
+    }
+}
+
+dependencies {
+    // WPILib dependencies
+    implementation "edu.wpi.first.wpilibj:wpilibj-java:${wpilibVersion}"
+    implementation "edu.wpi.first.wpiutil:wpiutil-java:${wpilibVersion}"
+    implementation "edu.wpi.first.wpimath:wpimath-java:${wpilibVersion}"
+    implementation "edu.wpi.first.ntcore:ntcore-java:${wpilibVersion}"
+    implementation "edu.wpi.first.wpiunits:wpiunits-java:${wpilibVersion}"
+    implementation "com.google.protobuf:protobuf-java:4.31.1"
+    implementation "us.hebi.quickbuf:quickbuf-runtime:1.4"
+    implementation 'com.fasterxml.jackson.core:jackson-annotations:2.15.2'
+
+    // Test dependencies
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.1'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+test {
+    useJUnitPlatform()
+}
+
+javadoc {
+    exclude '**/generated/**'
+}
+
+// Generate vendor JSON
+def vendorJsonInput = file("src/generate/questxlib.json.in")
+def vendorJsonOutput = file("$buildDir/generated/vendordeps/questxlib.json")
+
+task generateVendorJson() {
+    description = "Generates the vendor JSON file"
+    group = "QuestXLib"
+
+    inputs.file vendorJsonInput
+    inputs.property("version", version)
+    inputs.property("versionType", versionType)
+    inputs.property("frcYear", frcYear)
+    outputs.file vendorJsonOutput
+
+    doLast {
+        println "Generating vendor JSON ${version} to ${vendorJsonOutput}"
+
+        vendorJsonOutput.parentFile.mkdirs()
+
+        // Determine repository URL based on release type
+        def repoType = isSnapshot ? "snapshots" : "releases"
+        def jsonUrl = "https://maven.questx.gg/${repoType}/gg/questx/questxlib-json/${version}/questxlib-json-${version}.json"
+
+        def content = vendorJsonInput.text
+                .replace('${questx_version}', version)
+                .replace('${frc_year}', frcYear)
+                .replace('${questx_uuid}', vendorUuid)
+                .replace('${json_url}', jsonUrl)
+
+        vendorJsonOutput.text = content
+    }
+
+    outputs.upToDateWhen { false }
+}
+
+// Create publishable artifact
+def vendorJsonArtifact = artifacts.add('archives', vendorJsonOutput) {
+    type = 'json'
+    builtBy generateVendorJson
+}
+
+// Publishing configuration
+publishing {
+    publications {
+        questxlib(MavenPublication) {
+            groupId = mavenGroupId
+            artifactId = 'questxlib-java'
+
+            from components.java
+
+            pom {
+                name = 'QuestXLib'
+                description = 'QuestX vendor dependency library'
+                url = 'https://github.com/questx/questx/tree/main/questx-lib'
+
+                licenses {
+                    license {
+                        name = 'MIT License'
+                        url = 'https://opensource.org/licenses/MIT'
+                    }
+                }
+
+                scm {
+                    connection = 'scm:git:git://github.com/questx/questx.git'
+                    developerConnection = 'scm:git:ssh://github.com/questx/questx.git'
+                    url = 'https://github.com/questx/questx/tree/main/questx-lib'
+                }
+            }
+        }
+
+        questxlibJson(MavenPublication) {
+            groupId = mavenGroupId
+            artifactId = 'questxlib-json'
+
+            artifact vendorJsonArtifact
+
+            pom {
+                name = 'QuestXLib Vendor JSON'
+                description = 'QuestX vendor dependency JSON file'
+                url = 'https://github.com/questx/questx/tree/main/questx-lib'
+
+                licenses {
+                    license {
+                        name = 'MIT License'
+                        url = 'https://opensource.org/licenses/MIT'
+                    }
+                }
+
+                scm {
+                    connection = 'scm:git:git://github.com/questx/questx.git'
+                    developerConnection = 'scm:git:ssh://github.com/questx/questx.git'
+                    url = 'https://github.com/questx/questx/tree/main/questx-lib'
+                }
+            }
+        }
+    }
+
+    repositories {
+        if (project.hasProperty('mavenRepoUrl')) {
+            maven {
+                name = "QuestXRepo"
+                url = mavenRepoUrl + (isSnapshot ? "/snapshots" : "/releases")
+
+                // Add credentials if provided
+                if (project.hasProperty('mavenUsername') && project.hasProperty('mavenPassword')) {
+                    credentials {
+                        username = project.findProperty('mavenUsername')
+                        password = project.findProperty('mavenPassword')
+                    }
+                }
+            }
+        }
+
+        // For local testing
+        mavenLocal()
+    }
+}
+
+// Build dependencies
+build.dependsOn generateVendorJson
+
+// Task to copy vendor JSON to local output for testing
+task copyVendorJsonLocal(type: Copy) {
+    description = "Copy vendor JSON to local output directory"
+    group = "QuestXLib"
+
+    from vendorJsonOutput
+    into "$buildDir/outputs/vendordeps/"
+
+    dependsOn generateVendorJson
+}
+
+// Task to print build info
+task buildInfo {
+    description = "Print build information"
+    group = "QuestXLib"
+
+    doLast {
+        println "QuestXLib Build Information:"
+        println "  Release Type: ${versionType}"
+        println "  Full Version: ${version}"
+        println "  FRC Year: ${frcYear}"
+        println "  WPILib Version: ${wpilibVersion}"
+        println "  Group ID: ${mavenGroupId}"
+        println "  Artifact ID: ${artifactId}"
+        println "  UUID: ${vendorUuid}"
+        println "  Is Snapshot: ${isSnapshot}"
+        println "  Repository Type: ${isSnapshot ? 'snapshots' : 'release'}"
+        if (project.hasProperty('mavenRepoUrl')) {
+            println "  Repository: ${mavenRepoUrl}"
+        }
+        def jsonUrl = "https://maven.questx.gg/repository/${isSnapshot ? 'snapshots' : 'release'}/gg/questx/questxlib-json/${version}/questxlib-json-${version}.json"
+        println "  Vendor JSON URL: ${jsonUrl}"
+    }
+}
+
+// Gradle wrapper task
+wrapper {
+    gradleVersion = '8.11'
+}
+
+// Clean task to remove generated files
+clean {
+    delete "$buildDir/generated"
+    delete "$buildDir/outputs"
+}
+
+// Generates build config class for version info on robot.
+// WPILib uses a shadow JAR, so it doesn't include library manifests on the robot.
+buildConfig {
+    packageName("gg.questx.questx")
+
+    buildConfigField(String, 'APP_NAME', project.name)
+    buildConfigField(String, "APP_VERSION", provider { version })
+    buildConfigField(String, "BUILD_TIMESTAMP", provider { new Date().format("yyyy-MM-dd HH:mm:ss") })
+}
+
+// Add manifest to JAR (does not get deployed to the robot.)
+jar {
+    manifest {
+        attributes(
+                'Implementation-Title': project.name,
+                'Implementation-Version': version,
+                'Build-Timestamp': new Date().format("yyyy-MM-dd HH:mm:ss")
+                )
+    }
+}
+
+spotless {
+    java {
+        target fileTree(".") {
+            include "**/*.java"
+            exclude "**/build/**", "**/build-*/**", "**/generated/**"
+        }
+        toggleOffOn()
+
+        licenseHeader '''
+/*
+ * QUESTX
+   https://github.com/QuestX
+ * Copyright (C) $YEAR QuestX
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the MIT License as published.
+ */
+'''
+        googleJavaFormat()
+        removeUnusedImports()
+        trimTrailingWhitespace()
+        endWithNewline()
+    }
+    groovyGradle {
+        target fileTree(".") {
+            include "**/*.gradle"
+            exclude "**/build/**", "**/build-*/**", "**/generated/**"
+        }
+        greclipse()
+        indentWithSpaces(4)
+        trimTrailingWhitespace()
+        endWithNewline()
+    }
+    json {
+        target fileTree(".") {
+            include "**/*.json"
+            exclude "**/build/**", "**/build-*/**", "**/generated/**"
+        }
+        gson().indentWithSpaces(4)
+    }
+    format "misc", {
+        target fileTree(".") {
+            include "**/*.md", "**/.gitignore"
+            exclude "**/build/**", "**/build-*/**", "**/generated/**"
+        }
+        trimTrailingWhitespace()
+        indentWithSpaces(4)
+        endWithNewline()
+    }
+}

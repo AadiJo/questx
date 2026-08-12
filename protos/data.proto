@@ -1,0 +1,242 @@
+﻿syntax = "proto3";
+
+/*
+ * QuestX Data Protocol Buffer Definitions
+ * 
+ * This file defines the data structures used for transmitting tracking and device
+ * information from the Quest headset to external systems (such as robot code).
+ * The data is organized into separate measurement and status streams:
+ * 
+ * 1. VIO Data: High-frequency local-frame tracking information
+ * 2. AprilTag Data: Field-relative vision measurements and quality metadata
+ * 3. Device Data: Lower-frequency device status information
+ * 
+ * This separation allows for efficient bandwidth usage by sending critical tracking
+ * data frequently while sending less critical device status data at a lower rate.
+ * 
+ * Data Flow:
+ * - Quest continuously processes camera/sensor data
+ * - VIO data is sent at the app's high-frequency update rate
+ * - AprilTag data is sent whenever the detector produces a valid measurement
+ * - Device data is sent every 333 milliseconds (3 Hz)
+ * - External systems receive and process this data for robot localization
+ */
+
+package questx.protos.data;
+option csharp_namespace = "QuestX.Protos.Generated";
+option java_package = "gg.questx.questx.protos.generated";
+
+// Import geometry messages for pose representation
+import "geometry3d.proto";
+
+/*
+ * Legacy Quest-side fused tracking data sent from Quest to external systems.
+ * 
+ * This message contains the core tracking information that external systems
+ * (like robot code) need for real-time localization and navigation. It's sent
+ * at 100 Hz (every 10 milliseconds) to provide smooth, responsive tracking.
+ * 
+ * The data represents the Quest's position and orientation on the field,
+ * derived from visual-inertial odometry using the Quest's cameras and IMU sensors.
+ * 
+ * Coordinate System:
+ * - Uses WPILib field-relative coordinate system
+ * - Origin and axes depend on field setup and calibration
+ * - Pose represents the Quest's position; mounting offset to get robot position
+ *   is applied in end user code
+ */
+message ProtobufQuestXFrameData {
+  /*
+   * Sequential frame counter for this tracking session.
+   * 
+   * This counter increments with each frame processed by the Quest's tracking
+   * system. It can be used to:
+   * - Detect dropped messages
+   * - Calculate effective frame rate
+   * - Synchronize with other data streams
+   * 
+   * The counter resets to 0 when the QuestX app starts and increments
+   * continuously during operation. Frame drops in transmission will create
+   * gaps in the sequence.
+   */
+  int32 frame_count = 1;
+  
+  /*
+   * Timestamp in seconds since QuestX app startup.
+   * 
+   * This provides timing information for the tracking data, allowing external
+   * systems to:
+   * - Calculate data age and latency
+   * - Interpolate or extrapolate poses for prediction
+   * - Synchronize with other sensor data
+   * - Implement timeout detection
+   * 
+   * The timestamp is relative to app startup, not system time, to avoid
+   * clock synchronization issues between devices.
+   * 
+   * Resolution: Typically sub-millisecond precision
+   */
+  double timestamp = 2;
+  
+  /*
+   * Quest's 3D pose on the field in WPILib coordinates.
+   * 
+   * This represents the Quest's position and orientation as determined by
+   * the Quest's tracking system. The pose accounts for:
+   * - Coordinate system transformation to WPILib standard
+   * - Any calibration offsets applied
+   * 
+   * Note: This is the Quest's position; end user code applies mounting offset
+   * to get the robot's position.
+   * 
+   * Coordinate System Details:
+   * - X: Forward direction (towards opposing alliance)
+   * - Y: Left direction (when facing forward)
+   * - Z: Up direction
+   * - Yaw (Z): Counter-clockwise (right-handed) rotation around the Z axis
+   * - Pitch (Y): Counter-clockwise (right-handed) rotation around Y axis
+   * - Roll (X): Counter-clockwise (right-handed) rotation around the X axis
+   * - Units: meters for translation, radians for rotation
+   * 
+   * Accuracy depends on:
+   * - Environmental lighting and features
+   * - Quest tracking quality
+   * - Calibration accuracy
+   * - Time since last pose reset
+   */
+  wpi.proto.ProtobufPose3d pose3d = 3;
+
+  /*
+   * Tracking status of the Quest device when this frame was captured.
+   * 
+   * true:  Quest is actively tracking and pose data is reliable
+   * false: Quest has lost tracking and pose data should not be trusted
+   * 
+   * When tracking is lost:
+   * - Pose data becomes stale and unreliable
+   * - Robot should switch to alternative localization methods
+   * - Movement should be limited or stopped for safety
+   * 
+   * Tracking can be recovered by:
+   * - Improving lighting conditions
+   * - Moving to area with more visual features
+   * - Reducing motion to allow system to re-initialize
+   * - Performing pose reset when tracking recovers
+   * 
+   * External systems should monitor this field and implement appropriate
+   * fallback behaviors when tracking is lost.
+   */
+  bool isTracking = 4;
+}
+
+/*
+ * Per-axis standard deviations associated with a pose measurement.
+ * Translation values are meters and rotation values are radians.
+ */
+message ProtobufQuestXPoseStdDevs {
+  double x_meters = 1;
+  double y_meters = 2;
+  double z_meters = 3;
+  double roll_radians = 4;
+  double pitch_radians = 5;
+  double yaw_radians = 6;
+}
+
+/*
+ * Quest visual-inertial odometry in its local tracking frame.
+ *
+ * This pose has not been aligned to the field or fused with AprilTag data. The
+ * capture timestamp is sampled from the NT clock when the pose is captured and
+ * is also used as the NetworkTables publisher timestamp.
+ */
+message ProtobufQuestXVioData {
+  uint64 sequence_id = 1;
+  int64 capture_timestamp_micros = 2;
+  double app_timestamp = 3;
+  wpi.proto.ProtobufPose3d pose3d = 4;
+  bool is_tracking = 5;
+  uint32 tracking_epoch = 6;
+}
+
+/*
+ * A field-relative AprilTag pose measurement and the quality information used
+ * by the robot-side estimator to select measurement uncertainty.
+ */
+message ProtobufQuestXAprilTagData {
+  uint64 sequence_id = 1;
+  int64 capture_timestamp_micros = 2;
+  double app_timestamp = 3;
+  wpi.proto.ProtobufPose3d pose3d = 4;
+  repeated int32 tag_ids = 5;
+  uint32 tag_count = 6;
+  uint32 inlier_count = 7;
+  uint32 corner_count = 8;
+  double inlier_ratio = 9;
+  double average_tag_distance_meters = 10;
+  ProtobufQuestXPoseStdDevs pose_std_devs = 11;
+}
+
+/*
+ * Lower-frequency device status data sent from Quest to external systems.
+ * 
+ * This message contains device health and status information that doesn't need
+ * to be sent as frequently as tracking data. It's sent at 3 Hz (every 333 milliseconds)
+ * to provide monitoring and diagnostic information without consuming excessive
+ * bandwidth.
+ * 
+ * This data helps external systems:
+ * - Monitor Quest device health
+ * - Detect tracking system issues
+ * - Implement failsafe behaviors
+ * - Provide user feedback about system status
+ * 
+ * The information is useful for both autonomous operation and debugging/
+ * troubleshooting scenarios.
+ */
+message ProtobufQuestXDeviceData {
+  /*
+   * Count of tracking loss events since app startup.
+   * 
+   * This counter increments each time the Quest's tracking system loses
+   * tracking after having established it. Tracking loss can occur due to:
+   * - Poor lighting conditions
+   * - Lack of visual features in environment
+   * - Rapid motion or acceleration
+   * - Occlusion of cameras
+   * - Hardware issues
+   * 
+   * A high or rapidly increasing counter may indicate:
+   * - Environmental issues (lighting, features)
+   * - Quest mounting problems (vibration, obstruction)
+   * - Hardware degradation
+   * 
+   * This metric helps assess tracking system reliability and can trigger
+   * alerts or fallback behaviors in robot code.
+   */
+  int32 tracking_lost_counter = 1;
+  
+  /*
+   * Quest device battery level as a percentage (0-100).
+   * 
+   * This provides the current battery charge level of the Quest headset,
+   * allowing external systems to:
+   * - Monitor power status during operation
+   * - Implement low-battery warnings or behaviors
+   * - Plan operation duration and charging needs
+   * - Trigger graceful shutdown procedures
+   * 
+   * Battery Level Guidelines:
+   * - 100%: Fully charged
+   * - 50-100%: Normal operation
+   * - 20-50%: Consider charging soon
+   * - 10-20%: Low battery warning recommended
+   * - 0-10%: Critical - plan immediate shutdown/charging
+   * 
+   * Note: Battery drain rate depends on:
+   * - Processing load (tracking complexity)
+   * - Display usage (if any)
+   * - Wireless communication activity
+   * - Environmental temperature
+   */
+  int32 battery_percent = 3;
+}
