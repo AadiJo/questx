@@ -284,7 +284,7 @@ namespace QuestX.Core
             // value is read once at startup and changes require a restart to apply.
             await configManager.OpenAsync();
 
-            var aprilTagFieldLayout = new AprilTagFieldLayout(0.1651); // TODO: no magic numbers
+            var aprilTagFieldLayout = new AprilTagFieldLayout();
             string requestedFieldLayout = await configManager.GetAprilTagFieldLayoutFileAsync();
             await aprilTagFieldLayout.LoadJsonFromFileAsync(requestedFieldLayout);
             aprilTagManager = new AprilTagManager(
@@ -403,16 +403,23 @@ namespace QuestX.Core
             UpdateDeviceData();
             networkTableConnection.PublishDeviceData(trackingLostEvents, batteryPercent);
 
-            // Update web server with current pose data (it handles everything else internally)
-            var (frcPosition, frcRotation) = Conversions.ProtobufPose3dToUnity(pose.ToProtobuf());
-            webServerManager?.Periodic(
-                frcPosition,
-                frcRotation,
-                currentlyTracking,
-                trackingLostEvents,
-                trackingEpoch,
-                aprilTagManager.GetDiagnosticsSnapshot()
-            );
+            // InvokeRepeating can run this method once before MainUpdate has produced the
+            // first tracking pose. Skip only the pose-dependent status update on that tick;
+            // device publishing, camera setup, and queued logging still proceed normally.
+            if (pose != null)
+            {
+                var (frcPosition, frcRotation) = Conversions.ProtobufPose3dToUnity(
+                    pose.ToProtobuf()
+                );
+                webServerManager?.Periodic(
+                    frcPosition,
+                    frcRotation,
+                    currentlyTracking,
+                    trackingLostEvents,
+                    trackingEpoch,
+                    aprilTagManager.GetDiagnosticsSnapshot()
+                );
+            }
 
             // Update the list of video streams
             UpdateCameraServers();

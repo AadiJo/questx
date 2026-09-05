@@ -13,6 +13,7 @@ namespace CI
     public static class Build
     {
         private const string TurboJpegApkEntry = "lib/arm64-v8a/libturbojpeg.so";
+        private const string SqliteApkEntry = "lib/arm64-v8a/libe_sqlite3.so";
 
         public static void PerformAndroid()
         {
@@ -30,6 +31,8 @@ namespace CI
 
             EditorUserBuildSettings.buildAppBundle = false;
             EditorUserBuildSettings.androidBuildSystem = AndroidBuildSystem.Gradle;
+
+            ConfigureRestoredSqlitePlugin();
 
             // Preload OpenXR settings to avoid "Please build again" error in batch mode
             // This is a known Unity issue where OpenXR settings aren't loaded in batch mode
@@ -159,25 +162,75 @@ namespace CI
         }
 
         /// <summary>
+        /// Configures the Android SQLite native library restored by NuGetForUnity. The
+        /// package lives under Assets/Packages instead of Assets/Plugins, so Unity does
+        /// not infer Android compatibility from its directory name.
+        /// </summary>
+        private static void ConfigureRestoredSqlitePlugin()
+        {
+            string[] candidates = Directory.GetFiles(
+                Application.dataPath,
+                "libe_sqlite3.so",
+                SearchOption.AllDirectories
+            );
+            string nativePath = candidates.FirstOrDefault(path =>
+                path.Replace('\\', '/').Contains("/runtimes/android-arm64/native/")
+            );
+
+            if (string.IsNullOrEmpty(nativePath))
+            {
+                throw new Exception(
+                    "NuGet restore did not provide the Android ARM64 SQLite native library."
+                );
+            }
+
+            string assetPath = "Assets" + nativePath.Substring(Application.dataPath.Length)
+                .Replace('\\', '/');
+            var importer = AssetImporter.GetAtPath(assetPath) as PluginImporter;
+            if (importer == null)
+            {
+                AssetDatabase.ImportAsset(assetPath, ImportAssetOptions.ForceUpdate);
+                importer = AssetImporter.GetAtPath(assetPath) as PluginImporter;
+            }
+            if (importer == null)
+            {
+                throw new Exception($"Could not configure SQLite plugin importer at '{assetPath}'.");
+            }
+
+            importer.SetCompatibleWithAnyPlatform(false);
+            importer.SetCompatibleWithEditor(false);
+            importer.SetCompatibleWithPlatform(BuildTarget.Android, true);
+            importer.SetPlatformData(BuildTarget.Android, "CPU", "ARM64");
+            importer.isPreloaded = true;
+            importer.SaveAndReimport();
+            Debug.Log($"Configured restored SQLite Android plugin at {assetPath}");
+        }
+
+        /// <summary>
         /// Verifies native libraries required only at runtime are actually packaged in
         /// the APK. C# compilation cannot detect a missing P/Invoke target, so without
-        /// this check the build can succeed even though passthrough JPEG encoding will
-        /// fail on the headset with <see cref="DllNotFoundException"/>.
+        /// this check the build can succeed even though the app will fail on the headset
+        /// with <see cref="DllNotFoundException"/>.
         /// </summary>
         private static void VerifyNativeDependencies(string apkPath)
         {
             using var apkStream = File.OpenRead(apkPath);
             using var archive = new ZipArchive(apkStream, ZipArchiveMode.Read);
-            ZipArchiveEntry turboJpeg = archive.GetEntry(TurboJpegApkEntry);
-
-            if (turboJpeg == null || turboJpeg.Length == 0)
+            string[] requiredEntries = { TurboJpegApkEntry, SqliteApkEntry };
+            foreach (string requiredEntry in requiredEntries)
             {
-                throw new Exception(
-                    $"Android build is missing required native library '{TurboJpegApkEntry}'."
+                ZipArchiveEntry nativeLibrary = archive.GetEntry(requiredEntry);
+                if (nativeLibrary == null || nativeLibrary.Length == 0)
+                {
+                    throw new Exception(
+                        $"Android build is missing required native library '{requiredEntry}'."
+                    );
+                }
+
+                Debug.Log(
+                    $"Verified native dependency {requiredEntry} ({nativeLibrary.Length} bytes)"
                 );
             }
-
-            Debug.Log($"Verified native dependency {TurboJpegApkEntry} ({turboJpeg.Length} bytes)");
         }
     }
 }

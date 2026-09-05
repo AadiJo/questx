@@ -261,6 +261,18 @@ namespace QuestX.Core
         public static class AprilTag
         {
             /// <summary>
+            /// 2025/2026 FRC field-tag black-square edge length, in meters.
+            /// </summary>
+            public const double TAG_SIZE_METERS = 0.1651;
+
+            /// <summary>
+            /// Maximum accepted age of the hardware exposure timestamp. This prevents a
+            /// wall-clock adjustment or invalid SDK timestamp from placing a measurement
+            /// outside the robot estimator's practical history window.
+            /// </summary>
+            public const double MAX_CAMERA_EXPOSURE_AGE_SECONDS = 5.0;
+
+            /// <summary>
             /// Bundled field-layout JSON files that ship inside the APK under
             /// <c>StreamingAssets/apriltag/fieldlayouts/</c>. Hardcoded here because
             /// Android's <c>UnityWebRequest</c> path to streaming assets does not allow

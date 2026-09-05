@@ -302,6 +302,11 @@ namespace QuestX.UI
         /// <param name="pose">Current position estimate</param>
         public void UpdatePositionText(Pose3d pose)
         {
+            // The first slow-update can run before tracking has produced a pose.
+            // The UI is optional, so leave its placeholders untouched until one exists.
+            if (pose is null)
+                return;
+
             TextMeshProUGUI xText = posXText as TextMeshProUGUI;
             TextMeshProUGUI yText = posYText as TextMeshProUGUI;
             TextMeshProUGUI zText = posZText as TextMeshProUGUI;

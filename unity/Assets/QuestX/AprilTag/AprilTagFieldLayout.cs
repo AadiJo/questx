@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
+using QuestX.Core;
 using QuestX.QuestX.Geometry;
 using QuestX.Utils;
 using Wpi.Proto;
@@ -32,6 +33,9 @@ namespace QuestX.QuestX.AprilTag
         /// </summary>
         public double TagSize { get; }
 
+        public AprilTagFieldLayout()
+            : this(QuestXConstants.AprilTag.TAG_SIZE_METERS) { }
+
         /// <summary>
         /// Creates a new AprilTagFieldLayout.
         /// <param name="tagSize">The size of the tags in meters (black part)</param>
@@ -39,6 +43,15 @@ namespace QuestX.QuestX.AprilTag
         /// </summary>
         public AprilTagFieldLayout(double tagSize)
         {
+            if (tagSize <= 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(tagSize),
+                    tagSize,
+                    "AprilTag size must be greater than zero."
+                );
+            }
+
             TagSize = tagSize;
         }
 

@@ -5,6 +5,7 @@ using System.Threading;
 using Meta.XR;
 using QuestX.Camera;
 using QuestX.Config;
+using QuestX.Core;
 using QuestX.Native.AprilTag;
 using QuestX.Native.PoseLib;
 using QuestX.QuestX.Geometry;
@@ -70,6 +71,14 @@ namespace QuestX.QuestX.AprilTag
         /// </summary>
         private Vector2Int currentResolution;
 
+        /// <summary>
+        /// The Meta SDK can report the old intrinsics briefly after a camera mode change.
+        /// Refresh on the first delivered frame at the new resolution, then skip that frame
+        /// so no solve can mix new pixels with stale calibration.
+        /// </summary>
+        private bool intrinsicsStale = true;
+        private Vector2Int cachedIntrinsicsResolution;
+
         private readonly object diagnosticsLock = new object();
         private long cameraFrameCount;
         private long cameraFailureCount;
@@ -129,29 +138,43 @@ namespace QuestX.QuestX.AprilTag
         }
 
         /// <summary>
-        /// Called when the camera arbiter applies a new effective resolution. Pulls the
-        /// latest intrinsics from the Meta SDK and forwards them to <see cref="PoseLibSolver"/>.
-        /// Wrapped in try/catch because <see cref="PassthroughCameraAccess.Intrinsics"/> can
-        /// throw if accessed while the camera is mid-state-change.
+        /// Called when the camera arbiter applies a new effective resolution. The Meta SDK's
+        /// intrinsics can still describe the previous camera mode during this callback, so
+        /// defer the refresh until a frame at the new resolution is actually available.
         /// </summary>
         private void OnCameraArbiterResolutionChanged(Vector2Int? newResolution)
         {
-            if (!detectorActive || !newResolution.HasValue || poseLibSolver == null)
+            if (!newResolution.HasValue)
             {
                 return;
             }
+
+            intrinsicsStale = true;
+        }
+
+        private bool TryRefreshCameraIntrinsics(int targetWidth, int targetHeight)
+        {
             try
             {
+                if (cameraAccess?.Intrinsics == null || poseLibSolver == null)
+                {
+                    return false;
+                }
+
                 poseLibSolver.RefreshIntrinsics(cameraAccess.Intrinsics);
+                cachedIntrinsicsResolution = new Vector2Int(targetWidth, targetHeight);
+                intrinsicsStale = false;
                 QueuedLogger.Log(
-                    $"PoseLib intrinsics refreshed for {newResolution.Value.x}x{newResolution.Value.y}"
+                    $"PoseLib intrinsics refreshed for {targetWidth}x{targetHeight}"
                 );
+                return true;
             }
             catch (Exception ex)
             {
                 QueuedLogger.LogError(
                     $"Failed to refresh PoseLib intrinsics after resolution change: {ex.Message}"
                 );
+                return false;
             }
         }
 
@@ -216,6 +239,7 @@ namespace QuestX.QuestX.AprilTag
                     CameraRequestPriority.High
                 );
 
+                intrinsicsStale = true;
                 detectorActive = true;
                 captureCoroutine = coroutineHost.StartCoroutine(AprilTagFrameCaptureCoroutine());
                 RecordOutcome("Waiting for camera frame", "");
@@ -384,8 +408,23 @@ namespace QuestX.QuestX.AprilTag
                     continue;
                 }
 
-                double captureAppTimestamp = Time.timeAsDouble;
-                long captureTimestampMicros = captureTimestampProvider();
+                // The camera timestamp is the hardware exposure time in UTC. Convert its
+                // age into both app-time and NT-time domains so the robot receives the
+                // measurement time rather than the later Unity processing time. Clamp the
+                // age because the wall clock can step and a bad timestamp should not poison
+                // the robot estimator's history buffer.
+                double exposureAgeSeconds = Math.Clamp(
+                    (DateTime.UtcNow - cameraAccess.Timestamp).TotalSeconds,
+                    0.0,
+                    QuestXConstants.AprilTag.MAX_CAMERA_EXPOSURE_AGE_SECONDS
+                );
+                double captureAppTimestamp = Math.Max(
+                    0.0,
+                    Time.timeAsDouble - exposureAgeSeconds
+                );
+                long captureTimestampMicros =
+                    captureTimestampProvider()
+                    - (long)Math.Round(exposureAgeSeconds * 1_000_000.0);
                 NativeArray<Color32> colors = default;
                 string captureFailureReason = null;
 
@@ -462,6 +501,28 @@ namespace QuestX.QuestX.AprilTag
                             + $"< {actualW}x{actualH}={actualW * actualH}. Skipping frame."
                     );
                     yield return new WaitForSeconds(frameDelaySeconds);
+                    continue;
+                }
+
+                if (
+                    intrinsicsStale
+                    || cachedIntrinsicsResolution.x != actualW
+                    || cachedIntrinsicsResolution.y != actualH
+                )
+                {
+                    if (!TryRefreshCameraIntrinsics(actualW, actualH))
+                    {
+                        RecordOutcome(
+                            "Waiting for camera intrinsics",
+                            $"Intrinsics unavailable for {actualW}x{actualH}"
+                        );
+                        yield return new WaitForSeconds(frameDelaySeconds);
+                        continue;
+                    }
+
+                    // This frame may have been captured before the refreshed intrinsics
+                    // became visible. Start solving with the next delivered frame.
+                    yield return null;
                     continue;
                 }
 
