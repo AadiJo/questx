@@ -132,7 +132,7 @@
        saved a new selection that does not match the active layout, prompt them to
        restart. The button calls POST /api/restart (existing endpoint). -->
   <div v-if="restartRequired" class="restart-banner">
-    <span class="restart-icon">⟳</span>
+    <RotateCw class="restart-icon" :size="18" :stroke-width="1.75" aria-hidden="true" />
     <span class="restart-text">
       Field layout change saved. Restart QuestX to apply
       <strong>{{ savedFieldLayoutFile }}</strong>.
@@ -156,6 +156,7 @@ import { videoApi } from '../api/video'
 import type { AprilTagDetectorMode, AprilTagFieldLayoutEntry, VideoModeModel } from '../types'
 import ConfigField from './ConfigField.vue'
 import FieldLayoutManager from './FieldLayoutManager.vue'
+import { RotateCw } from '@lucide/vue'
 
 // Mirrors QuestXConstants.AprilTag.MINIMUM_TAGS_OPTIONS on the server. Server-side
 // validation rejects values outside this set so keep these in sync.
@@ -503,7 +504,7 @@ function cancelChanges() {
 
 .submit-button.primary {
   background: var(--primary-color);
-  color: white;
+  color: var(--bg-color);
   border-color: var(--primary-color);
 }
 
@@ -513,14 +514,15 @@ function cancelChanges() {
 }
 
 .cancel-button {
-  background: var(--secondary-color);
-  color: white;
-  border-color: var(--secondary-color);
+  background: transparent;
+  color: var(--text-primary);
+  border-color: var(--border-strong);
 }
 
 .cancel-button:hover:not(:disabled) {
-  background: var(--text-secondary);
-  border-color: var(--text-secondary);
+  background: var(--text-primary);
+  border-color: var(--text-primary);
+  color: var(--bg-color);
 }
 
 .changes-summary {
@@ -540,10 +542,10 @@ function cancelChanges() {
   display: flex;
   align-items: center;
   gap: 0.75rem;
-  background: rgba(255, 193, 7, 0.12);
+  background: var(--card-bg);
   border: 1px solid var(--warning-color, #ffc107);
   color: var(--text-primary);
-  border-radius: 6px;
+  border-radius: 4px;
   padding: 0.75rem 1rem;
   margin-top: 1rem;
   font-size: 0.9rem;
@@ -551,8 +553,8 @@ function cancelChanges() {
 }
 
 .restart-banner .restart-icon {
-  font-size: 1.25rem;
   flex-shrink: 0;
+  color: var(--warning-color);
 }
 
 .restart-banner .restart-text {

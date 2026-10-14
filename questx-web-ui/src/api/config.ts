@@ -117,4 +117,3 @@ class ConfigApi extends QuestXApi {
 }
 
 export const configApi = new ConfigApi()
-

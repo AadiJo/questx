@@ -8,7 +8,7 @@
     <div v-else-if="status" class="status-grid">
       <!-- Network Status -->
       <div class="status-card card">
-        <h3>🌐 Network</h3>
+        <h3><Wifi :size="18" :stroke-width="1.6" aria-hidden="true" /> Network</h3>
         <div class="status-items">
           <div class="status-item">
             <span class="label">Robot Connection:</span>
@@ -36,7 +36,7 @@
 
       <!-- Position & Tracking -->
       <div class="status-card card">
-        <h3>📍 Local VIO Position</h3>
+        <h3><MapPin :size="18" :stroke-width="1.6" aria-hidden="true" /> Local VIO Position</h3>
         <div class="status-items">
           <div class="status-item">
             <span class="label">X:</span>
@@ -67,7 +67,7 @@
 
       <!-- Tracking Status -->
       <div class="status-card card">
-        <h3>🎯 Tracking</h3>
+        <h3><Crosshair :size="18" :stroke-width="1.6" aria-hidden="true" /> Tracking</h3>
         <div class="status-items">
           <div class="status-item">
             <span class="label">Status:</span>
@@ -92,7 +92,7 @@
 
       <!-- Latest field-relative measurement; robot-side fusion owns acceptance. -->
       <div class="status-card card">
-        <h3>AprilTag Measurements</h3>
+        <h3><ScanLine :size="18" :stroke-width="1.6" aria-hidden="true" /> AprilTag Measurements</h3>
         <div class="status-items">
           <div class="status-item">
             <span class="label">Detector:</span>
@@ -149,7 +149,7 @@
 
       <!-- Remote stream health makes camera/transport dropouts distinguishable. -->
       <div class="status-card card">
-        <h3>Passthrough Stream</h3>
+        <h3><Radio :size="18" :stroke-width="1.6" aria-hidden="true" /> Passthrough Stream</h3>
         <div class="status-items">
           <div class="status-item">
             <span class="label">MJPEG Clients:</span>
@@ -176,7 +176,7 @@
 
       <!-- Battery -->
       <div class="status-card card">
-        <h3>🔋 Battery</h3>
+        <h3><BatteryMedium :size="18" :stroke-width="1.6" aria-hidden="true" /> Battery</h3>
         <div class="status-items">
           <div class="status-item">
             <span class="label">Level:</span>
@@ -198,7 +198,7 @@
 
       <!-- Performance -->
       <div class="status-card card">
-        <h3>⚡ Performance</h3>
+        <h3><Gauge :size="18" :stroke-width="1.6" aria-hidden="true" /> Performance</h3>
         <div class="status-items">
           <div class="status-item">
             <span class="label">FPS:</span>
@@ -224,6 +224,7 @@ import { configApi } from '../api/config'
 import { useConfigStore } from '../stores/config'
 import { useConnectionState } from '../composables/useConnectionState'
 import type { HeadsetStatus } from '../types'
+import { BatteryMedium, Crosshair, Gauge, MapPin, Radio, ScanLine, Wifi } from '@lucide/vue'
 
 const configStore = useConfigStore()
 const { isConnected } = useConnectionState()
@@ -297,13 +298,13 @@ watch(isConnected, async (connected, wasConnected) => {
 
 .error-message {
   padding: 2rem;
-  background: linear-gradient(135deg, rgba(220, 53, 69, 0.15), rgba(220, 53, 69, 0.05));
-  border: 2px solid var(--danger-color);
-  border-radius: 12px;
+  background: var(--card-bg);
+  border: 1px solid var(--danger-color);
+  border-radius: 4px;
   color: var(--danger-color);
   text-align: center;
   font-weight: 600;
-  box-shadow: 0 4px 20px rgba(220, 53, 69, 0.2);
+  box-shadow: none;
 }
 
 .status-grid {
@@ -316,7 +317,7 @@ watch(isConnected, async (connected, wasConnected) => {
   padding: 1.5rem;
   background: var(--card-bg);
   border: 1px solid var(--border-color);
-  border-radius: 8px;
+  border-radius: 4px;
   transition: all 0.2s ease;
   position: relative;
   overflow: hidden;
@@ -324,14 +325,14 @@ watch(isConnected, async (connected, wasConnected) => {
 
 .status-card:hover {
   border-color: var(--primary-color);
-  box-shadow: 0 4px 12px rgba(51, 161, 253, 0.15);
+  box-shadow: none;
 }
 
 .status-card h3 {
   margin-bottom: 1rem;
   color: var(--text-primary);
-  font-size: 1.125rem; /* Consistent h3 size: 18px */
-  font-weight: 600;
+  font-size: 1.3rem;
+  font-weight: 520;
   display: flex;
   align-items: center;
   gap: 0.5rem;
@@ -349,8 +350,8 @@ watch(isConnected, async (connected, wasConnected) => {
   align-items: center;
   padding: 0.75rem;
   background: var(--bg-tertiary);
-  border-radius: 6px;
-  border-left: 3px solid transparent;
+  border-radius: 4px;
+  border-left: 1px solid transparent;
   transition: all 0.2s ease;
 }
 
@@ -359,7 +360,7 @@ watch(isConnected, async (connected, wasConnected) => {
 }
 
 .status-item .label {
-  font-weight: 600;
+  font-weight: 500;
   color: var(--text-secondary);
   font-size: 0.875rem; /* Small text: 14px */
 }
@@ -377,23 +378,23 @@ watch(isConnected, async (connected, wasConnected) => {
 
 .status-item .value.success {
   color: var(--success-color);
-  text-shadow: 0 0 8px rgba(76, 175, 80, 0.4);
+  text-shadow: none;
 }
 
 .status-item .value.error {
   color: var(--danger-color);
-  text-shadow: 0 0 8px rgba(220, 53, 69, 0.4);
+  text-shadow: none;
 }
 
 .status-item.debug-override-active {
-  background: linear-gradient(135deg, rgba(255, 193, 7, 0.15), rgba(255, 193, 7, 0.05));
-  border: 2px solid var(--warning-color);
-  border-left: 3px solid var(--warning-color);
-  box-shadow: 0 2px 8px rgba(255, 193, 7, 0.2);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--warning-color);
+  border-left: 1px solid var(--warning-color);
+  box-shadow: none;
 }
 
 .status-item.debug-override-active:hover {
-  background: linear-gradient(135deg, rgba(255, 193, 7, 0.2), rgba(255, 193, 7, 0.1));
+  background: var(--bg-tertiary);
   border-left-color: var(--warning-color);
 }
 
@@ -407,15 +408,15 @@ watch(isConnected, async (connected, wasConnected) => {
 .debug-override-badge {
   font-size: 0.75rem; /* Extra small: 12px */
   padding: 0.25rem 0.65rem;
-  background: linear-gradient(135deg, var(--danger-color), #c82333);
-  color: #fff;
-  border-radius: 12px;
-  border: 2px solid #c82333;
+  background: transparent;
+  color: var(--danger-color);
+  border-radius: 4px;
+  border: 1px solid var(--danger-color);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  animation: pulseGlow 2s ease-in-out infinite;
-  box-shadow: 0 2px 6px rgba(220, 53, 69, 0.4);
+  animation: none;
+  box-shadow: none;
   white-space: nowrap;
 }
 
@@ -435,7 +436,7 @@ watch(isConnected, async (connected, wasConnected) => {
   flex: 1;
   height: 28px;
   background-color: var(--bg-tertiary);
-  border-radius: 14px;
+  border-radius: 4px;
   overflow: hidden;
   margin-left: 1rem;
   border: 1px solid var(--border-color);
@@ -443,37 +444,26 @@ watch(isConnected, async (connected, wasConnected) => {
 
 .battery-fill {
   height: 100%;
-  background: linear-gradient(90deg, var(--teal-dark), var(--teal), var(--primary-color));
+  background: var(--teal);
   display: flex;
   align-items: center;
   justify-content: center;
   font-weight: 700;
   font-size: 0.875rem; /* Small text: 14px */
   color: white;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+  text-shadow: none;
   transition: width 0.5s ease;
   position: relative;
 }
 
-.battery-fill::after {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: linear-gradient(to bottom, rgba(255, 255, 255, 0.2), transparent);
-  pointer-events: none;
-}
-
 .battery-fill.battery-low {
-  background: linear-gradient(90deg, var(--danger-color), #ff6b6b);
-  animation: batteryPulse 2s ease-in-out infinite;
+  background: var(--danger-color);
+  animation: none;
 }
 
 .battery-fill.battery-charging {
-  background: linear-gradient(90deg, var(--amber), var(--amber-light), var(--primary-color));
-  animation: chargingShine 2s linear infinite;
+  background: var(--amber);
+  animation: none;
 }
 
 @keyframes batteryPulse {

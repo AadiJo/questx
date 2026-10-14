@@ -12,7 +12,7 @@
     <div class="modal-content card" @click.stop>
       <div class="modal-header">
         <h2>Custom Field Layouts</h2>
-        <button @click="emitClose" class="close-button" type="button" aria-label="Close">×</button>
+        <button @click="emitClose" class="close-button" type="button" aria-label="Close"><X :size="20" :stroke-width="1.75" aria-hidden="true" /></button>
       </div>
 
       <p class="modal-subtitle">
@@ -101,6 +101,7 @@
 import { ref, onMounted } from 'vue'
 import { configApi } from '../api/config'
 import type { AprilTagFieldLayoutEntry } from '../types'
+import { X } from '@lucide/vue'
 
 const emit = defineEmits<{
   (e: 'close'): void
@@ -258,7 +259,7 @@ onMounted(refresh)
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.55);
+  background: rgba(0, 0, 0, 0.78);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -270,7 +271,7 @@ onMounted(refresh)
 .modal-content {
   background: var(--card-bg);
   border: 1px solid var(--border-color);
-  border-radius: 10px;
+  border-radius: 4px;
   padding: 1.75rem;
   width: 100%;
   max-width: 760px;
@@ -295,10 +296,9 @@ onMounted(refresh)
   background: transparent;
   border: none;
   color: var(--text-secondary);
-  font-size: 1.75rem;
   line-height: 1;
   cursor: pointer;
-  padding: 0 0.4rem;
+  padding: 0.35rem;
 }
 
 .close-button:hover {
@@ -318,8 +318,8 @@ onMounted(refresh)
   justify-content: space-between;
   padding: 0.6rem 0.85rem;
   background: var(--bg-tertiary);
-  border-left: 3px solid var(--primary-color);
-  border-radius: 6px;
+  border-left: 1px solid var(--primary-color);
+  border-radius: 4px;
 }
 
 .layout-info {
@@ -354,13 +354,15 @@ onMounted(refresh)
 }
 
 .layout-source.bundled {
-  background: rgba(76, 175, 80, 0.18);
+  background: transparent;
   color: var(--success-color);
+  border: 1px solid var(--success-color);
 }
 
 .layout-source.custom {
-  background: rgba(51, 161, 253, 0.2);
+  background: transparent;
   color: var(--primary-color);
+  border: 1px solid var(--primary-color);
 }
 
 .layout-filename {
@@ -397,7 +399,8 @@ onMounted(refresh)
 
 .action-btn.danger-btn:hover {
   border-color: var(--danger-color);
-  background: rgba(220, 53, 69, 0.1);
+  background: var(--danger-color);
+  color: #fff;
 }
 
 .divider {
@@ -444,7 +447,7 @@ onMounted(refresh)
 }
 
 .form-error {
-  background: rgba(220, 53, 69, 0.12);
+  background: transparent;
   border: 1px solid var(--danger-color);
   color: var(--danger-color);
   padding: 0.6rem 0.85rem;
@@ -454,7 +457,7 @@ onMounted(refresh)
 }
 
 .form-success {
-  background: rgba(76, 175, 80, 0.12);
+  background: transparent;
   border: 1px solid var(--success-color);
   color: var(--success-color);
   padding: 0.6rem 0.85rem;
@@ -475,7 +478,7 @@ onMounted(refresh)
   border-radius: 4px;
   border: 1px solid var(--primary-color);
   background: var(--primary-color);
-  color: white;
+  color: var(--bg-color);
   font-weight: 600;
   cursor: pointer;
 }
@@ -517,13 +520,13 @@ onMounted(refresh)
   color: var(--text-secondary);
   font-style: italic;
   background: var(--bg-tertiary);
-  border-radius: 6px;
+  border-radius: 4px;
 }
 
 .rename-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.55);
+  background: rgba(0, 0, 0, 0.78);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -533,7 +536,7 @@ onMounted(refresh)
 .rename-card {
   background: var(--card-bg);
   border: 1px solid var(--border-color);
-  border-radius: 10px;
+  border-radius: 4px;
   padding: 1.5rem;
   width: 100%;
   max-width: 420px;

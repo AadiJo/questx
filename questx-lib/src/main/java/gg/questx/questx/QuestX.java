@@ -15,6 +15,7 @@ import static edu.wpi.first.units.Units.Seconds;
 import edu.wpi.first.math.geometry.Pose3d;
 import edu.wpi.first.math.geometry.proto.Pose3dProto;
 import edu.wpi.first.math.proto.Geometry3D;
+import edu.wpi.first.networktables.DoubleArraySubscriber;
 import edu.wpi.first.networktables.NetworkTable;
 import edu.wpi.first.networktables.NetworkTableInstance;
 import edu.wpi.first.networktables.ProtobufPublisher;
@@ -32,6 +33,7 @@ import gg.questx.questx.protos.wpilib.DeviceDataProto;
 import gg.questx.questx.protos.wpilib.FrameDataProto;
 import gg.questx.questx.protos.wpilib.VioDataProto;
 import java.util.Arrays;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalDouble;
 import java.util.OptionalInt;
@@ -185,25 +187,10 @@ public class QuestX {
               PubSubOption.sendAll(true),
               PubSubOption.pollStorage(20));
 
-  /** Subscriber for local-frame VIO measurements */
-  private final ProtobufSubscriber<Data.ProtobufQuestXVioData> vioDataSubscriber =
-      questXTable
-          .getProtobufTopic("vioData", vioDataProto)
-          .subscribe(
-              Data.ProtobufQuestXVioData.newInstance(),
-              PubSubOption.periodic(0.01),
-              PubSubOption.sendAll(true),
-              PubSubOption.pollStorage(20));
-
-  /** Subscriber for field-relative AprilTag measurements */
-  private final ProtobufSubscriber<Data.ProtobufQuestXAprilTagData> aprilTagDataSubscriber =
-      questXTable
-          .getProtobufTopic("aprilTagData", aprilTagDataProto)
-          .subscribe(
-              Data.ProtobufQuestXAprilTagData.newInstance(),
-              PubSubOption.periodic(0.01),
-              PubSubOption.sendAll(true),
-              PubSubOption.pollStorage(20));
+  private final ProtobufSubscriber<Data.ProtobufQuestXVioData> vioDataSubscriber;
+  private final ProtobufSubscriber<Data.ProtobufQuestXAprilTagData> aprilTagDataSubscriber;
+  private final DoubleArraySubscriber vioV2Subscriber;
+  private final DoubleArraySubscriber aprilTagV2Subscriber;
 
   /** Subscriber for device data */
   private final ProtobufSubscriber<Data.ProtobufQuestXDeviceData> deviceDataSubscriber =
@@ -287,13 +274,47 @@ public class QuestX {
    *
    * <ul>
    *   <li>NetworkTables communication on the "QuestX" table
-   *   <li>Protobuf serialization for efficient data transfer
+   *   <li>Version 2 atomic numeric arrays for measurements
    *   <li>Cached objects to minimize garbage collection
    *   <li>Subscribers for VIO data, AprilTag data, device data, and command responses
    *   <li>Publisher for sending commands to the Quest
    * </ul>
    */
-  public QuestX() {}
+  public QuestX() {
+    this(MeasurementTransport.V2);
+  }
+
+  /**
+   * Creates an instance using exactly one measurement transport. Select LEGACY_PROTOBUF for older
+   * Quest apps. Transport selection never falls back or combines queues automatically.
+   *
+   * @param transport measurement transport supported by the installed Quest app
+   */
+  public QuestX(MeasurementTransport transport) {
+    Objects.requireNonNull(transport, "transport");
+    var options =
+        new PubSubOption[] {
+          PubSubOption.periodic(0.01), PubSubOption.sendAll(true), PubSubOption.pollStorage(20)
+        };
+    if (transport == MeasurementTransport.V2) {
+      vioV2Subscriber = questXTable.getDoubleArrayTopic("v2/vio").subscribe(new double[0], options);
+      aprilTagV2Subscriber =
+          questXTable.getDoubleArrayTopic("v2/apriltag").subscribe(new double[0], options);
+      vioDataSubscriber = null;
+      aprilTagDataSubscriber = null;
+    } else {
+      vioV2Subscriber = null;
+      aprilTagV2Subscriber = null;
+      vioDataSubscriber =
+          questXTable
+              .getProtobufTopic("vioData", vioDataProto)
+              .subscribe(Data.ProtobufQuestXVioData.newInstance(), options);
+      aprilTagDataSubscriber =
+          questXTable
+              .getProtobufTopic("aprilTagData", aprilTagDataProto)
+              .subscribe(Data.ProtobufQuestXAprilTagData.newInstance(), options);
+    }
+  }
 
   // Callback registration
 
@@ -544,6 +565,10 @@ public class QuestX {
    *     the first VIO measurement arrives
    */
   public OptionalLong getVioSequenceId() {
+    if (vioV2Subscriber != null) {
+      var frame = getLatestVioFrame();
+      return frame.isPresent() ? OptionalLong.of(frame.get().sequenceId()) : OptionalLong.empty();
+    }
     var latestVioData = vioDataSubscriber.getAtomic();
     if (latestVioData.serverTime > 0) {
       return OptionalLong.of(latestVioData.value.getSequenceId());
@@ -572,6 +597,9 @@ public class QuestX {
    * @return Boolean indicating if the Quest is connected (true) or not (false)
    */
   public boolean isConnected() {
+    if (vioV2Subscriber != null) {
+      return getVioLatency() < 120;
+    }
     var latestVioData = vioDataSubscriber.getAtomic();
     return latestVioData.serverTime > 0
         && Seconds.of(Timer.getTimestamp())
@@ -595,6 +623,12 @@ public class QuestX {
    * @return measurement age in milliseconds
    */
   public double getVioLatency() {
+    if (vioV2Subscriber != null) {
+      var message = vioV2Subscriber.getAtomic();
+      return MeasurementWireFormat.vio(message.value, message.serverTime) == null
+          ? Double.POSITIVE_INFINITY
+          : measurementAgeMillis(message.serverTime);
+    }
     return measurementAgeMillis(vioDataSubscriber.getAtomic().serverTime);
   }
 
@@ -607,6 +641,12 @@ public class QuestX {
    * @return measurement age in milliseconds
    */
   public double getAprilTagLatency() {
+    if (aprilTagV2Subscriber != null) {
+      var message = aprilTagV2Subscriber.getAtomic();
+      return MeasurementWireFormat.aprilTag(message.value, message.serverTime) == null
+          ? Double.POSITIVE_INFINITY
+          : measurementAgeMillis(message.serverTime);
+    }
     return measurementAgeMillis(aprilTagDataSubscriber.getAtomic().serverTime);
   }
 
@@ -622,6 +662,12 @@ public class QuestX {
    * @see #getAllUnreadVioFrames()
    */
   public OptionalDouble getAppTimestamp() {
+    if (vioV2Subscriber != null) {
+      var frame = getLatestVioFrame();
+      return frame.isPresent()
+          ? OptionalDouble.of(frame.get().appTimestamp())
+          : OptionalDouble.empty();
+    }
     var latestVioData = vioDataSubscriber.getAtomic();
     if (latestVioData.serverTime > 0) {
       return OptionalDouble.of(latestVioData.value.getAppTimestamp());
@@ -643,6 +689,9 @@ public class QuestX {
    * @see #isConnected()
    */
   public boolean isTracking() {
+    if (vioV2Subscriber != null) {
+      return getLatestVioFrame().map(VioFrame::isTracking).orElse(false);
+    }
     var vioData = vioDataSubscriber.getAtomic();
     if (vioData.serverTime > 0) {
       return vioData.value.getIsTracking();
@@ -695,6 +744,12 @@ public class QuestX {
    * @return all unread VIO measurements in arrival order
    */
   public VioFrame[] getAllUnreadVioFrames() {
+    if (vioV2Subscriber != null) {
+      return Arrays.stream(vioV2Subscriber.readQueue())
+          .map(message -> MeasurementWireFormat.vio(message.value, message.serverTime))
+          .filter(Objects::nonNull)
+          .toArray(VioFrame[]::new);
+    }
     var messages = vioDataSubscriber.readQueue();
     var frames = new VioFrame[messages.length];
     for (int i = 0; i < messages.length; i++) {
@@ -713,6 +768,12 @@ public class QuestX {
    * @return all unread AprilTag measurements in arrival order
    */
   public AprilTagFrame[] getAllUnreadAprilTagFrames() {
+    if (aprilTagV2Subscriber != null) {
+      return Arrays.stream(aprilTagV2Subscriber.readQueue())
+          .map(message -> MeasurementWireFormat.aprilTag(message.value, message.serverTime))
+          .filter(Objects::nonNull)
+          .toArray(AprilTagFrame[]::new);
+    }
     var messages = aprilTagDataSubscriber.readQueue();
     var frames = new AprilTagFrame[messages.length];
     for (int i = 0; i < messages.length; i++) {
@@ -727,6 +788,10 @@ public class QuestX {
    * @return the latest VIO measurement, or empty before the first measurement arrives
    */
   public Optional<VioFrame> getLatestVioFrame() {
+    if (vioV2Subscriber != null) {
+      var message = vioV2Subscriber.getAtomic();
+      return Optional.ofNullable(MeasurementWireFormat.vio(message.value, message.serverTime));
+    }
     var message = vioDataSubscriber.getAtomic();
     if (message.serverTime <= 0) {
       return Optional.empty();
@@ -740,6 +805,10 @@ public class QuestX {
    * @return the latest AprilTag measurement, or empty before the first measurement arrives
    */
   public Optional<AprilTagFrame> getLatestAprilTagFrame() {
+    if (aprilTagV2Subscriber != null) {
+      var message = aprilTagV2Subscriber.getAtomic();
+      return Optional.ofNullable(MeasurementWireFormat.aprilTag(message.value, message.serverTime));
+    }
     var message = aprilTagDataSubscriber.getAtomic();
     if (message.serverTime <= 0) {
       return Optional.empty();

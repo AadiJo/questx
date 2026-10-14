@@ -85,10 +85,20 @@ namespace QuestX.Core
             /// </summary>
             public const string APRIL_TAG_DATA = NT_BASE_PATH + "/aprilTagData";
 
+            public const string VIO_DATA_V2 = NT_BASE_PATH + "/v2/vio";
+            public const string APRIL_TAG_DATA_V2 = NT_BASE_PATH + "/v2/apriltag";
+            public const string VIO_TELEMETRY = NT_BASE_PATH + "/telemetry/vio/";
+            public const string APRIL_TAG_TELEMETRY = NT_BASE_PATH + "/telemetry/apriltag/";
+
             /// <summary>
             /// Device data topic
             /// </summary>
             public const string DEVICE_DATA = NT_BASE_PATH + "/deviceData";
+
+            /// <summary>
+            /// Human-readable headset battery percentage
+            /// </summary>
+            public const string BATTERY_PERCENT = NT_BASE_PATH + "/batteryPercent";
 
             /// <summary>
             /// Video streams topic

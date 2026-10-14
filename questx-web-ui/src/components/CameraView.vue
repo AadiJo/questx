@@ -11,8 +11,14 @@
             <input type="checkbox" :checked="streamEnabled" @change="handlePassthroughStreamChange" />
             {{ streamEnabled ? 'Stream Enabled' : 'Stream Disabled' }}
           </label>
-          <button @click="toggleFullscreen" class="secondary">
-            {{ isFullscreen ? '⬜ Exit Fullscreen' : '⛶ Fullscreen' }}
+          <label class="checkbox-label inline-toggle">
+            <input type="checkbox" v-model="overlayEnabled" :disabled="!streamEnabled" />
+            AprilTag Overlay
+          </label>
+          <button @click="toggleFullscreen" class="secondary fullscreen-button">
+            <Minimize2 v-if="isFullscreen" :size="15" :stroke-width="1.75" aria-hidden="true" />
+            <Maximize2 v-else :size="15" :stroke-width="1.75" aria-hidden="true" />
+            {{ isFullscreen ? 'Exit Fullscreen' : 'Fullscreen' }}
           </button>
         </div>
         <div class="controls-right">
@@ -50,7 +56,7 @@
       </div>
 
       <div v-if="lockedByAprilTag" class="apriltag-lock-banner">
-        <span class="lock-icon">🔒</span>
+        <LockKeyhole class="lock-icon" :size="17" :stroke-width="1.75" aria-hidden="true" />
         <span>
           Resolution locked by AprilTag detector<span v-if="effectiveResolutionLabel">
             ({{ effectiveResolutionLabel }})</span>. Disable the AprilTag detector to change camera
@@ -60,13 +66,18 @@
     </div>
 
     <div v-if="!streamEnabled" class="stream-disabled-message">
-      <div class="disabled-icon">📷</div>
+      <CameraOff class="disabled-icon" :size="42" :stroke-width="1.5" aria-hidden="true" />
       <h3>Camera Stream Disabled</h3>
       <p>Toggle "Stream Enabled" above to view the camera feed.</p>
     </div>
 
-    <div v-else class="camera-container" ref="cameraContainer">
-      <img :src="streamUrl" alt="Camera Stream" class="camera-stream" />
+    <p v-if="streamEnabled && overlayEnabled" class="overlay-help">
+      Image and outlines are synchronized. Preview speed is limited by detection. Includes ignored tag IDs.
+    </p>
+    <div v-if="streamEnabled" class="camera-container" ref="cameraContainer" :style="{ aspectRatio: cameraAspectRatio }">
+      <img v-if="!overlayEnabled && active" :src="streamUrl" alt="Camera Stream" class="camera-stream" @error="streamFailed = true" />
+      <AprilTagOverlay v-if="overlayEnabled && active" :key="streamUrl" @dimensions="previewResolution = $event" />
+      <span v-if="!overlayEnabled && streamFailed" class="stream-error">Camera stream unavailable. Toggle the stream to reconnect.</span>
     </div>
   </div>
 </template>
@@ -77,10 +88,17 @@ import { useConfigStore } from '../stores/config'
 import { videoApi } from '../api/video'
 import { configApi } from '../api/config'
 import type { HeadsetStatus } from '../types'
+import AprilTagOverlay from './AprilTagOverlay.vue'
+import { CameraOff, LockKeyhole, Maximize2, Minimize2 } from '@lucide/vue'
+
+withDefaults(defineProps<{ active?: boolean }>(), { active: true })
 
 const configStore = useConfigStore()
 const cameraContainer = ref<HTMLElement | null>(null)
 const isFullscreen = ref(false)
+const overlayEnabled = ref(false)
+const streamFailed = ref(false)
+const previewResolution = ref<{ width: number; height: number } | null>(null)
 
 const streamEnabled = computed(() => configStore.config?.enablePassthroughStream ?? false)
 const highQualityStreamEnabled = computed(() => configStore.config?.enableHighQualityStream ?? false)
@@ -118,10 +136,25 @@ const selectedStreamQuality = ref(75)
 const cacheBuster = ref(Date.now())
 
 const streamUrl = computed(() => `${videoApi.baseUrl}/video?t=${cacheBuster.value}`)
+watch([streamUrl, overlayEnabled], () => {
+  streamFailed.value = false
+  previewResolution.value = null
+})
+
+const cameraAspectRatio = computed(() => {
+  const resolution = (overlayEnabled.value ? previewResolution.value : null) ??
+    cameraStatus.value?.effectivePassthroughResolution ?? configStore.config?.streamMode
+  return resolution && resolution.width > 0 && resolution.height > 0
+    ? `${resolution.width} / ${resolution.height}` : '4 / 3'
+})
 
 const activeStreamSettings = computed(() => {
   const mode = configStore.config?.streamMode
   if (!mode) return ''
+  if (overlayEnabled.value) {
+    const limit = Math.min(mode.framerate, configStore.config?.aprilTagDetectorMode.framerate ?? mode.framerate)
+    return `Synchronized · up to ${limit} FPS · Quality: ${mode.quality}`
+  }
   return `${mode.width}x${mode.height}@${mode.framerate}fps Quality: ${mode.quality}`
 })
 
@@ -293,7 +326,7 @@ onUnmounted(() => {
   margin-bottom: 1.5rem;
   padding: 1rem;
   background: var(--card-bg);
-  border-radius: 8px;
+  border-radius: 4px;
   border: 1px solid var(--border-color);
 }
 
@@ -312,6 +345,12 @@ onUnmounted(() => {
   flex-wrap: wrap;
 }
 
+.fullscreen-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
 .checkbox-label.inline-toggle {
   display: inline-flex;
   align-items: center;
@@ -327,7 +366,7 @@ onUnmounted(() => {
   color: var(--text-secondary);
   background: var(--bg-tertiary);
   padding: 0.5rem 1rem;
-  border-radius: 6px;
+  border-radius: 4px;
   border: 1px solid var(--border-color);
 }
 
@@ -335,18 +374,18 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 0.6rem;
-  background: rgba(51, 161, 253, 0.12);
+  background: var(--bg-tertiary);
   border: 1px solid var(--primary-color);
   color: var(--text-primary);
-  border-radius: 6px;
+  border-radius: 4px;
   padding: 0.65rem 1rem;
   font-size: 0.875rem;
   font-weight: 500;
 }
 
 .apriltag-lock-banner .lock-icon {
-  font-size: 1rem;
   flex-shrink: 0;
+  color: var(--primary-color);
 }
 
 .control-container {
@@ -362,19 +401,22 @@ onUnmounted(() => {
   font-size: 0.875rem;
   font-weight: 600;
   padding: 0.5rem 1rem;
-  border-radius: 6px;
-  border: 2px solid;
+  border-radius: 4px;
+  border: 1px solid;
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 .stream-status.active {
   color: var(--success-color);
-  background: rgba(76, 175, 80, 0.15);
+  background: transparent;
   border-color: var(--success-color);
 }
 
 .stream-status.inactive {
   color: var(--text-secondary);
-  background: var(--bg-tertiary);
+  background: transparent;
   border-color: var(--border-color);
 }
 
@@ -386,7 +428,7 @@ onUnmounted(() => {
 
 .stream-status.active .status-dot {
   background-color: var(--success-color);
-  box-shadow: 0 0 8px var(--success-color);
+  box-shadow: none;
 }
 
 .stream-status.inactive .status-dot {
@@ -401,14 +443,13 @@ onUnmounted(() => {
   padding: 4rem 2rem;
   background: var(--card-bg);
   border: 1px solid var(--border-color);
-  border-radius: 8px;
+  border-radius: 4px;
   text-align: center;
 }
 
 .disabled-icon {
-  font-size: 4rem;
   margin-bottom: 1.5rem;
-  filter: grayscale(100%) opacity(0.5);
+  color: var(--text-muted);
 }
 
 .stream-disabled-message h3 {
@@ -423,26 +464,43 @@ onUnmounted(() => {
 }
 
 .camera-container {
-  background: #1e1e1e;
-  border-radius: 8px;
+  position: relative;
+  width: 100%;
+  background: #090909;
+  border-radius: 4px;
   border: 1px solid var(--border-color);
   overflow: hidden;
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 400px;
 }
 
 .camera-container:fullscreen {
   background: #000;
   border-radius: 0;
   border: none;
+  height: 100vh;
 }
 
 .camera-stream {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
-  object-fit: fill;
+  object-fit: contain;
+}
+
+.overlay-help {
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+  margin: 0 0 0.75rem;
+}
+
+.stream-error {
+  position: relative;
+  color: white;
+  background: #090909;
+  padding: 1rem;
 }
 
 .camera-container:fullscreen .camera-stream {
@@ -461,8 +519,5 @@ onUnmounted(() => {
     justify-content: space-between;
   }
   
-  .camera-container {
-    min-height: 300px;
-  }
 }
 </style>

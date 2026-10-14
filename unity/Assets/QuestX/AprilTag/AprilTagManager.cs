@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Threading;
+using LibJpegTurboUnity;
 using Meta.XR;
 using QuestX.Camera;
 using QuestX.Config;
@@ -11,6 +12,7 @@ using QuestX.Native.PoseLib;
 using QuestX.QuestX.Geometry;
 using QuestX.Utils;
 using Unity.Collections;
+using Unity.Collections.LowLevel.Unsafe;
 using UnityEngine;
 
 namespace QuestX.QuestX.AprilTag
@@ -49,6 +51,10 @@ namespace QuestX.QuestX.AprilTag
         private readonly MonoBehaviour coroutineHost;
         private Coroutine captureCoroutine;
         private float frameDelaySeconds;
+        private LJTCompressor overlayCompressor;
+        private int overlayQuality = 75;
+        private double overlayFrameIntervalMs = 1000.0 / 24;
+        private double nextOverlayFrameAt;
 
         /// <summary>
         /// Single source of truth for the detector lifecycle. The capture coroutine checks
@@ -87,6 +93,7 @@ namespace QuestX.QuestX.AprilTag
         private long measurementCount;
         private double lastMeasurementAppTimestamp;
         private int[] lastTagIds = Array.Empty<int>();
+        private int[] detectedIds = Array.Empty<int>();
         private int lastInlierCount;
         private int lastCornerCount;
         private double lastInlierRatio;
@@ -101,6 +108,8 @@ namespace QuestX.QuestX.AprilTag
         /// been applied to this measurement.
         /// </summary>
         public event Action<AprilTagMeasurement> MeasurementAvailable;
+
+        public AprilTagOverlay Overlay { get; } = new AprilTagOverlay();
 
         public AprilTagManager(
             IConfigManager configManager,
@@ -126,6 +135,8 @@ namespace QuestX.QuestX.AprilTag
 
             configManager.OnEnableAprilTagDetectorChanged += OnEnableAprilTagDetectorChanged;
             configManager.OnAprilTagDetectorModeChanged += OnAprilTagDetectorModeChanged;
+            configManager.OnPassthroughStreamModeChanged += OnOverlayStreamModeChanged;
+            configManager.OnEnablePassthroughStreamChanged += OnOverlayStreamEnabledChanged;
 
             // Refresh PoseLib's cached intrinsics whenever the camera arbiter changes
             // the effective resolution. Meta SDK exposes per-resolution intrinsics
@@ -144,6 +155,7 @@ namespace QuestX.QuestX.AprilTag
         /// </summary>
         private void OnCameraArbiterResolutionChanged(Vector2Int? newResolution)
         {
+            Overlay.Clear();
             if (!newResolution.HasValue)
             {
                 return;
@@ -164,9 +176,7 @@ namespace QuestX.QuestX.AprilTag
                 poseLibSolver.RefreshIntrinsics(cameraAccess.Intrinsics);
                 cachedIntrinsicsResolution = new Vector2Int(targetWidth, targetHeight);
                 intrinsicsStale = false;
-                QueuedLogger.Log(
-                    $"PoseLib intrinsics refreshed for {targetWidth}x{targetHeight}"
-                );
+                QueuedLogger.Log($"PoseLib intrinsics refreshed for {targetWidth}x{targetHeight}");
                 return true;
             }
             catch (Exception ex)
@@ -241,6 +251,7 @@ namespace QuestX.QuestX.AprilTag
 
                 intrinsicsStale = true;
                 detectorActive = true;
+                Overlay.SetEnabled(true);
                 captureCoroutine = coroutineHost.StartCoroutine(AprilTagFrameCaptureCoroutine());
                 RecordOutcome("Waiting for camera frame", "");
                 QueuedLogger.Log("AprilTagDetector Enabled");
@@ -258,6 +269,9 @@ namespace QuestX.QuestX.AprilTag
                 // Flip the active flag FIRST so the coroutine breaks cleanly on its
                 // next iteration without touching the detector or family.
                 detectorActive = false;
+                Overlay.SetEnabled(false);
+                overlayCompressor?.Dispose();
+                overlayCompressor = null;
 
                 if (captureCoroutine != null)
                 {
@@ -296,6 +310,7 @@ namespace QuestX.QuestX.AprilTag
 
         private void OnAprilTagDetectorModeChanged(Config.Config.AprilTagDetectorMode configuration)
         {
+            Overlay.Clear();
             if (
                 configuration.Mode
                 == Config.Config.AprilTagDetectorMode.DetectionMode.ANCHOR_ENHANCED
@@ -358,7 +373,12 @@ namespace QuestX.QuestX.AprilTag
                     lastLinearStdDevMeters,
                     lastOutcome,
                     lastReason
-                );
+                ) {
+                    FieldLayoutFile = aprilTagFieldLayout.LoadedFile,
+                    LayoutLoaded = aprilTagFieldLayout.IsLoaded,
+                    LayoutTagCount = aprilTagFieldLayout.Tags?.Count ?? 0,
+                    DetectedIds = (int[])detectedIds.Clone()
+                };
             }
         }
 
@@ -413,18 +433,18 @@ namespace QuestX.QuestX.AprilTag
                 // measurement time rather than the later Unity processing time. Clamp the
                 // age because the wall clock can step and a bad timestamp should not poison
                 // the robot estimator's history buffer.
-                double exposureAgeSeconds = Math.Clamp(
-                    (DateTime.UtcNow - cameraAccess.Timestamp).TotalSeconds,
-                    0.0,
-                    QuestXConstants.AprilTag.MAX_CAMERA_EXPOSURE_AGE_SECONDS
-                );
-                double captureAppTimestamp = Math.Max(
-                    0.0,
-                    Time.timeAsDouble - exposureAgeSeconds
-                );
+                double overlayCaptureTime = AprilTagOverlay.MonotonicMilliseconds();
+                double exposureAgeSeconds = (DateTime.UtcNow - cameraAccess.Timestamp).TotalSeconds;
+                if (exposureAgeSeconds < -0.01 || exposureAgeSeconds > 0.5)
+                {
+                    RecordOutcome("Camera timestamp invalid", $"Exposure age {exposureAgeSeconds:F3}s");
+                    yield return new WaitForSeconds(frameDelaySeconds);
+                    continue;
+                }
+                exposureAgeSeconds = Math.Max(0.0, exposureAgeSeconds);
+                double captureAppTimestamp = Math.Max(0.0, Time.timeAsDouble - exposureAgeSeconds);
                 long captureTimestampMicros =
-                    captureTimestampProvider()
-                    - (long)Math.Round(exposureAgeSeconds * 1_000_000.0);
+                    captureTimestampProvider() - (long)Math.Round(exposureAgeSeconds * 1_000_000.0);
                 NativeArray<Color32> colors = default;
                 string captureFailureReason = null;
 
@@ -440,6 +460,7 @@ namespace QuestX.QuestX.AprilTag
                         cameraFailureCount++;
                     }
                     RecordOutcome("Camera capture failed", ex.Message);
+                    Overlay.Clear();
 
                     // Camera access can transiently fail after a resolution change, cable
                     // disturbance, or Meta service hiccup. Keep the detector alive and
@@ -550,10 +571,15 @@ namespace QuestX.QuestX.AprilTag
                 }
                 if (detectFailed || results == null)
                 {
+                    Overlay.Clear();
                     RecordOutcome("Detection failed", "AprilTag detector did not return results");
                     yield return new WaitForSeconds(frameDelaySeconds);
                     continue;
                 }
+
+                // Every detector call owns a native result array, even with zero tags.
+                // The using scope also releases it on rejection, coroutine stop, or error.
+                using var ownedResults = results;
 
                 // Apply two filters before counting / solving:
                 //   1) User's ignored-IDs blacklist (empty set keeps every detection).
@@ -565,10 +591,32 @@ namespace QuestX.QuestX.AprilTag
                 //      which the estimator then has to reject as a position jump.
                 // Building the kept list in-line avoids allocating an AprilTagDetectionResults clone.
                 var kept = new List<AprilTagDetection>(results.NumberOfDetections);
+                var overlayTags =
+                    Overlay.IsRequested
+                    && AprilTagOverlay.MonotonicMilliseconds() >= nextOverlayFrameAt
+                        ? new AprilTagOverlayTag[results.NumberOfDetections]
+                        : null;
+                int overlayIndex = 0;
                 int ignoredCount = 0;
                 int unknownIdCount = 0;
+                var rawIds = new List<int>();
                 foreach (var detection in results)
                 {
+                    rawIds.Add(detection.Id);
+                    // Copy raw detections, including ignored/unknown IDs, before pose
+                    // filtering. An outline means "detected", not "accepted pose".
+                    // ImageU8 flips vertically and JPEG uses BottomUp, so both images
+                    // use the same top-left pixel origin; no additional flip is needed.
+                    if (overlayTags != null)
+                    {
+                        overlayTags[overlayIndex++] = new AprilTagOverlayTag(
+                            detection.Id,
+                            ToOverlayPoint(detection.CornerBottomRight0),
+                            ToOverlayPoint(detection.CornerBottomLeft1),
+                            ToOverlayPoint(detection.CornerUpperLeft2),
+                            ToOverlayPoint(detection.CornerUpperRight3)
+                        );
+                    }
                     if (ignoredIdSet.Contains(detection.Id))
                     {
                         ignoredCount++;
@@ -580,6 +628,26 @@ namespace QuestX.QuestX.AprilTag
                         continue;
                     }
                     kept.Add(detection);
+                }
+
+                lock (diagnosticsLock) detectedIds = rawIds.ToArray();
+
+                if (overlayTags != null)
+                {
+                    PublishOverlayFrame(
+                        colors,
+                        actualW,
+                        actualH,
+                        overlayCaptureTime - exposureAgeSeconds * 1000.0,
+                        overlayTags
+                    );
+                }
+
+                if (!aprilTagFieldLayout.IsLoaded)
+                {
+                    RecordOutcome("Field layout unavailable", aprilTagFieldLayout.LoadError);
+                    yield return new WaitForSeconds(frameDelaySeconds);
+                    continue;
                 }
 
                 if (kept.Count >= minimumNumberOfTags)
@@ -603,6 +671,31 @@ namespace QuestX.QuestX.AprilTag
                         var measuredRotation = new Rotation3d(
                             new Geometry.Quaternion(frcRot.w, frcRot.x, frcRot.y, frcRot.z)
                         );
+
+                        var cameraPose = new Pose3d(new Translation3d(frcPos.x, frcPos.y, frcPos.z), measuredRotation);
+                        if (!AprilTagPoseValidation.TryValidate(cameraPose, aprilTagFieldLayout.Field,
+                            poseLibResult.AcceptedPoints, poseLibResult.TotalPoints, out string rejectedReason))
+                        {
+                            RecordOutcome("Measurement rejected locally", rejectedReason);
+                            yield return new WaitForSeconds(frameDelaySeconds);
+                            continue;
+                        }
+                        bool facesCamera = true;
+                        foreach (var detection in kept)
+                        {
+                            if (!AprilTagPoseValidation.IsFacingCamera(cameraPose, aprilTagFieldLayout.GetTagPose(detection.Id)))
+                            {
+                                facesCamera = false;
+                                break;
+                            }
+                        }
+                        if (!facesCamera)
+                        {
+                            RecordOutcome("Measurement rejected locally", "Tag is behind the solved camera or the camera is behind the printed tag face");
+                            yield return new WaitForSeconds(frameDelaySeconds);
+                            continue;
+                        }
+                        var headsetPose = AprilTagPoseValidation.CameraToHeadset(cameraPose, cameraAccess.Intrinsics.LensOffset);
 
                         int tagCount = kept.Count;
                         double inlierRatio =
@@ -663,7 +756,10 @@ namespace QuestX.QuestX.AprilTag
                             MeasurementLinearStdDevBase
                             * avgTagDistance
                             / Math.Sqrt(Math.Max(1, tagCount));
-                        angularStdDev = Math.Max(0.01, angularStdDev);
+                        // A single planar tag has a weaker/ambiguous heading solution. Do not
+                        // advertise unrealistically precise yaw to the robot's estimator.
+                        angularStdDev = Math.Max(tagCount == 1 ? 0.25 : 0.03, angularStdDev);
+                        linearStdDev = Math.Max(tagCount == 1 ? 0.08 : 0.02, linearStdDev);
 
                         var tagIds = new int[kept.Count];
                         for (int i = 0; i < kept.Count; i++)
@@ -674,10 +770,7 @@ namespace QuestX.QuestX.AprilTag
                         var measurement = new AprilTagMeasurement(
                             captureTimestampMicros,
                             captureAppTimestamp,
-                            new Pose3d(
-                                new Translation3d(frcPos.x, frcPos.y, frcPos.z),
-                                measuredRotation
-                            ),
+                            headsetPose,
                             tagIds,
                             (int)poseLibResult.AcceptedPoints,
                             poseLibResult.TotalPoints,
@@ -731,11 +824,71 @@ namespace QuestX.QuestX.AprilTag
                 {
                     RecordOutcome(
                         "Insufficient tags",
-                        $"Detected {kept.Count}; configured minimum is {minimumNumberOfTags}"
+                        $"Raw IDs [{string.Join(",", rawIds)}], usable {kept.Count}, unknown {unknownIdCount}, "
+                            + $"ignored {ignoredCount}, minimum {minimumNumberOfTags}, layout {aprilTagFieldLayout.LoadedFile}"
                     );
                 }
 
                 yield return new WaitForSeconds(frameDelaySeconds);
+            }
+        }
+
+        private static AprilTagOverlayPoint ToOverlayPoint(Point2D point) =>
+            new AprilTagOverlayPoint(point.x, point.y);
+
+        private void OnOverlayStreamModeChanged(Config.Config.StreamMode mode)
+        {
+            overlayQuality = Math.Clamp(mode.Quality, 1, 100);
+            overlayFrameIntervalMs = 1000.0 / Math.Max(1, mode.Framerate);
+            nextOverlayFrameAt = 0;
+            Overlay.Clear();
+        }
+
+        private void OnOverlayStreamEnabledChanged(bool enabled)
+        {
+            Overlay.SetStreamEnabled(enabled);
+            if (!enabled)
+            {
+                overlayCompressor?.Dispose();
+                overlayCompressor = null;
+            }
+        }
+
+        private unsafe void PublishOverlayFrame(
+            NativeArray<Color32> colors,
+            int width,
+            int height,
+            double capturedAt,
+            AprilTagOverlayTag[] tags
+        )
+        {
+            // Consume the SAME readback used by ImageU8, before any coroutine yield.
+            // Never cache or mutate the SDK-owned NativeArray. BottomUp matches the
+            // detector's vertical flip; width/height exclude the SDK's excess capacity.
+            nextOverlayFrameAt = AprilTagOverlay.MonotonicMilliseconds() + overlayFrameIntervalMs;
+            try
+            {
+                overlayCompressor ??= new LJTCompressor();
+                byte[] jpeg = overlayCompressor.Compress(
+                    (IntPtr)NativeArrayUnsafeUtility.GetUnsafeReadOnlyPtr(colors),
+                    width * 4,
+                    width,
+                    height,
+                    LJTPixelFormat.RGBA,
+                    LJTSubsamplingOption.Chrominance420,
+                    overlayQuality,
+                    LJTFlags.BottomUp
+                );
+                Overlay.Publish(width, height, capturedAt, tags, jpeg);
+            }
+            catch (Exception ex)
+            {
+                // Preview failures must not stop pose solving or telemetry.
+                Overlay.Clear();
+                overlayCompressor?.Dispose();
+                overlayCompressor = null;
+                nextOverlayFrameAt = AprilTagOverlay.MonotonicMilliseconds() + 1000;
+                QueuedLogger.LogWarning($"Synchronized AprilTag preview failed: {ex.Message}");
             }
         }
 

@@ -309,6 +309,14 @@ namespace QuestX.Native.NTCore
         public static extern int NT_SetDouble(uint publisher, long time, double value);
 
         [DllImport("ntcore")]
+        public static extern int NT_SetDoubleArray(
+            uint publisher,
+            long time,
+            double* value,
+            UIntPtr len
+        );
+
+        [DllImport("ntcore")]
         public static extern double NT_GetDouble(uint subscriber, double defaultValue);
 
         [DllImport("ntcore")]

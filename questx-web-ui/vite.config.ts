@@ -37,6 +37,11 @@ export default defineConfig({
         changeOrigin: true,
         secure: false
       },
+      '/video': {
+        target: process.env.VITE_API_TARGET || 'http://192.168.1.100:5801',
+        changeOrigin: true,
+        secure: false
+      },
       '/ws': {
         target: process.env.VITE_WS_TARGET || 'ws://192.168.1.100:5801',
         ws: true,
@@ -52,4 +57,3 @@ export default defineConfig({
     }
   }
 })
-

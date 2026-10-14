@@ -174,6 +174,13 @@ namespace QuestX.Native.NTCore
             return new IntegerSubscriber(subHandle);
         }
 
+        public DoubleArrayPublisher GetDoubleArrayPublisher(string name, PubSubOptions options)
+        {
+            return new DoubleArrayPublisher(
+                Publish(name, NtType.NT_DOUBLE_ARRAY, "double[]", options)
+            );
+        }
+
         public FloatArrayPublisher GetFloatArrayPublisher(string name, PubSubOptions options)
         {
             var pubHandle = Publish(

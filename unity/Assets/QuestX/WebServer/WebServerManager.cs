@@ -77,6 +77,7 @@ namespace QuestX.WebServer
         private readonly IConfigManager configManager;
         private readonly LogCollector logCollector;
         private readonly CameraResourceManager cameraArbiter;
+        private readonly AprilTagOverlay aprilTagOverlay;
 
         /// <summary>
         /// Meta SDK camera reference. Forwarded to <see cref="ConfigServer"/> so the
@@ -100,7 +101,8 @@ namespace QuestX.WebServer
             VideoStreamProvider.IFrameSource frameSource,
             CameraResourceManager cameraArbiter,
             PassthroughCameraAccess cameraAccess,
-            Transform resetTransform
+            Transform resetTransform,
+            AprilTagOverlay aprilTagOverlay
         )
         {
             this.configManager = configManager;
@@ -110,6 +112,7 @@ namespace QuestX.WebServer
             this.resetTransform = resetTransform;
             this.cameraArbiter = cameraArbiter;
             this.cameraAccess = cameraAccess;
+            this.aprilTagOverlay = aprilTagOverlay;
 
             statusProvider = new StatusProvider();
             logCollector = new LogCollector();
@@ -368,7 +371,8 @@ namespace QuestX.WebServer
                 statusProvider,
                 logCollector,
                 streamProvider,
-                cameraAccess
+                cameraAccess,
+                aprilTagOverlay
             );
 
             await server.StartAsync();
@@ -403,8 +407,9 @@ namespace QuestX.WebServer
             await FileManager.ExtractAndroidFileAsync("index.html", "ui", targetPath);
             await FileManager.ExtractAndroidFileAsync("main.css", "ui/assets", assetsDir);
             await FileManager.ExtractAndroidFileAsync("main.js", "ui/assets", assetsDir);
-            await FileManager.ExtractAndroidFileAsync("logo.svg", "ui", targetPath);
-            await FileManager.ExtractAndroidFileAsync("logo-dark.svg", "ui", targetPath);
+            await FileManager.ExtractAndroidFileAsync("geist-latin-wght-normal.woff2", "ui/assets", assetsDir);
+            await FileManager.ExtractAndroidFileAsync("newsreader-latin-wght-normal.woff2", "ui/assets", assetsDir);
+            await FileManager.ExtractAndroidFileAsync("bird-logo.svg", "ui", targetPath);
 
             QueuedLogger.Log("UI extraction complete");
         }

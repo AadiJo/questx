@@ -6,6 +6,7 @@ using QuestX.Core;
 using QuestX.Native.NTCore;
 using QuestX.Protos.Generated;
 using QuestX.QuestX.Geometry;
+using QuestX.QuestX.AprilTag;
 using QuestX.Utils;
 using UnityEngine;
 using Quaternion = UnityEngine.Quaternion;
@@ -142,6 +143,8 @@ namespace QuestX.Network
         /// </summary>
         void Periodic();
 
+        void PublishAprilTagDiagnostics(AprilTagDiagnosticsSnapshot diagnostics);
+
         /// <summary>
         /// Populates subscribed events with initial values
         /// </summary>
@@ -184,10 +187,24 @@ namespace QuestX.Network
         /// </summary>
         private readonly ProtobufPublisher<ProtobufQuestXAprilTagData> aprilTagDataPublisher;
 
+        private readonly DoubleArrayPublisher vioV2Publisher;
+        private readonly DoubleArrayPublisher aprilTagV2Publisher;
+        private readonly MeasurementTelemetry vioTelemetry;
+        private readonly MeasurementTelemetry aprilTagTelemetry;
+        private readonly LimelightTelemetry limelightTelemetry;
+        private readonly double[] vioV2 = new double[MeasurementWireFormat.VioLength];
+        private double[] aprilTagV2 = new double[MeasurementWireFormat.AprilTagHeaderLength];
+        private long nextTelemetryMicros;
+
         /// <summary>
         /// Publisher for device data (tracking status, battery, etc.)
         /// </summary>
         private readonly ProtobufPublisher<ProtobufQuestXDeviceData> deviceDataPublisher;
+
+        /// <summary>
+        /// Publisher for the headset battery percentage as a standard NT integer.
+        /// </summary>
+        private readonly IntegerPublisher batteryPercentPublisher;
 
         /// <summary>
         /// Publisher for command responses (Quest to robot)
@@ -245,6 +262,26 @@ namespace QuestX.Network
             // This isolates QuestX topics from other NetworkTables data
             ntInstance = new NtInstance(QuestXConstants.Topics.NT_BASE_PATH);
 
+            vioV2Publisher = ntInstance.GetDoubleArrayPublisher(
+                QuestXConstants.Topics.VIO_DATA_V2,
+                QuestXConstants.Network.NtPublisherSettings
+            );
+            aprilTagV2Publisher = ntInstance.GetDoubleArrayPublisher(
+                QuestXConstants.Topics.APRIL_TAG_DATA_V2,
+                QuestXConstants.Network.NtPublisherSettings
+            );
+            limelightTelemetry = new LimelightTelemetry(ntInstance);
+            vioTelemetry = new MeasurementTelemetry(
+                ntInstance,
+                QuestXConstants.Topics.VIO_TELEMETRY,
+                true
+            );
+            aprilTagTelemetry = new MeasurementTelemetry(
+                ntInstance,
+                QuestXConstants.Topics.APRIL_TAG_TELEMETRY,
+                false
+            );
+
             /*
              * PUBLISHER SETUP - Quest sends data TO robot
              * Each publisher is configured with:
@@ -277,6 +314,10 @@ namespace QuestX.Network
             deviceDataPublisher = ntInstance.GetProtobufPublisher<ProtobufQuestXDeviceData>(
                 QuestXConstants.Topics.DEVICE_DATA,
                 ProtobufQuestXDeviceData.Descriptor,
+                QuestXConstants.Network.NtPublisherSettings
+            );
+            batteryPercentPublisher = ntInstance.GetIntegerPublisher(
+                QuestXConstants.Topics.BATTERY_PERCENT,
                 QuestXConstants.Network.NtPublisherSettings
             );
 
@@ -482,10 +523,23 @@ namespace QuestX.Network
             vioData.IsTracking = isTracking;
             vioData.TrackingEpoch = trackingEpoch;
 
-            if (vioDataPublisher.Set(vioData, captureTimestampMicros))
+            // Keep v1 available to existing robots during the migration release.
+            vioDataPublisher.Set(vioData, captureTimestampMicros);
+            MeasurementWireFormat.WriteVio(
+                vioV2,
+                vioData.SequenceId,
+                captureTimestampMicros,
+                appTimestamp,
+                pose,
+                isTracking,
+                trackingEpoch
+            );
+            if (vioV2Publisher.Set(vioV2, captureTimestampMicros))
             {
                 VioPublishCount++;
             }
+            vioTelemetry.Update(vioV2, pose);
+            PublishTelemetry();
         }
 
         /// <inheritdoc />
@@ -529,10 +583,48 @@ namespace QuestX.Network
             aprilTagPoseStdDevs.YawRadians = yawStdDevRadians;
             aprilTagData.PoseStdDevs = aprilTagPoseStdDevs;
 
-            if (aprilTagDataPublisher.Set(aprilTagData, captureTimestampMicros))
+            aprilTagDataPublisher.Set(aprilTagData, captureTimestampMicros);
+            int length = MeasurementWireFormat.AprilTagHeaderLength + (tagIds?.Length ?? 0);
+            if (aprilTagV2.Length != length)
+                aprilTagV2 = new double[length];
+            MeasurementWireFormat.WriteAprilTag(
+                aprilTagV2,
+                aprilTagData.SequenceId,
+                captureTimestampMicros,
+                appTimestamp,
+                pose,
+                tagIds,
+                inlierCount,
+                cornerCount,
+                inlierRatio,
+                averageTagDistanceMeters,
+                xStdDevMeters,
+                yStdDevMeters,
+                zStdDevMeters,
+                rollStdDevRadians,
+                pitchStdDevRadians,
+                yawStdDevRadians
+            );
+            if (aprilTagV2Publisher.Set(aprilTagV2, captureTimestampMicros))
             {
                 AprilTagPublishCount++;
             }
+            aprilTagTelemetry.Update(aprilTagV2, pose);
+            limelightTelemetry.Update(pose, aprilTagV2, captureTimestampMicros, NtNow);
+        }
+
+        public void PublishAprilTagDiagnostics(AprilTagDiagnosticsSnapshot diagnostics) =>
+            limelightTelemetry.Diagnostics(diagnostics);
+
+        private void PublishTelemetry()
+        {
+            long now = NtNow;
+            if (now < nextTelemetryMicros)
+                return;
+            nextTelemetryMicros = now + 100_000;
+            vioTelemetry.Publish(now, VioPublishCount);
+            aprilTagTelemetry.Publish(now, AprilTagPublishCount);
+            limelightTelemetry.Publish(now);
         }
 
         /// <summary>
@@ -552,6 +644,7 @@ namespace QuestX.Network
 
             // Publish data
             deviceDataPublisher.Set(deviceData);
+            batteryPercentPublisher.Set(batteryPercent);
         }
 
         /// <summary>
@@ -647,6 +740,7 @@ namespace QuestX.Network
         /// </summary>
         public void Periodic()
         {
+            PublishTelemetry();
             PollForNewIpAddress();
             PollForConnectionStatus();
             PollInternalNtLog();

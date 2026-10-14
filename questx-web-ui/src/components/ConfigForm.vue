@@ -8,7 +8,7 @@
 
     <!-- Error State -->
     <div v-else-if="configStore.error" class="error-container card">
-      <h3>⚠️ Error</h3>
+      <h3><TriangleAlert :size="19" :stroke-width="1.75" aria-hidden="true" /> Error</h3>
       <p>{{ configStore.error }}</p>
       <button @click="loadData">Retry</button>
     </div>
@@ -42,7 +42,7 @@
           
           <!-- Camera Tab -->
           <div v-show="activeTab === 'Camera'" class="tab-panel">
-            <CameraView />
+            <CameraView :active="activeTab === 'Camera'" />
           </div>
           
           <!-- AprilTag Tab -->
@@ -248,6 +248,7 @@ import LogsView from './LogsView.vue'
 import CameraView from './CameraView.vue'
 import ConfigField from './ConfigField.vue'
 import AprilTagView from './AprilTagView.vue'
+import { TriangleAlert } from '@lucide/vue'
 
 const configStore = useConfigStore()
 const activeTab = ref<string>('Status')
@@ -405,6 +406,10 @@ async function handleUploadDatabase(event: Event) {
 .error-container h3 {
   color: var(--danger-color);
   margin-bottom: 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
 }
 
 .tabs-container {
@@ -414,8 +419,8 @@ async function handleUploadDatabase(event: Event) {
 
 .tabs-nav {
   display: flex;
-  background: var(--bg-tertiary);
-  border-bottom: 2px solid var(--border-color);
+  background: var(--card-bg);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .tab-button {
@@ -423,21 +428,24 @@ async function handleUploadDatabase(event: Event) {
   padding: 1rem 1.5rem;
   background: transparent;
   border: none;
-  border-bottom: 3px solid transparent;
+  border-bottom: 1px solid transparent;
   color: var(--text-secondary);
-  font-weight: 600;
+  font-size: 0.72rem;
+  font-weight: 650;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
   cursor: pointer;
   transition: all 0.2s;
 }
 
 .tab-button:hover {
-  background: var(--card-bg);
+  background: var(--bg-tertiary);
   color: var(--primary-color);
 }
 
 .tab-button.active {
   color: var(--text-primary);
-  background: var(--card-bg);
+  background: var(--bg-secondary);
   border-bottom-color: var(--primary-color);
 }
 
@@ -451,16 +459,19 @@ async function handleUploadDatabase(event: Event) {
   padding: 0.2rem 0.5rem;
   border-radius: 4px;
   font-weight: 700;
+  letter-spacing: 0.06em;
 }
 
 .debug-badge {
-  background: var(--danger-color);
-  color: white;
+  background: transparent;
+  border: 1px solid var(--danger-color);
+  color: var(--danger-color);
 }
 
 .override-badge {
-  background: var(--text-secondary);
-  color: white;
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  color: var(--text-secondary);
 }
 
 .warning-text {

@@ -28,6 +28,10 @@ namespace QuestX.QuestX.AprilTag
         /// </summary>
         private HashSet<int> knownIds = new HashSet<int>();
 
+        [JsonIgnore] public string LoadedFile { get; private set; } = "";
+        [JsonIgnore] public string LoadError { get; private set; } = "Not loaded";
+        [JsonIgnore] public bool IsLoaded => knownIds.Count > 0 && string.IsNullOrEmpty(LoadError);
+
         /// <summary>
         /// Represents the physical size of the AprilTags on the field
         /// </summary>
@@ -121,14 +125,25 @@ namespace QuestX.QuestX.AprilTag
 
                 if (root == null || root.Tags == null || root.Tags.Count == 0)
                 {
+                    LoadError = "Field layout has no valid tags";
                     QueuedLogger.LogError(
                         $"Field layout file '{filePath}' deserialized to an empty / invalid layout."
                     );
                     return false;
                 }
 
+                if (root.Field == null || root.Field.X <= 0 || root.Field.Y <= 0)
+                    throw new InvalidDataException("Field dimensions length/width must be positive");
+                var unique = new HashSet<int>();
+                foreach (var tag in root.Tags)
+                {
+                    if (tag == null || tag.Pose == null || !unique.Add(tag.ID))
+                        throw new InvalidDataException("Missing tag pose or duplicate tag ID");
+                }
                 Tags = root.Tags;
                 Field = root.Field;
+                LoadedFile = Path.GetFileName(filePath);
+                LoadError = "";
 
                 var rebuilt = new HashSet<int>();
                 foreach (var tag in Tags)
@@ -147,6 +162,7 @@ namespace QuestX.QuestX.AprilTag
                 QueuedLogger.LogError(
                     $"Failed to load field layout '{filePath}': {ex.GetType().Name}: {ex.Message}"
                 );
+                LoadError = ex.Message;
                 return false;
             }
         }

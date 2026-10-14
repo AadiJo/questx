@@ -111,6 +111,7 @@ namespace QuestX.WebServer
         private double aprilTagAverageDistanceMeters;
         private double aprilTagLinearStdDevMeters;
         private string aprilTagLastOutcome = "Not started";
+        private AprilTagDiagnosticsSnapshot aprilTagDiagnostics;
         private string aprilTagLastReason = "";
         private int passthroughCaptureFailureCount;
         private int passthroughConsecutiveCaptureFailures;
@@ -235,6 +236,7 @@ namespace QuestX.WebServer
                 aprilTagAverageDistanceMeters = aprilTag.LastAverageTagDistanceMeters;
                 aprilTagLinearStdDevMeters = aprilTag.LastLinearStdDevMeters;
                 aprilTagLastOutcome = aprilTag.LastOutcome;
+                aprilTagDiagnostics = aprilTag;
                 aprilTagLastReason = aprilTag.LastReason;
             }
         }
@@ -328,6 +330,10 @@ namespace QuestX.WebServer
                     aprilTag = new
                     {
                         detectorActive = aprilTagDetectorActive,
+                        fieldLayout = aprilTagDiagnostics?.FieldLayoutFile ?? "",
+                        layoutLoaded = aprilTagDiagnostics?.LayoutLoaded ?? false,
+                        layoutTagCount = aprilTagDiagnostics?.LayoutTagCount ?? 0,
+                        detectedIds = aprilTagDiagnostics?.DetectedIds ?? System.Array.Empty<int>(),
                         cameraFrameCount = aprilTagCameraFrameCount,
                         cameraFailureCount = aprilTagCameraFailureCount,
                         solveCount = aprilTagSolveCount,

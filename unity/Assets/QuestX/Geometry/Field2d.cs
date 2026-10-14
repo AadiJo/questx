@@ -4,17 +4,17 @@ namespace QuestX.QuestX.Geometry
 {
     public class Field2d
     {
-        [JsonProperty("x")]
+        [JsonProperty("length")]
         public double X { get; set; }
 
-        [JsonProperty("y")]
+        [JsonProperty("width")]
         public double Y { get; set; }
 
         [JsonConstructor]
-        public Field2d(double x, double y)
+        public Field2d(double length, double width)
         {
-            X = x;
-            Y = y;
+            X = length;
+            Y = width;
         }
     }
 }

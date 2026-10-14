@@ -314,7 +314,8 @@ namespace QuestX.Core
                 passthroughFrameSource,
                 cameraArbiter,
                 cameraAccess,
-                resetTransform
+                resetTransform,
+                aprilTagManager.Overlay
             );
 
             commandProcessor = new CommandProcessor(
@@ -391,6 +392,7 @@ namespace QuestX.Core
         /// </summary>
         private void SlowUpdate()
         {
+            networkTableConnection.PublishAprilTagDiagnostics(aprilTagManager.GetDiagnosticsSnapshot());
             // Poll for connection status, logging, ip address changes, etc.
             networkTableConnection.Periodic();
 
@@ -646,7 +648,10 @@ namespace QuestX.Core
         /// </summary>
         private void UpdateDeviceData()
         {
-            batteryPercent = (int)(SystemInfo.batteryLevel * 100);
+            float batteryLevel = SystemInfo.batteryLevel;
+            batteryPercent = batteryLevel < 0
+                ? -1
+                : Mathf.Clamp(Mathf.RoundToInt(batteryLevel * 100), 0, 100);
         }
 
         /// <summary>

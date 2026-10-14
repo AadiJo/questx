@@ -168,9 +168,9 @@ namespace QuestX.Config
             public double AprilTagDetectorMaxDistance { get; set; } = 4.0;
 
             /// <summary>
-            /// Minimum number of tags required to report a valid pose. Default is 2.
+            /// Minimum number of tags required to report a valid pose. Default is 1.
             /// </summary>
-            public int AprilTagDetectorMinimumNumberOfTags { get; set; } = 2;
+            public int AprilTagDetectorMinimumNumberOfTags { get; set; } = 1;
 
             /// <summary>
             /// Filename of the AprilTag field-layout JSON to load at startup. The file is

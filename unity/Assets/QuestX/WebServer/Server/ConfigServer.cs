@@ -19,6 +19,7 @@ using static QuestX.Config.Config;
 // is itself inside QuestX.WebServer.Server. Otherwise a bare QuestX.QuestX.AprilTag
 // resolves to QuestX.WebServer.Server.QuestX.QuestX.AprilTag and fails to find it.
 using AprilTagFieldLayoutDomain = QuestX.QuestX.AprilTag.AprilTagFieldLayout;
+using AprilTagOverlayDomain = QuestX.QuestX.AprilTag.AprilTagOverlay;
 
 namespace QuestX.WebServer.Server
 {
@@ -55,6 +56,7 @@ namespace QuestX.WebServer.Server
         private readonly string cachedDatabasePath;
 
         private readonly VideoStreamProvider streamProvider;
+        private readonly AprilTagOverlayDomain aprilTagOverlay;
 
         /// <summary>
         /// Meta SDK passthrough camera reference. Used to enumerate supported resolutions
@@ -89,6 +91,7 @@ namespace QuestX.WebServer.Server
         /// <param name="logCollector">Log collector instance for log messages.</param>
         /// <param name="streamProvider">Stream provider instance for video streaming.</param>
         /// <param name="cameraAccess">Meta SDK camera reference used for the AprilTag video-modes endpoint.</param>
+        /// <param name="aprilTagOverlay">Thread-safe, latest detection snapshot for the camera overlay.</param>
         public ConfigServer(
             IConfigManager configManager,
             int port,
@@ -98,7 +101,8 @@ namespace QuestX.WebServer.Server
             StatusProvider statusProvider,
             LogCollector logCollector,
             VideoStreamProvider streamProvider,
-            PassthroughCameraAccess cameraAccess
+            PassthroughCameraAccess cameraAccess,
+            AprilTagOverlayDomain aprilTagOverlay
         )
         {
             this.configManager = configManager;
@@ -110,6 +114,7 @@ namespace QuestX.WebServer.Server
             this.logCollector = logCollector;
             this.streamProvider = streamProvider;
             this.cameraAccess = cameraAccess;
+            this.aprilTagOverlay = aprilTagOverlay;
 
             cachedDatabasePath = Path.Combine(Application.persistentDataPath, "config.db");
 
@@ -206,6 +211,34 @@ namespace QuestX.WebServer.Server
                     Encoding.Default
                 );
             }
+        }
+
+        private async Task HandleAprilTagFrame(IHttpContext context)
+        {
+            string afterValue = context.Request.QueryString["after"];
+            long after = -1;
+            if (afterValue != null && (!long.TryParse(afterValue, out after) || after < -1))
+            {
+                context.Response.StatusCode = 400;
+                await SendJsonResponse(context, new { message = "Invalid frame ID" });
+                return;
+            }
+
+            using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                context.CancellationToken,
+                cancellationTokenSource.Token
+            );
+            try
+            {
+                var packet = await aprilTagOverlay.ReadAsync(after, cancellation.Token);
+                context.Response.Headers.Add("Cache-Control", "no-store");
+                context.Response.ContentType = "application/octet-stream";
+                context.Response.ContentLength64 = packet.ContentLength;
+                using var output = context.OpenResponseStream(preferCompression: false);
+                await packet.WriteAsync(output, cancellation.Token);
+            }
+            catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
+            catch (IOException) { } // Viewer closed the connection while a frame was being sent.
         }
 
         /// <summary>
@@ -335,6 +368,10 @@ namespace QuestX.WebServer.Server
                 else if (path == "/api/video-modes" && context.Request.HttpVerb == HttpVerbs.Get)
                 {
                     await HandleGetVideoModes(context);
+                }
+                else if (path == "/api/apriltag-frame" && context.Request.HttpVerb == HttpVerbs.Get)
+                {
+                    await HandleAprilTagFrame(context);
                 }
                 else if (
                     path == "/api/apriltag-field-layouts"

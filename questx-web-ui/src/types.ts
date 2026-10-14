@@ -13,6 +13,22 @@ export interface VideoModeModel {
   framerate: number
 }
 
+export interface AprilTagFrameMetadata {
+  version: 1
+  enabled: boolean
+  streamEnabled: boolean
+  frameId: number
+  width: number
+  height: number
+  ageMs: number
+  waitMs: number
+  maxAgeMs: number
+  tags: {
+    id: number
+    corners: { x: number; y: number }[]
+  }[]
+}
+
 export interface AprilTagDetectorMode {
   mode: number
   width: number

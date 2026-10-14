@@ -3,7 +3,7 @@ using QuestX.QuestX.Geometry;
 namespace QuestX.QuestX.AprilTag
 {
     /// <summary>
-    /// A field-relative AprilTag camera-pose measurement produced on the Quest.
+    /// A field-relative AprilTag headset-center pose measurement produced on the Quest.
     /// This is an unfused sensor measurement; the robot is responsible for deciding
     /// whether and how to apply it to its field-pose estimator.
     /// </summary>
@@ -75,6 +75,10 @@ namespace QuestX.QuestX.AprilTag
         public double LastLinearStdDevMeters { get; }
         public string LastOutcome { get; }
         public string LastReason { get; }
+        public string FieldLayoutFile { get; set; } = "";
+        public bool LayoutLoaded { get; set; }
+        public int LayoutTagCount { get; set; }
+        public int[] DetectedIds { get; set; } = System.Array.Empty<int>();
 
         public AprilTagDiagnosticsSnapshot(
             bool detectorActive,

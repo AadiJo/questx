@@ -2,6 +2,10 @@
   <!-- Preserve WebServer types -->
   <assembly fullname="QuestX">
     <type fullname="QuestX.WebServer.*" preserve="all" />
+    <!-- Synchronized preview DTOs are serialized through JSON.NET reflection. -->
+    <type fullname="QuestX.QuestX.AprilTag.AprilTagOverlayMetadata" preserve="all" />
+    <type fullname="QuestX.QuestX.AprilTag.AprilTagOverlayTag" preserve="all" />
+    <type fullname="QuestX.QuestX.AprilTag.AprilTagOverlayPoint" preserve="all" />
   </assembly>
   <!-- Preserve EmbedIO for HTTP server -->
   <assembly fullname="EmbedIO" preserve="all" />

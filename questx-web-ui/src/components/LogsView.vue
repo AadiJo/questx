@@ -2,9 +2,9 @@
   <div class="logs-view">
     <div class="logs-controls">
       <div class="controls-left">
-        <button @click="loadLogs" class="secondary">🔄 Refresh</button>
-        <button @click="exportLogs" class="secondary">💾 Export</button>
-        <button @click="clearLogs" class="danger">🗑️ Clear Logs</button>
+        <button @click="loadLogs" class="secondary action-button"><RefreshCw :size="15" :stroke-width="1.75" aria-hidden="true" /> Refresh</button>
+        <button @click="exportLogs" class="secondary action-button"><Download :size="15" :stroke-width="1.75" aria-hidden="true" /> Export</button>
+        <button @click="clearLogs" class="danger action-button"><Trash2 :size="15" :stroke-width="1.75" aria-hidden="true" /> Clear Logs</button>
         <label class="auto-scroll-label">
           <input type="checkbox" v-model="autoScroll" />
           Auto-scroll
@@ -52,6 +52,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { configApi } from '../api/config'
+import { Download, RefreshCw, Trash2 } from '@lucide/vue'
 
 interface LogEntry {
   Message: string
@@ -224,7 +225,7 @@ onUnmounted(() => {
   flex-wrap: wrap;
   padding: 1rem;
   background: var(--card-bg);
-  border-radius: 8px;
+  border-radius: 4px;
   border: 1px solid var(--border-color);
 }
 
@@ -234,6 +235,12 @@ onUnmounted(() => {
   align-items: center;
   gap: 0.75rem;
   flex-wrap: wrap;
+}
+
+.action-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
 }
 
 .auto-scroll-label {
@@ -246,7 +253,7 @@ onUnmounted(() => {
   font-weight: 600;
   padding: 0.5rem 1rem;
   background: var(--bg-tertiary);
-  border-radius: 6px;
+  border-radius: 4px;
   transition: all 0.2s ease;
   border: 1px solid var(--border-color);
 }
@@ -266,7 +273,7 @@ onUnmounted(() => {
   padding: 0.6rem 1rem;
   background: var(--input-bg);
   border: 1px solid var(--border-color);
-  border-radius: 6px;
+  border-radius: 4px;
   color: var(--text-primary);
   font-weight: 600;
   cursor: pointer;
@@ -280,7 +287,7 @@ onUnmounted(() => {
 .filter-select:focus {
   outline: none;
   border-color: var(--primary-color);
-  box-shadow: 0 0 0 3px rgba(51, 161, 253, 0.1);
+  box-shadow: 0 0 0 2px var(--focus-ring);
 }
 
 .log-count {
@@ -289,7 +296,9 @@ onUnmounted(() => {
   font-weight: 700;
   background: var(--bg-tertiary);
   padding: 0.5rem 1rem;
-  border-radius: 6px;
+  border-radius: 4px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
 }
 
 .loading-container {
@@ -309,9 +318,9 @@ onUnmounted(() => {
 
 .error-message {
   padding: 1.5rem;
-  background: rgba(220, 53, 69, 0.1);
-  border: 2px solid var(--danger-color);
-  border-radius: 8px;
+  background: var(--card-bg);
+  border: 1px solid var(--danger-color);
+  border-radius: 4px;
   color: var(--danger-color);
   text-align: center;
   font-weight: 600;
@@ -322,17 +331,17 @@ onUnmounted(() => {
   overflow-y: auto;
   padding: 1.5rem;
   font-size: 0.875rem;
-  background: #1e1e1e;
-  color: #d4d4d4;
-  border-radius: 8px;
-  border: 1px solid #333;
+  background: #090909;
+  color: #d9d9d4;
+  border-radius: 4px;
+  border: 1px solid var(--border-color);
   scrollbar-width: thin;
   scrollbar-color: #555 #2a2a2a;
   line-height: 1.6;
 }
 
 .logs-container.terminal {
-  background: #1e1e1e;
+  background: #090909;
 }
 
 .logs-container::-webkit-scrollbar {
@@ -437,4 +446,3 @@ onUnmounted(() => {
   }
 }
 </style>
-
