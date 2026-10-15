@@ -38,7 +38,8 @@ class MeasurementFrameTest {
             new PoseStandardDeviations(0.1, 0.2, 0.3, 0.01, 0.02, 0.03),
             0.1,
             0.6,
-            sourceTagAmbiguities);
+            sourceTagAmbiguities,
+            41.25);
 
     sourceTagIds.add(3);
     sourceTagAmbiguities.add(0.9);

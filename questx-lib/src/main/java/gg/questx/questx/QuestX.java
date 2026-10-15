@@ -871,7 +871,8 @@ public class QuestX {
             stdDevs.getYawRadians()),
         Double.NaN,
         Double.NaN,
-        List.of());
+        List.of(),
+        Double.NaN);
   }
 
   private double measurementAgeMillis(long serverTimeMicros) {

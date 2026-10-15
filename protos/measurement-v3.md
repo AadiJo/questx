@@ -1,33 +1,58 @@
 # QuestX AprilTag measurement v3
 
 The Quest publishes `/QuestX/v3/apriltag`, an atomic NetworkTables `double[]` that
-adds pose ambiguity and fit error to the v2 AprilTag measurement. The app keeps
+adds pose ambiguity, fit error, and processing latency to the v2 AprilTag
+measurement. The app keeps
 publishing `/QuestX/v2/apriltag` (unchanged) and the `aprilTagData` protobuf so
 existing robot code keeps working. VIO stays at `/QuestX/v2/vio`.
 
 The Java library's default constructor selects `MeasurementTransport.V3`, which
 reads `/QuestX/v2/vio` and `/QuestX/v3/apriltag`. Select `V2` or
 `LEGACY_PROTOBUF` explicitly for older headset apps; those transports report
-ambiguity as NaN and an empty per-tag list.
+ambiguity and processing latency as NaN and an empty per-tag list.
 
 ## Array layout
 
 Indices 0–22 are identical to v2: the shared prefix (sequence ID and capture
 timestamp as uint32 word pairs, app uptime, translation, quaternion w, x, y, z),
 then tag count, inlier and total corner counts, inlier ratio, average tag
-distance, and six standard deviations. v3 contains exactly **25 + 2 × tagCount**
+distance, and six standard deviations. v3 contains exactly **26 + 2 × tagCount**
 doubles:
 
 | Index | Field |
 | --- | --- |
-| 0–22 | v2 fields, unchanged |
+| 0–1 | Sequence ID, unsigned 64-bit: low uint32 word, high uint32 word |
+| 2–3 | Capture timestamp, signed 64-bit microseconds on the Quest NT clock: low word, high word |
+| 4 | App uptime, seconds (diagnostic only) |
+| 5–7 | Headset translation x, y, z, meters (field frame) |
+| 8–11 | Headset rotation quaternion w, x, y, z |
+| 12 | Tag count N, uint32 |
+| 13 | Inlier corner count, uint32 |
+| 14 | Total corner count, uint32 |
+| 15 | Inlier ratio, 0–1 |
+| 16 | Average camera-to-tag distance, meters |
+| 17–19 | Standard deviations x, y, z, meters |
+| 20–22 | Standard deviations roll, pitch, yaw, radians |
 | 23 | Measurement ambiguity, 0–1 |
 | 24 | Reprojection error of the published pose, RMS pixels, nonnegative |
-| 25 to 24 + N | Tag IDs, detector order |
-| 25 + N to 24 + 2N | Per-tag ambiguity, 0–1, same order as the IDs |
+| 25 | Processing latency, milliseconds, nonnegative |
+| 26 to 25 + N | Tag IDs, detector order |
+| 26 + N to 25 + 2N | Per-tag ambiguity, 0–1, same order as the IDs |
 
-N is the tag count at index 12. The decoder rejects arrays whose length or
-ranges do not match, in addition to the v2 checks.
+Indices 0–22 match v2 exactly. N is the tag count at index 12. Every value must
+be finite. The decoder rejects arrays whose length or ranges do not match, in
+addition to the v2 checks.
+
+## Processing latency
+
+Index 25 is the time from camera capture to publication of this array on the
+Quest: `max(0, (publishTime − captureTime) / 1000)` milliseconds, with both
+times on the Quest's NetworkTables clock. It is the same number the app
+publishes at `/QuestX/limelight/latencyMilliseconds` for this measurement, so
+one atomic v3 read carries everything a robot needs without associating
+separate topics. The array's NetworkTables value timestamp remains the capture
+time (index 2–3); use it, not the latency, for fusion timestamps. There is no
+upper bound; robots should apply their own age limit.
 
 ## Ambiguity
 
@@ -64,9 +89,9 @@ Index 10 is now the mean tag area; tag span (index 8) is still unsupported and 0
 
 ## Telemetry
 
-`/QuestX/telemetry/apriltag/` adds `ambiguity`, `reprojectionErrorPixels`, and
-`tagAmbiguities`. These are diagnostic snapshots; do not combine them for
-fusion.
+`/QuestX/telemetry/apriltag/` adds `ambiguity`, `reprojectionErrorPixels`,
+`processingLatencyMilliseconds`, and `tagAmbiguities`. These are diagnostic
+snapshots; do not combine them for fusion.
 
 ## Tracking epochs and pose resets
 
@@ -90,6 +115,14 @@ while the headset is not tracking or a recenter is settling.
 
 Run `dotnet run --project tests/measurement-checks/MeasurementChecks.csproj`
 for the ambiguity, VIO-frame, and encoder checks. Add `--export-fixtures` to
-regenerate `questx-lib/src/test/resources/measurement-v3/apriltag.txt` from the
-production C# encoder; `MeasurementWireFixtures.Export` in the Unity editor
-writes the same values. Then run `questx-lib/gradlew test` with JDK 17.
+regenerate the fixtures in `questx-lib/src/test/resources/measurement-v3/` from
+the production C# encoder:
+
+- `apriltag.txt`: synthetic values in every field. `MeasurementWireFixtures.Export`
+  in the Unity editor writes the same values.
+- `apriltag-single-tag.txt` and `apriltag-two-tags.txt`: realistic frames for
+  robot-side decoder tests. They show REBUILT tags 26 and 25 + 26 (coplanar on the
+  blue hub face) seen from headset height, with ambiguity and fit error computed
+  by the production solver from projected corners with 0.3 px noise.
+
+Then run `questx-lib/gradlew test` with JDK 17.

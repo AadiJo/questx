@@ -215,9 +215,35 @@ Check(nearOblique < 0.1, "Near, oblique single tag should not be ambiguous");
 
 VioFrameChecks.Run(Check);
 WireChecks.Run(Check);
+
+// 8. Sample v3 frames for robot-side decoder tests: real 2026 REBUILT tags on the blue hub face
+// (25 and 26 share the x = 4.022 m plane and face the blue wall), seen from headset height.
+// Ambiguity and fit error come from the production solver; the encoder is the production one.
+double[] SampleFrame(double[] eyePosition, int[] ids, double[][] centers, int seed, ulong sequence,
+    long captureMicros, double appTimestamp, double latencyMs)
+{
+    var corners = centers.SelectMany(c => TagCorners(c[0], c[1], c[2], Math.PI)).ToArray();
+    var aim = new[] { centers.Average(c => c[0]), centers.Average(c => c[1]), centers.Average(c => c[2]) };
+    var (r, t) = LookAt(eyePosition, aim);
+    var quality = Evaluate(corners, Project(corners, r, t, 0.3, seed).Points2d, ids.Length, r, t);
+    var headset = new QuestX.QuestX.Geometry.Pose3d(eyePosition[0], eyePosition[1], eyePosition[2],
+        new QuestX.QuestX.Geometry.Rotation3d(0, 0, Math.Atan2(aim[1] - eyePosition[1], aim[0] - eyePosition[0])));
+    double distance = centers.Average(c => Norm(Sub(c, eyePosition)));
+    return WireChecks.EncodeSample(sequence, captureMicros, appTimestamp, headset, ids, distance, quality, latencyMs);
+}
+var tag25 = new[] { 4.022, 4.39, 1.124 };
+var tag26 = new[] { 4.022, 4.035, 1.124 };
+var singleTag = SampleFrame(new[] { 1.0, 2.8, 0.55 }, new[] { 26 }, new[] { tag26 }, 2468, 1041, 81_234_567, 812.25, 41.25);
+var twoTags = SampleFrame(new[] { 2.0, 4.6, 0.55 }, new[] { 25, 26 }, new[] { tag25, tag26 }, 2468, 1042, 81_267_890, 812.283, 39.5);
+WireChecks.CheckSample(Check, singleTag, "single-tag sample");
+WireChecks.CheckSample(Check, twoTags, "two-tag sample");
+Check(singleTag[23] > 0.25 && singleTag[23] < 0.35, "Single-tag sample has ambiguity near 0.3");
+Console.WriteLine("Single-tag v3 sample: " + WireChecks.Format(singleTag));
+Console.WriteLine("Two-tag v3 sample: " + WireChecks.Format(twoTags));
+
 if (args.Contains("--export-fixtures"))
 {
-    WireChecks.Export(Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../..")));
+    WireChecks.Export(Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../..")), singleTag, twoTags);
 }
 
 Console.WriteLine($"{assertions} measurement checks passed");

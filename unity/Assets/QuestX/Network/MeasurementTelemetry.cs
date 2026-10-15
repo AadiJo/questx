@@ -71,6 +71,7 @@ namespace QuestX.Network
                     "stdDevYawRadians",
                     "ambiguity",
                     "reprojectionErrorPixels",
+                    "processingLatencyMilliseconds",
                 };
                 qualityPublishers = new DoublePublisher[quality.Length];
                 for (int i = 0; i < quality.Length; i++)

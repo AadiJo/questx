@@ -607,6 +607,9 @@ namespace QuestX.Network
             {
                 tagAmbiguities[i] = measurement.Observations[i].Ambiguity;
             }
+            // Same value as /QuestX/limelight/latencyMilliseconds, so one atomic v3 read carries it.
+            long now = NtNow;
+            double processingLatencyMilliseconds = Math.Max(0, (now - captureTimestampMicros) / 1000.0);
             int v3Length = MeasurementWireFormat.AprilTagV3HeaderLength + 2 * tagCount;
             if (aprilTagV3.Length != v3Length)
                 aprilTagV3 = new double[v3Length];
@@ -629,11 +632,12 @@ namespace QuestX.Network
                 yawStdDevRadians,
                 measurement.Ambiguity,
                 measurement.ReprojectionErrorPixels,
+                processingLatencyMilliseconds,
                 tagAmbiguities
             );
             aprilTagV3Publisher.Set(aprilTagV3, captureTimestampMicros);
             aprilTagTelemetry.Update(aprilTagV3, pose);
-            limelightTelemetry.Update(measurement, captureTimestampMicros, NtNow);
+            limelightTelemetry.Update(measurement, captureTimestampMicros, now);
         }
 
         public void PublishAprilTagDiagnostics(AprilTagDiagnosticsSnapshot diagnostics) =>

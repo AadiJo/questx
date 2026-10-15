@@ -74,7 +74,7 @@ namespace QuestX.Editor.CI
             Debug.Log("Measurement v3 C# fixtures exported to " + outputV3);
         }
 
-        /// <summary>The v2 AprilTag fixture's values plus ambiguity and fit error.</summary>
+        /// <summary>The v2 AprilTag fixture's values plus ambiguity, fit error, and latency.</summary>
         public static void WriteAprilTagV3Fixture(double[] target, Pose3d pose)
         {
             MeasurementWireFormat.WriteAprilTagV3(
@@ -96,6 +96,7 @@ namespace QuestX.Editor.CI
                 0.03,
                 0.125,
                 0.875,
+                38.5,
                 new[] { 0.5, 0.25, 0.0625 }
             );
         }

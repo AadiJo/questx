@@ -85,12 +85,14 @@ namespace QuestX.Editor.CI
             Near(packet[24], 2, "v2 IDs unchanged");
             var v3 = new double[MeasurementWireFormat.AprilTagV3HeaderLength + 4];
             MeasurementWireFormat.WriteAprilTagV3(v3, 0, 123456, 2, good, new[]{1,2}, 8, 8, 1,
-                1.8, 0.1, 0.1, 0.2, 0.3, 0.3, 0.15, 0.04, 0.7, new[]{0.2, 0.6});
+                1.8, 0.1, 0.1, 0.2, 0.3, 0.3, 0.15, 0.04, 0.7, 38.5, new[]{0.2, 0.6});
+            Assert(v3.Length == 26 + 2 * 2, "v3 length is 26 + 2 * tagCount");
             Near(v3[22], 0.15, "v3 keeps v2 header");
             Near(v3[23], 0.04, "v3 ambiguity");
             Near(v3[24], 0.7, "v3 reprojection error");
-            Near(v3[26], 2, "v3 IDs follow header");
-            Near(v3[28], 0.6, "v3 per-tag ambiguities follow IDs");
+            Near(v3[25], 38.5, "v3 processing latency");
+            Near(v3[27], 2, "v3 IDs follow header");
+            Near(v3[29], 0.6, "v3 per-tag ambiguities follow IDs");
             string report = Path.GetFullPath(Path.Combine(Application.dataPath, "../../submission/localization-checks.json"));
             Directory.CreateDirectory(Path.GetDirectoryName(report));
             File.WriteAllText(report, JsonConvert.SerializeObject(new { passed = checks, failed = 0, utc = DateTime.UtcNow }));

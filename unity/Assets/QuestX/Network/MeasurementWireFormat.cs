@@ -12,11 +12,11 @@ namespace QuestX.Network
         public const int AprilTagHeaderLength = 23;
 
         /// <summary>
-        /// v3 AprilTag arrays repeat the v2 fields at indices 0-22, then add ambiguity (23) and
-        /// reprojection error in pixels (24). Tag IDs follow, then one ambiguity per tag:
-        /// 25 + 2 * tagCount doubles in total.
+        /// v3 AprilTag arrays repeat the v2 fields at indices 0-22, then add ambiguity (23),
+        /// reprojection error in pixels (24), and processing latency in milliseconds (25). Tag IDs
+        /// follow, then one ambiguity per tag: 26 + 2 * tagCount doubles in total.
         /// </summary>
-        public const int AprilTagV3HeaderLength = 25;
+        public const int AprilTagV3HeaderLength = 26;
 
         public static void WriteCommon(
             double[] target,
@@ -120,6 +120,7 @@ namespace QuestX.Network
             double yawStdDev,
             double ambiguity,
             double reprojectionErrorPixels,
+            double processingLatencyMilliseconds,
             double[] tagAmbiguities
         )
         {
@@ -143,6 +144,7 @@ namespace QuestX.Network
             );
             target[23] = ambiguity;
             target[24] = reprojectionErrorPixels;
+            target[25] = processingLatencyMilliseconds;
             int count = tagIds?.Length ?? 0;
             for (int i = 0; i < count; i++)
             {

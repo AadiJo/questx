@@ -81,6 +81,7 @@ class MeasurementWireFormatTest {
     assertFalse(frame.hasAmbiguity(), "v2 arrays do not carry ambiguity");
     assertTrue(Double.isNaN(frame.reprojectionErrorPixels()));
     assertTrue(frame.tagAmbiguities().isEmpty());
+    assertTrue(Double.isNaN(frame.processingLatencyMilliseconds()));
   }
 
   @Test
@@ -99,27 +100,49 @@ class MeasurementWireFormatTest {
     assertTrue(frame.hasAmbiguity());
     assertEquals(0.125, frame.ambiguity());
     assertEquals(0.875, frame.reprojectionErrorPixels());
+    assertEquals(38.5, frame.processingLatencyMilliseconds());
     assertEquals(List.of(0.5, 0.25, 0.0625), frame.tagAmbiguities());
+  }
+
+  @Test
+  void decodesEncoderSampleFrames() throws IOException {
+    var single =
+        MeasurementWireFormat.aprilTagV3(fixture("measurement-v3", "apriltag-single-tag"), 1);
+    assertNotNull(single);
+    assertEquals(1041, single.sequenceId());
+    assertEquals(81_234_567, single.captureTimestampMicros());
+    assertEquals(List.of(26), single.tagIds());
+    assertEquals(0.306, single.ambiguity(), 0.001);
+    assertEquals(List.of(single.ambiguity()), single.tagAmbiguities());
+    assertEquals(41.25, single.processingLatencyMilliseconds());
+
+    var pair = MeasurementWireFormat.aprilTagV3(fixture("measurement-v3", "apriltag-two-tags"), 1);
+    assertNotNull(pair);
+    assertEquals(List.of(25, 26), pair.tagIds());
+    assertEquals(8, pair.cornerCount());
+    assertEquals(2, pair.tagAmbiguities().size());
+    assertTrue(pair.ambiguity() < pair.tagAmbiguities().get(1), "coplanar pair solved jointly");
+    assertEquals(39.5, pair.processingLatencyMilliseconds());
   }
 
   @Test
   void rejectsMalformedAprilTagV3() throws IOException {
     var valid = fixture("measurement-v3", "apriltag");
     assertNull(MeasurementWireFormat.aprilTagV3(fixture("apriltag"), 1), "v2 layout is not v3");
-    assertNull(MeasurementWireFormat.aprilTagV3(Arrays.copyOf(valid, 25), 1));
+    assertNull(MeasurementWireFormat.aprilTagV3(Arrays.copyOf(valid, 26), 1));
     assertNull(MeasurementWireFormat.aprilTagV3(Arrays.copyOf(valid, valid.length - 1), 1));
     for (int i = 0; i < valid.length; i++) {
       var invalid = valid.clone();
       invalid[i] = Double.NaN;
       assertNull(MeasurementWireFormat.aprilTagV3(invalid, 1));
     }
-    // Ambiguity, reprojection error, and per-tag ambiguity ranges.
-    for (int index : new int[] {23, 24, 28, 29, 30}) {
+    // Ambiguity, reprojection error, processing latency, and per-tag ambiguity ranges.
+    for (int index : new int[] {23, 24, 25, 29, 30, 31}) {
       var invalid = valid.clone();
       invalid[index] = -0.01;
       assertNull(MeasurementWireFormat.aprilTagV3(invalid, 1));
     }
-    for (int index : new int[] {23, 28, 30}) {
+    for (int index : new int[] {23, 29, 31}) {
       var invalid = valid.clone();
       invalid[index] = 1.01;
       assertNull(MeasurementWireFormat.aprilTagV3(invalid, 1));
@@ -128,14 +151,17 @@ class MeasurementWireFormatTest {
     largeError[24] = 40;
     assertNotNull(
         MeasurementWireFormat.aprilTagV3(largeError, 1), "Reprojection error is unbounded");
+    var slow = valid.clone();
+    slow[25] = 5_000;
+    assertNotNull(MeasurementWireFormat.aprilTagV3(slow, 1), "Latency has no upper bound");
     var badId = valid.clone();
-    badId[26] = 2.5;
+    badId[27] = 2.5;
     assertNull(MeasurementWireFormat.aprilTagV3(badId, 1));
   }
 
   @Test
   void decodesAprilTagV3WithoutTags() throws IOException {
-    var data = Arrays.copyOf(fixture("measurement-v3", "apriltag"), 25);
+    var data = Arrays.copyOf(fixture("measurement-v3", "apriltag"), 26);
     data[12] = 0;
     var frame = MeasurementWireFormat.aprilTagV3(data, 1);
     assertNotNull(frame);

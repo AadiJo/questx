@@ -46,30 +46,33 @@ final class MeasurementWireFormat {
     if (ids == null) {
       return null;
     }
-    return aprilTagFrame(data, serverTimeMicros, ids, Double.NaN, Double.NaN, List.of());
+    return aprilTagFrame(
+        data, serverTimeMicros, ids, Double.NaN, Double.NaN, List.of(), Double.NaN);
   }
 
   /**
    * Decodes a v3 AprilTag array: the v2 fields at 0-22, ambiguity (23), reprojection error in
-   * pixels (24), then the tag IDs followed by one ambiguity per tag.
+   * pixels (24), processing latency in milliseconds (25), then the tag IDs followed by one
+   * ambiguity per tag.
    */
   static AprilTagFrame aprilTagV3(double[] data, long serverTimeMicros) {
-    if (!validAprilTagHeader(data, serverTimeMicros, 25, 2)
+    if (!validAprilTagHeader(data, serverTimeMicros, 26, 2)
         || !unitInterval(data[23])
-        || data[24] < 0) {
+        || data[24] < 0
+        || data[25] < 0) {
       return null;
     }
     int count = (int) data[12];
-    var ids = tagIds(data, 25, count);
+    var ids = tagIds(data, 26, count);
     if (ids == null) {
       return null;
     }
     var ambiguities = new ArrayList<Double>(count);
-    for (int i = 25 + count; i < data.length; i++) {
+    for (int i = 26 + count; i < data.length; i++) {
       if (!unitInterval(data[i])) return null;
       ambiguities.add(data[i]);
     }
-    return aprilTagFrame(data, serverTimeMicros, ids, data[23], data[24], ambiguities);
+    return aprilTagFrame(data, serverTimeMicros, ids, data[23], data[24], ambiguities, data[25]);
   }
 
   private static boolean validAprilTagHeader(
@@ -107,7 +110,8 @@ final class MeasurementWireFormat {
       List<Integer> ids,
       double ambiguity,
       double reprojectionErrorPixels,
-      List<Double> tagAmbiguities) {
+      List<Double> tagAmbiguities,
+      double processingLatencyMilliseconds) {
     return new AprilTagFrame(
         pose(data),
         serverTimeMicros / 1_000_000.0,
@@ -123,7 +127,8 @@ final class MeasurementWireFormat {
         new PoseStandardDeviations(data[17], data[18], data[19], data[20], data[21], data[22]),
         ambiguity,
         reprojectionErrorPixels,
-        tagAmbiguities);
+        tagAmbiguities,
+        processingLatencyMilliseconds);
   }
 
   private static boolean validCommon(double[] data, long serverTimeMicros) {

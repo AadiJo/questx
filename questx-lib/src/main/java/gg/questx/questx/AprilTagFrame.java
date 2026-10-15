@@ -25,7 +25,8 @@ import java.util.List;
  * one pose clearly fits, 1 = indistinguishable). Several coplanar tags are evaluated as one plane;
  * tags on different planes report 0. A common policy rejects single-tag frames whose ambiguity
  * exceeds about 0.2. Ambiguity fields are NaN or empty when the selected transport does not carry
- * them ({@link MeasurementTransport#V2} and {@link MeasurementTransport#LEGACY_PROTOBUF}).
+ * them ({@link MeasurementTransport#V2} and {@link MeasurementTransport#LEGACY_PROTOBUF}); the same
+ * applies to {@link #processingLatencyMilliseconds()}.
  *
  * @param fieldPose3d field-relative pose of the Quest headset
  * @param measurementTimestamp NetworkTables server timestamp in seconds, translated to the robot
@@ -46,6 +47,9 @@ import java.util.List;
  *     NaN when not reported
  * @param tagAmbiguities single-tag ambiguity for each tag, in {@code tagIds} order; empty when not
  *     reported
+ * @param processingLatencyMilliseconds time from camera capture to publication on the Quest, in
+ *     milliseconds; the same value as {@code /QuestX/limelight/latencyMilliseconds}, or NaN when
+ *     not reported
  */
 public record AprilTagFrame(
     Pose3d fieldPose3d,
@@ -62,7 +66,8 @@ public record AprilTagFrame(
     PoseStandardDeviations standardDeviations,
     double ambiguity,
     double reprojectionErrorPixels,
-    List<Double> tagAmbiguities) {
+    List<Double> tagAmbiguities,
+    double processingLatencyMilliseconds) {
 
   /**
    * Creates an AprilTag frame and defensively copies its tag ID and ambiguity lists.
@@ -82,6 +87,8 @@ public record AprilTagFrame(
    * @param ambiguity planar pose ambiguity from 0 to 1, or NaN when not reported
    * @param reprojectionErrorPixels RMS reprojection error in pixels, or NaN when not reported
    * @param tagAmbiguities single-tag ambiguity for each tag; empty when not reported
+   * @param processingLatencyMilliseconds capture-to-publication time on the Quest in milliseconds,
+   *     or NaN when not reported
    */
   public AprilTagFrame {
     tagIds = List.copyOf(tagIds);
