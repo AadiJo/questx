@@ -103,8 +103,8 @@ See the [Testing & Simulation](./simulation) page for more details on running Qu
 **Solutions:**
 1. **Inspect Robot-Side Fusion**
     - Verify the robot is draining `/QuestX/aprilTagData` and logging accepted and rejected measurements.
-    - Reset or correct the robot pose estimator from a trusted field reference; `questX.setPose()` does not align the new local VIO stream.
-    - Check that the local-VIO-to-field transform is rebuilt when `trackingEpoch` changes.
+    - Reset or correct the robot pose estimator from a trusted field reference. `questX.setPose()` re-bases VIO position and yaw but does not fuse anything; the robot still owns its estimator.
+    - Check that the local-VIO-to-field transform is rebuilt when `trackingEpoch` changes, and that no VIO delta spans two epochs.
 
 2. **Environment Factors**
     - Ensure adequate lighting in the environment

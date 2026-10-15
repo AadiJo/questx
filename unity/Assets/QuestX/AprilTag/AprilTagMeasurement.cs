@@ -24,6 +24,15 @@ namespace QuestX.QuestX.AprilTag
         public double PitchStdDevRadians { get; }
         public double YawStdDevRadians { get; }
 
+        /// <summary>Planar pose ambiguity from 0 to 1; see <see cref="AprilTagAmbiguity.Result.Ambiguity"/>.</summary>
+        public double Ambiguity { get; }
+
+        /// <summary>RMS pixel error of the solved pose over every observed corner.</summary>
+        public double ReprojectionErrorPixels { get; }
+
+        /// <summary>Per-tag details in the same order as <see cref="TagIds"/>.</summary>
+        public AprilTagObservation[] Observations { get; }
+
         public AprilTagMeasurement(
             long captureTimestampMicros,
             double appTimestamp,
@@ -38,7 +47,10 @@ namespace QuestX.QuestX.AprilTag
             double zStdDevMeters,
             double rollStdDevRadians,
             double pitchStdDevRadians,
-            double yawStdDevRadians
+            double yawStdDevRadians,
+            double ambiguity,
+            double reprojectionErrorPixels,
+            AprilTagObservation[] observations
         )
         {
             CaptureTimestampMicros = captureTimestampMicros;
@@ -55,6 +67,55 @@ namespace QuestX.QuestX.AprilTag
             RollStdDevRadians = rollStdDevRadians;
             PitchStdDevRadians = pitchStdDevRadians;
             YawStdDevRadians = yawStdDevRadians;
+            Ambiguity = ambiguity;
+            ReprojectionErrorPixels = reprojectionErrorPixels;
+            Observations = observations;
+        }
+    }
+
+    /// <summary>
+    /// One tag that contributed to a measurement. The angle, area, and distance fields follow
+    /// Limelight's raw-fiducial definitions so they can be republished in that format.
+    /// </summary>
+    public readonly struct AprilTagObservation
+    {
+        public int Id { get; }
+
+        /// <summary>Single-tag planar pose ambiguity from 0 to 1.</summary>
+        public double Ambiguity { get; }
+
+        /// <summary>Horizontal angle from the principal point to the tag center; right is positive.</summary>
+        public double TxDegrees { get; }
+
+        /// <summary>Vertical angle from the principal point to the tag center; up is positive.</summary>
+        public double TyDegrees { get; }
+
+        /// <summary>Tag outline area as a percentage of the image area.</summary>
+        public double AreaPercent { get; }
+
+        /// <summary>Distance from the passthrough camera to the tag center.</summary>
+        public double CameraDistanceMeters { get; }
+
+        /// <summary>Distance from the headset center to the tag center.</summary>
+        public double HeadsetDistanceMeters { get; }
+
+        public AprilTagObservation(
+            int id,
+            double ambiguity,
+            double txDegrees,
+            double tyDegrees,
+            double areaPercent,
+            double cameraDistanceMeters,
+            double headsetDistanceMeters
+        )
+        {
+            Id = id;
+            Ambiguity = ambiguity;
+            TxDegrees = txDegrees;
+            TyDegrees = tyDegrees;
+            AreaPercent = areaPercent;
+            CameraDistanceMeters = cameraDistanceMeters;
+            HeadsetDistanceMeters = headsetDistanceMeters;
         }
     }
 
@@ -73,6 +134,8 @@ namespace QuestX.QuestX.AprilTag
         public double LastInlierRatio { get; }
         public double LastAverageTagDistanceMeters { get; }
         public double LastLinearStdDevMeters { get; }
+        public double LastAmbiguity { get; set; }
+        public double LastReprojectionErrorPixels { get; set; }
         public string LastOutcome { get; }
         public string LastReason { get; }
         public string FieldLayoutFile { get; set; } = "";

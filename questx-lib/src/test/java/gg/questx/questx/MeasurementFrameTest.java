@@ -10,6 +10,7 @@ package gg.questx.questx;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import edu.wpi.first.math.geometry.Pose3d;
 import java.util.ArrayList;
@@ -18,8 +19,9 @@ import org.junit.jupiter.api.Test;
 
 class MeasurementFrameTest {
   @Test
-  void aprilTagFrameDefensivelyCopiesTagIds() {
+  void aprilTagFrameDefensivelyCopiesTagLists() {
     var sourceTagIds = new ArrayList<>(List.of(1, 2));
+    var sourceTagAmbiguities = new ArrayList<>(List.of(0.3, 0.4));
     var frame =
         new AprilTagFrame(
             new Pose3d(),
@@ -33,12 +35,19 @@ class MeasurementFrameTest {
             8,
             1.0,
             2.5,
-            new PoseStandardDeviations(0.1, 0.2, 0.3, 0.01, 0.02, 0.03));
+            new PoseStandardDeviations(0.1, 0.2, 0.3, 0.01, 0.02, 0.03),
+            0.1,
+            0.6,
+            sourceTagAmbiguities);
 
     sourceTagIds.add(3);
+    sourceTagAmbiguities.add(0.9);
 
     assertEquals(List.of(1, 2), frame.tagIds());
     assertThrows(UnsupportedOperationException.class, () -> frame.tagIds().add(4));
+    assertEquals(List.of(0.3, 0.4), frame.tagAmbiguities());
+    assertThrows(UnsupportedOperationException.class, () -> frame.tagAmbiguities().add(0.5));
+    assertTrue(frame.hasAmbiguity());
   }
 
   @Test

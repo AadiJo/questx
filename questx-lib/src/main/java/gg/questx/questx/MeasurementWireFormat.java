@@ -12,8 +12,12 @@ import edu.wpi.first.math.geometry.Pose3d;
 import edu.wpi.first.math.geometry.Quaternion;
 import edu.wpi.first.math.geometry.Rotation3d;
 import java.util.ArrayList;
+import java.util.List;
 
-/** Decoder for the versioned atomic arrays documented in protos/measurement-v2.md. */
+/**
+ * Decoder for the versioned atomic arrays documented in protos/measurement-v2.md and
+ * protos/measurement-v3.md.
+ */
 final class MeasurementWireFormat {
   private MeasurementWireFormat() {}
 
@@ -35,27 +39,75 @@ final class MeasurementWireFormat {
   }
 
   static AprilTagFrame aprilTag(double[] data, long serverTimeMicros) {
-    if (data.length < 23
+    if (!validAprilTagHeader(data, serverTimeMicros, 23, 1)) {
+      return null;
+    }
+    var ids = tagIds(data, 23, (int) data[12]);
+    if (ids == null) {
+      return null;
+    }
+    return aprilTagFrame(data, serverTimeMicros, ids, Double.NaN, Double.NaN, List.of());
+  }
+
+  /**
+   * Decodes a v3 AprilTag array: the v2 fields at 0-22, ambiguity (23), reprojection error in
+   * pixels (24), then the tag IDs followed by one ambiguity per tag.
+   */
+  static AprilTagFrame aprilTagV3(double[] data, long serverTimeMicros) {
+    if (!validAprilTagHeader(data, serverTimeMicros, 25, 2)
+        || !unitInterval(data[23])
+        || data[24] < 0) {
+      return null;
+    }
+    int count = (int) data[12];
+    var ids = tagIds(data, 25, count);
+    if (ids == null) {
+      return null;
+    }
+    var ambiguities = new ArrayList<Double>(count);
+    for (int i = 25 + count; i < data.length; i++) {
+      if (!unitInterval(data[i])) return null;
+      ambiguities.add(data[i]);
+    }
+    return aprilTagFrame(data, serverTimeMicros, ids, data[23], data[24], ambiguities);
+  }
+
+  private static boolean validAprilTagHeader(
+      double[] data, long serverTimeMicros, int headerLength, int valuesPerTag) {
+    if (data.length < headerLength
         || !validCommon(data, serverTimeMicros)
         || !uint32(data[12])
-        || data[12] != data.length - 23
+        || data[12] * valuesPerTag != data.length - headerLength
         || !uint32(data[13])
         || !uint32(data[14])
         || data[13] > data[14]
-        || data[15] < 0
-        || data[15] > 1) {
-      return null;
+        || !unitInterval(data[15])) {
+      return false;
     }
     for (int i = 16; i < 23; i++) {
-      if (data[i] < 0) return null;
+      if (data[i] < 0) return false;
     }
-    var ids = new ArrayList<Integer>(data.length - 23);
-    for (int i = 23; i < data.length; i++) {
+    return true;
+  }
+
+  private static List<Integer> tagIds(double[] data, int offset, int count) {
+    var ids = new ArrayList<Integer>(count);
+    for (int i = offset; i < offset + count; i++) {
       if (data[i] < 0 || data[i] > Integer.MAX_VALUE || data[i] != Math.rint(data[i])) {
         return null;
       }
       ids.add((int) data[i]);
     }
+    return ids;
+  }
+
+  private static AprilTagFrame aprilTagFrame(
+      double[] data,
+      long serverTimeMicros,
+      List<Integer> ids,
+      double ambiguity,
+      double reprojectionErrorPixels,
+      List<Double> tagAmbiguities) {
     return new AprilTagFrame(
         pose(data),
         serverTimeMicros / 1_000_000.0,
@@ -68,7 +120,10 @@ final class MeasurementWireFormat {
         (long) data[14],
         data[15],
         data[16],
-        new PoseStandardDeviations(data[17], data[18], data[19], data[20], data[21], data[22]));
+        new PoseStandardDeviations(data[17], data[18], data[19], data[20], data[21], data[22]),
+        ambiguity,
+        reprojectionErrorPixels,
+        tagAmbiguities);
   }
 
   private static boolean validCommon(double[] data, long serverTimeMicros) {
@@ -83,6 +138,10 @@ final class MeasurementWireFormat {
     double norm = 0;
     for (int i = 8; i < 12; i++) norm += data[i] * data[i];
     return Double.isFinite(norm) && norm > 1e-12;
+  }
+
+  private static boolean unitInterval(double value) {
+    return value >= 0 && value <= 1;
   }
 
   private static boolean uint32(double value) {

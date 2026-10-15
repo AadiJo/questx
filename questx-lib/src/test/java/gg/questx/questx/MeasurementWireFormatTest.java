@@ -18,7 +18,11 @@ import org.junit.jupiter.api.Test;
 
 class MeasurementWireFormatTest {
   private double[] fixture(String name) throws IOException {
-    try (var input = getClass().getResourceAsStream("/measurement-v2/" + name + ".txt")) {
+    return fixture("measurement-v2", name);
+  }
+
+  private double[] fixture(String directory, String name) throws IOException {
+    try (var input = getClass().getResourceAsStream("/" + directory + "/" + name + ".txt")) {
       assertNotNull(
           input, "Generate fixtures using QuestX.Editor.CI.MeasurementWireFixtures.Export");
       return Arrays.stream(
@@ -74,6 +78,69 @@ class MeasurementWireFormatTest {
     assertEquals(1.25, frame.fieldPose3d().getX());
     assertEquals(
         new PoseStandardDeviations(0.1, 0.2, 0.3, 0.01, 0.02, 0.03), frame.standardDeviations());
+    assertFalse(frame.hasAmbiguity(), "v2 arrays do not carry ambiguity");
+    assertTrue(Double.isNaN(frame.reprojectionErrorPixels()));
+    assertTrue(frame.tagAmbiguities().isEmpty());
+  }
+
+  @Test
+  void decodesCSharpAprilTagV3Ambiguity() throws IOException {
+    var frame = MeasurementWireFormat.aprilTagV3(fixture("measurement-v3", "apriltag"), 7_000_000);
+    assertNotNull(frame);
+    var v2 = MeasurementWireFormat.aprilTag(fixture("apriltag"), 7_000_000);
+    assertEquals(v2.fieldPose3d(), frame.fieldPose3d());
+    assertEquals(v2.sequenceId(), frame.sequenceId());
+    assertEquals(v2.captureTimestampMicros(), frame.captureTimestampMicros());
+    assertEquals(v2.tagIds(), frame.tagIds());
+    assertEquals(v2.inlierCount(), frame.inlierCount());
+    assertEquals(v2.cornerCount(), frame.cornerCount());
+    assertEquals(v2.inlierRatio(), frame.inlierRatio());
+    assertEquals(v2.standardDeviations(), frame.standardDeviations());
+    assertTrue(frame.hasAmbiguity());
+    assertEquals(0.125, frame.ambiguity());
+    assertEquals(0.875, frame.reprojectionErrorPixels());
+    assertEquals(List.of(0.5, 0.25, 0.0625), frame.tagAmbiguities());
+  }
+
+  @Test
+  void rejectsMalformedAprilTagV3() throws IOException {
+    var valid = fixture("measurement-v3", "apriltag");
+    assertNull(MeasurementWireFormat.aprilTagV3(fixture("apriltag"), 1), "v2 layout is not v3");
+    assertNull(MeasurementWireFormat.aprilTagV3(Arrays.copyOf(valid, 25), 1));
+    assertNull(MeasurementWireFormat.aprilTagV3(Arrays.copyOf(valid, valid.length - 1), 1));
+    for (int i = 0; i < valid.length; i++) {
+      var invalid = valid.clone();
+      invalid[i] = Double.NaN;
+      assertNull(MeasurementWireFormat.aprilTagV3(invalid, 1));
+    }
+    // Ambiguity, reprojection error, and per-tag ambiguity ranges.
+    for (int index : new int[] {23, 24, 28, 29, 30}) {
+      var invalid = valid.clone();
+      invalid[index] = -0.01;
+      assertNull(MeasurementWireFormat.aprilTagV3(invalid, 1));
+    }
+    for (int index : new int[] {23, 28, 30}) {
+      var invalid = valid.clone();
+      invalid[index] = 1.01;
+      assertNull(MeasurementWireFormat.aprilTagV3(invalid, 1));
+    }
+    var largeError = valid.clone();
+    largeError[24] = 40;
+    assertNotNull(
+        MeasurementWireFormat.aprilTagV3(largeError, 1), "Reprojection error is unbounded");
+    var badId = valid.clone();
+    badId[26] = 2.5;
+    assertNull(MeasurementWireFormat.aprilTagV3(badId, 1));
+  }
+
+  @Test
+  void decodesAprilTagV3WithoutTags() throws IOException {
+    var data = Arrays.copyOf(fixture("measurement-v3", "apriltag"), 25);
+    data[12] = 0;
+    var frame = MeasurementWireFormat.aprilTagV3(data, 1);
+    assertNotNull(frame);
+    assertTrue(frame.tagIds().isEmpty());
+    assertTrue(frame.tagAmbiguities().isEmpty());
   }
 
   @Test

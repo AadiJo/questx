@@ -1,6 +1,5 @@
 using QuestX.Native.NTCore;
 using QuestX.QuestX.AprilTag;
-using QuestX.QuestX.Geometry;
 
 namespace QuestX.Network
 {
@@ -12,7 +11,7 @@ namespace QuestX.Network
     internal sealed class LimelightTelemetry
     {
         private const string Root = "/QuestX/limelight/";
-        private readonly DoubleArrayPublisher botpose, headsetpose, stddevs, ids, detectedIds;
+        private readonly DoubleArrayPublisher botpose, headsetpose, rawFiducials, stddevs, ids, detectedIds;
         private readonly DoublePublisher tv, tid, hb, latency, age, layoutTags;
         private readonly StringPublisher frame, layout, status, reason;
         private readonly BooleanPublisher layoutLoaded;
@@ -26,6 +25,7 @@ namespace QuestX.Network
             options.Periodic = 0.02;
             botpose = nt.GetDoubleArrayPublisher(Root + "botpose_wpiblue", options);
             headsetpose = nt.GetDoubleArrayPublisher(Root + "headsetpose_wpiblue", options);
+            rawFiducials = nt.GetDoubleArrayPublisher(Root + "rawfiducials", options);
             stddevs = nt.GetDoubleArrayPublisher(Root + "stddevs", options);
             ids = nt.GetDoubleArrayPublisher(Root + "tagIds", options);
             detectedIds = nt.GetDoubleArrayPublisher(Root + "detectedIds", options);
@@ -46,27 +46,29 @@ namespace QuestX.Network
             age.Set(-1);
         }
 
-        public void Update(Pose3d pose, double[] sample, long capture, long now)
+        public void Update(AprilTagMeasurement measurement, long capture, long now)
         {
             captureMicros = capture;
-            int count = (int)sample[12];
-            var tagIds = new double[count];
-            System.Array.Copy(sample, 23, tagIds, 0, count);
-            firstId = count > 0 ? (int)tagIds[0] : -1;
+            var tags = measurement.Observations;
+            var tagIds = new double[tags.Length];
+            for (int i = 0; i < tags.Length; i++) tagIds[i] = tags[i].Id;
+            firstId = tags.Length > 0 ? tags[0].Id : -1;
             double latencyMs = System.Math.Max(0, (now - capture) / 1000.0);
-            var value = LimelightPoseFormat.Encode(pose, latencyMs, count, sample[16]);
+            var value = LimelightPoseFormat.Encode(
+                measurement.Pose, latencyMs, measurement.AverageTagDistanceMeters, tags);
             // Like Limelight, these compatibility topics carry PUBLICATION timestamps.
             // Subtract value[6] from the synchronized NT publication time once. The v2
             // topics instead carry CAPTURE timestamps and must not subtract it again.
             botpose.Set(value, now);
             headsetpose.Set(value, now);
+            rawFiducials.Set(LimelightPoseFormat.RawFiducials(tags), now);
             latency.Set(latencyMs);
             ids.Set(tagIds);
             stddevs.Set(new[] {
-                sample[17], sample[18], sample[19],
-                sample[20] * LimelightPoseFormat.RadiansToDegrees,
-                sample[21] * LimelightPoseFormat.RadiansToDegrees,
-                sample[22] * LimelightPoseFormat.RadiansToDegrees
+                measurement.XStdDevMeters, measurement.YStdDevMeters, measurement.ZStdDevMeters,
+                measurement.RollStdDevRadians * LimelightPoseFormat.RadiansToDegrees,
+                measurement.PitchStdDevRadians * LimelightPoseFormat.RadiansToDegrees,
+                measurement.YawStdDevRadians * LimelightPoseFormat.RadiansToDegrees
             });
         }
 

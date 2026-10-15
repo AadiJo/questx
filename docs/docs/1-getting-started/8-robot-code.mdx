@@ -135,12 +135,12 @@ for (VioFrame frame : questX.getAllUnreadVioFrames()) {
 Your robot-side fusion layer must maintain the rigid transform from the current VIO epoch to the field. Establish it from a trusted field observation and never calculate a VIO delta across an epoch boundary.
 
 :::note
-`setPose()` is deprecated in the split-measurement architecture. It does not field-align raw VIO. Reset the robot's estimator or its local-VIO alignment instead.
+`setPose()` re-bases the published VIO frame: the next `VioFrame` reports the given position and yaw (roll and pitch stay measured) and carries a new `trackingEpoch`. The loop above therefore treats a reset like a recenter and drops the interval that spans it. The Quest rejects a reset while the headset is not tracking or while a recenter is settling.
 :::
 
 ### Setting Robot Pose
 
-Seed or reset the drivetrain pose estimator directly from the known autonomous starting pose. Then initialize the current local-VIO-to-field alignment against that state or the first trusted AprilTag measurement. Do not push that pose into the Quest as a substitute for robot-side alignment.
+Seed or reset the drivetrain pose estimator directly from the known autonomous starting pose, then initialize the current local-VIO-to-field alignment against that state or the first trusted AprilTag measurement. If robot code also calls `setPose()` with the Quest's pose (the robot pose transformed by the mount), VIO heading matches the field after the reset, but robot-side alignment must still restart at the new epoch.
 
 ## Freshness and connection
 

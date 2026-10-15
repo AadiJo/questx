@@ -1,6 +1,7 @@
 ﻿using System.Linq;
 using QuestX.Commands.Commands;
 using QuestX.Config;
+using QuestX.Core;
 using QuestX.Network;
 using QuestX.Protos.Generated;
 using QuestX.Utils;
@@ -43,12 +44,14 @@ namespace QuestX.Commands
         /// Initializes a new command processor with required dependencies
         /// </summary>
         /// <param name="networkTableConnection">Network connection for command communication</param>
+        /// <param name="vioFrame">Frame that published VIO is expressed in</param>
         /// <param name="vrCamera">Reference to the VR camera transform</param>
         /// <param name="vrCameraRoot">Reference to the VR camera root transform</param>
         /// <param name="resetTransform">Reference to the reset position transform</param>
         /// <param name="configManager">Configuration manager for subscribing to setting changes</param>
         public CommandProcessor(
             INetworkTableConnection networkTableConnection,
+            VioReferenceFrame vioFrame,
             Transform vrCamera,
             Transform vrCameraRoot,
             Transform resetTransform,
@@ -67,6 +70,7 @@ namespace QuestX.Commands
             // Initialize commands with NetworkTables context
             poseResetCommand = new PoseResetCommand(
                 commandContext,
+                vioFrame,
                 vrCamera,
                 vrCameraRoot,
                 resetTransform

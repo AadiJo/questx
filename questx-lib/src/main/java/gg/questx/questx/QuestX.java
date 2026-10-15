@@ -33,6 +33,7 @@ import gg.questx.questx.protos.wpilib.DeviceDataProto;
 import gg.questx.questx.protos.wpilib.FrameDataProto;
 import gg.questx.questx.protos.wpilib.VioDataProto;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalDouble;
@@ -76,8 +77,8 @@ import java.util.function.IntConsumer;
  *     // Update the robot-owned transform from the local VIO frame to the field frame.
  *   }
  *   for (AprilTagFrame frame : questX.getAllUnreadAprilTagFrames()) {
- *     // Apply robot-side rejection, then fuse frame.fieldPose3d(),
- *     // frame.measurementTimestamp(), and frame.pose2dStdDevs().
+ *     // Apply robot-side rejection (for example frame.ambiguity() for single-tag frames),
+ *     // then fuse frame.fieldPose3d(), frame.measurementTimestamp(), and frame.pose2dStdDevs().
  *   }
  * }
  * }</pre>
@@ -190,7 +191,10 @@ public class QuestX {
   private final ProtobufSubscriber<Data.ProtobufQuestXVioData> vioDataSubscriber;
   private final ProtobufSubscriber<Data.ProtobufQuestXAprilTagData> aprilTagDataSubscriber;
   private final DoubleArraySubscriber vioV2Subscriber;
-  private final DoubleArraySubscriber aprilTagV2Subscriber;
+  private final DoubleArraySubscriber aprilTagArraySubscriber;
+
+  /** True when {@link #aprilTagArraySubscriber} reads the v3 layout, which carries ambiguity. */
+  private final boolean aprilTagArrayIsV3;
 
   /** Subscriber for device data */
   private final ProtobufSubscriber<Data.ProtobufQuestXDeviceData> deviceDataSubscriber =
@@ -274,14 +278,15 @@ public class QuestX {
    *
    * <ul>
    *   <li>NetworkTables communication on the "QuestX" table
-   *   <li>Version 2 atomic numeric arrays for measurements
+   *   <li>Atomic numeric arrays for measurements ({@link MeasurementTransport#V3}), including
+   *       AprilTag pose ambiguity
    *   <li>Cached objects to minimize garbage collection
    *   <li>Subscribers for VIO data, AprilTag data, device data, and command responses
    *   <li>Publisher for sending commands to the Quest
    * </ul>
    */
   public QuestX() {
-    this(MeasurementTransport.V2);
+    this(MeasurementTransport.V3);
   }
 
   /**
@@ -296,15 +301,18 @@ public class QuestX {
         new PubSubOption[] {
           PubSubOption.periodic(0.01), PubSubOption.sendAll(true), PubSubOption.pollStorage(20)
         };
-    if (transport == MeasurementTransport.V2) {
+    aprilTagArrayIsV3 = transport == MeasurementTransport.V3;
+    if (transport == MeasurementTransport.V2 || transport == MeasurementTransport.V3) {
       vioV2Subscriber = questXTable.getDoubleArrayTopic("v2/vio").subscribe(new double[0], options);
-      aprilTagV2Subscriber =
-          questXTable.getDoubleArrayTopic("v2/apriltag").subscribe(new double[0], options);
+      aprilTagArraySubscriber =
+          questXTable
+              .getDoubleArrayTopic(aprilTagArrayIsV3 ? "v3/apriltag" : "v2/apriltag")
+              .subscribe(new double[0], options);
       vioDataSubscriber = null;
       aprilTagDataSubscriber = null;
     } else {
       vioV2Subscriber = null;
-      aprilTagV2Subscriber = null;
+      aprilTagArraySubscriber = null;
       vioDataSubscriber =
           questXTable
               .getProtobufTopic("vioData", vioDataProto)
@@ -485,11 +493,19 @@ public class QuestX {
   }
 
   /**
-   * Commands older Quest apps to apply a field-relative display-space pose offset.
+   * Resets the Quest's published VIO frame so that the headset's current pose reads as {@code
+   * pose}.
    *
-   * <p>This command does not field-align the split {@link VioFrame} stream. New robot code should
-   * align local VIO and fuse field-relative {@link AprilTagFrame} measurements in its robot-side
-   * estimator.
+   * <p>The Quest rotates its VIO frame about the vertical axis and translates it: x, y, z, and yaw
+   * of the next {@link VioFrame} match {@code pose}, while roll and pitch remain gravity-referenced
+   * measurements. That frame carries a new {@link VioFrame#trackingEpoch()}. Never compute a VIO
+   * delta between frames whose epochs differ; the interval that spans the reset is not motion.
+   * {@link AprilTagFrame} measurements are field-relative and are unaffected.
+   *
+   * <p>The reset is anchored on the newest VIO sample when the Quest processes the command, so
+   * motion between sending and processing is not compensated. The Quest rejects the reset while the
+   * headset is not tracking or while a recenter is settling. Quest apps that predate tracking-epoch
+   * resets only offset their display and leave VIO unchanged.
    *
    * <p>The command is sent asynchronously. Success or failure is reported via {@link
    * #onCommandSuccess(Consumer)} and {@link #onCommandFailure(Consumer)} respectively, and failures
@@ -501,9 +517,7 @@ public class QuestX {
    * @see #onCommandSuccess(Consumer)
    * @see #onCommandFailure(Consumer)
    * @see #isConnected()
-   * @deprecated The split measurement architecture performs alignment and fusion on the robot.
    */
-  @Deprecated(forRemoval = true, since = "2026.3.0")
   public void setPose(Pose3d pose) {
     cachedProtoPose.clear();
     pose3dProto.pack(cachedProtoPose, pose);
@@ -641,9 +655,9 @@ public class QuestX {
    * @return measurement age in milliseconds
    */
   public double getAprilTagLatency() {
-    if (aprilTagV2Subscriber != null) {
-      var message = aprilTagV2Subscriber.getAtomic();
-      return MeasurementWireFormat.aprilTag(message.value, message.serverTime) == null
+    if (aprilTagArraySubscriber != null) {
+      var message = aprilTagArraySubscriber.getAtomic();
+      return decodeAprilTagArray(message.value, message.serverTime) == null
           ? Double.POSITIVE_INFINITY
           : measurementAgeMillis(message.serverTime);
     }
@@ -768,9 +782,9 @@ public class QuestX {
    * @return all unread AprilTag measurements in arrival order
    */
   public AprilTagFrame[] getAllUnreadAprilTagFrames() {
-    if (aprilTagV2Subscriber != null) {
-      return Arrays.stream(aprilTagV2Subscriber.readQueue())
-          .map(message -> MeasurementWireFormat.aprilTag(message.value, message.serverTime))
+    if (aprilTagArraySubscriber != null) {
+      return Arrays.stream(aprilTagArraySubscriber.readQueue())
+          .map(message -> decodeAprilTagArray(message.value, message.serverTime))
           .filter(Objects::nonNull)
           .toArray(AprilTagFrame[]::new);
     }
@@ -805,15 +819,21 @@ public class QuestX {
    * @return the latest AprilTag measurement, or empty before the first measurement arrives
    */
   public Optional<AprilTagFrame> getLatestAprilTagFrame() {
-    if (aprilTagV2Subscriber != null) {
-      var message = aprilTagV2Subscriber.getAtomic();
-      return Optional.ofNullable(MeasurementWireFormat.aprilTag(message.value, message.serverTime));
+    if (aprilTagArraySubscriber != null) {
+      var message = aprilTagArraySubscriber.getAtomic();
+      return Optional.ofNullable(decodeAprilTagArray(message.value, message.serverTime));
     }
     var message = aprilTagDataSubscriber.getAtomic();
     if (message.serverTime <= 0) {
       return Optional.empty();
     }
     return Optional.of(toAprilTagFrame(message.value, message.serverTime));
+  }
+
+  private AprilTagFrame decodeAprilTagArray(double[] data, long serverTimeMicros) {
+    return aprilTagArrayIsV3
+        ? MeasurementWireFormat.aprilTagV3(data, serverTimeMicros)
+        : MeasurementWireFormat.aprilTag(data, serverTimeMicros);
   }
 
   private VioFrame toVioFrame(Data.ProtobufQuestXVioData data, long serverTimeMicros) {
@@ -848,7 +868,10 @@ public class QuestX {
             stdDevs.getZMeters(),
             stdDevs.getRollRadians(),
             stdDevs.getPitchRadians(),
-            stdDevs.getYawRadians()));
+            stdDevs.getYawRadians()),
+        Double.NaN,
+        Double.NaN,
+        List.of());
   }
 
   private double measurementAgeMillis(long serverTimeMicros) {

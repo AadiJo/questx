@@ -99,6 +99,8 @@ namespace QuestX.QuestX.AprilTag
         private double lastInlierRatio;
         private double lastAverageTagDistanceMeters;
         private double lastLinearStdDevMeters;
+        private double lastAmbiguity;
+        private double lastReprojectionErrorPixels;
         private string lastOutcome = "Not started";
         private string lastReason = "";
 
@@ -377,7 +379,9 @@ namespace QuestX.QuestX.AprilTag
                     FieldLayoutFile = aprilTagFieldLayout.LoadedFile,
                     LayoutLoaded = aprilTagFieldLayout.IsLoaded,
                     LayoutTagCount = aprilTagFieldLayout.Tags?.Count ?? 0,
-                    DetectedIds = (int[])detectedIds.Clone()
+                    DetectedIds = (int[])detectedIds.Clone(),
+                    LastAmbiguity = lastAmbiguity,
+                    LastReprojectionErrorPixels = lastReprojectionErrorPixels
                 };
             }
         }
@@ -695,6 +699,13 @@ namespace QuestX.QuestX.AprilTag
                             yield return new WaitForSeconds(frameDelaySeconds);
                             continue;
                         }
+                        var quality = poseLibResult.Quality;
+                        if (!double.IsFinite(quality.ReprojectionErrorPixels))
+                        {
+                            RecordOutcome("Measurement rejected locally", "Solved pose places an observed corner behind the camera");
+                            yield return new WaitForSeconds(frameDelaySeconds);
+                            continue;
+                        }
                         var headsetPose = AprilTagPoseValidation.CameraToHeadset(cameraPose, cameraAccess.Intrinsics.LensOffset);
 
                         int tagCount = kept.Count;
@@ -713,20 +724,18 @@ namespace QuestX.QuestX.AprilTag
                         // only affects correction trust, not pass/fail. Switching to the true
                         // mean camera-to-tag distance changes the std dev curve - if pose
                         // behavior regresses after this change, suspect this block first.
+                        var observations = BuildObservations(
+                            kept,
+                            quality.TagAmbiguities,
+                            cameraPose,
+                            headsetPose,
+                            actualW,
+                            actualH
+                        );
                         double avgTagDistance = 0.0;
-                        int distanceSamples = 0;
-                        foreach (var det in kept)
+                        foreach (var observation in observations)
                         {
-                            var tagPose = aprilTagFieldLayout.GetTagPose(det.Id);
-                            double dx = tagPose.X - frcPos.x;
-                            double dy = tagPose.Y - frcPos.y;
-                            double dz = tagPose.Z - frcPos.z;
-                            avgTagDistance += Math.Sqrt(dx * dx + dy * dy + dz * dz);
-                            distanceSamples++;
-                        }
-                        if (distanceSamples > 0)
-                        {
-                            avgTagDistance /= distanceSamples;
+                            avgTagDistance += observation.CameraDistanceMeters / observations.Length;
                         }
 
                         if (avgTagDistance > maxDistance)
@@ -781,7 +790,10 @@ namespace QuestX.QuestX.AprilTag
                             linearStdDev * 2.0,
                             angularStdDev * 2.0,
                             angularStdDev * 2.0,
-                            angularStdDev
+                            angularStdDev,
+                            quality.Ambiguity,
+                            quality.ReprojectionErrorPixels,
+                            observations
                         );
 
                         try
@@ -797,6 +809,8 @@ namespace QuestX.QuestX.AprilTag
                                 lastInlierRatio = inlierRatio;
                                 lastAverageTagDistanceMeters = avgTagDistance;
                                 lastLinearStdDevMeters = linearStdDev;
+                                lastAmbiguity = quality.Ambiguity;
+                                lastReprojectionErrorPixels = quality.ReprojectionErrorPixels;
                                 lastOutcome = "Measurement published";
                                 lastReason = "";
                             }
@@ -804,7 +818,8 @@ namespace QuestX.QuestX.AprilTag
                             QueuedLogger.Log(
                                 $"AprilTag measurement published: Pos({frcPos.x:F3}, {frcPos.y:F3}, {frcPos.z:F3}) "
                                     + $"tags={tagCount} inliers={poseLibResult.AcceptedPoints}/{poseLibResult.TotalPoints} "
-                                    + $"ratio={inlierRatio:F2} dist={avgTagDistance:F2}m stdDev={linearStdDev:F4}"
+                                    + $"ratio={inlierRatio:F2} dist={avgTagDistance:F2}m stdDev={linearStdDev:F4} "
+                                    + $"ambiguity={quality.Ambiguity:F3} reprojection={quality.ReprojectionErrorPixels:F2}px"
                             );
                         }
                         catch (Exception ex)
@@ -835,6 +850,52 @@ namespace QuestX.QuestX.AprilTag
 
         private static AprilTagOverlayPoint ToOverlayPoint(Point2D point) =>
             new AprilTagOverlayPoint(point.x, point.y);
+
+        /// <summary>
+        /// Describes each solved tag in detector order. Pixel coordinates have a top-left origin
+        /// (ImageU8 flips the readback), so "up" is decreasing y.
+        /// </summary>
+        private AprilTagObservation[] BuildObservations(
+            List<AprilTagDetection> detections,
+            double[] ambiguities,
+            Pose3d cameraPose,
+            Pose3d headsetPose,
+            int imageWidth,
+            int imageHeight
+        )
+        {
+            var intrinsics = poseLibSolver.Intrinsics;
+            double fx = intrinsics[0];
+            double fy = intrinsics[1];
+            double cx = intrinsics[2];
+            double cy = intrinsics[3];
+            var observations = new AprilTagObservation[detections.Count];
+            for (int i = 0; i < detections.Count; i++)
+            {
+                var detection = detections[i];
+                var corners = detection.GetCorners();
+                double doubledArea = 0;
+                for (int c = 0; c < corners.Length; c++)
+                {
+                    var a = corners[c];
+                    var b = corners[(c + 1) % corners.Length];
+                    doubledArea += a.x * b.y - b.x * a.y;
+                }
+                var tagTranslation = aprilTagFieldLayout.GetTagPose(detection.Id).Translation;
+                observations[i] = new AprilTagObservation(
+                    detection.Id,
+                    ambiguities[i],
+                    Math.Atan2(detection.Center.x - cx, fx) * DegreesPerRadian,
+                    Math.Atan2(cy - detection.Center.y, fy) * DegreesPerRadian,
+                    100.0 * Math.Abs(doubledArea) / 2.0 / ((double)imageWidth * imageHeight),
+                    tagTranslation.GetDistance(cameraPose.Translation),
+                    tagTranslation.GetDistance(headsetPose.Translation)
+                );
+            }
+            return observations;
+        }
+
+        private const double DegreesPerRadian = 180.0 / Math.PI;
 
         private void OnOverlayStreamModeChanged(Config.Config.StreamMode mode)
         {

@@ -145,9 +145,15 @@ message ProtobufQuestXPoseStdDevs {
 /*
  * Quest visual-inertial odometry in its local tracking frame.
  *
- * This pose has not been aligned to the field or fused with AprilTag data. The
- * capture timestamp is sampled from the NT clock when the pose is captured and
- * is also used as the NetworkTables publisher timestamp.
+ * This pose has not been fused with AprilTag data. It is the headset's local
+ * tracking pose, re-based by the most recent POSE_RESET command. The capture
+ * timestamp is sampled from the NT clock when the pose is captured and is also
+ * used as the NetworkTables publisher timestamp.
+ *
+ * tracking_epoch increments on every pose reset and headset recenter. Never
+ * compute a pose delta between samples whose epochs differ. For about 100 ms
+ * after a recenter the Quest repeats the last pre-recenter pose in its own epoch
+ * with is_tracking false, then resumes live poses in another epoch.
  */
 message ProtobufQuestXVioData {
   uint64 sequence_id = 1;

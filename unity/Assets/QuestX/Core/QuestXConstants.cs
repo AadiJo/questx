@@ -87,6 +87,11 @@ namespace QuestX.Core
 
             public const string VIO_DATA_V2 = NT_BASE_PATH + "/v2/vio";
             public const string APRIL_TAG_DATA_V2 = NT_BASE_PATH + "/v2/apriltag";
+
+            /// <summary>
+            /// v2 AprilTag fields plus pose ambiguity and reprojection error
+            /// </summary>
+            public const string APRIL_TAG_DATA_V3 = NT_BASE_PATH + "/v3/apriltag";
             public const string VIO_TELEMETRY = NT_BASE_PATH + "/telemetry/vio/";
             public const string APRIL_TAG_TELEMETRY = NT_BASE_PATH + "/telemetry/apriltag/";
 
@@ -211,6 +216,13 @@ namespace QuestX.Core
             /// The rate to run the "MainUpdate" loop at
             /// </summary>
             public const int MAIN_UPDATE_HZ = 120;
+
+            /// <summary>
+            /// How long VIO is held after a recenter is announced, in seconds. The runtime moves
+            /// the tracking origin at a later frame than the announcement; during this window VIO
+            /// repeats the last pre-recenter pose, marked not tracking, in its own epoch.
+            /// </summary>
+            public const double RECENTER_SETTLE_SECONDS = 0.1;
         }
 
         /// <summary>

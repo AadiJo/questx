@@ -1,3 +1,4 @@
+using QuestX.QuestX.AprilTag;
 using QuestX.QuestX.Geometry;
 
 namespace QuestX.QuestX.Native.PoseLib
@@ -20,15 +21,22 @@ namespace QuestX.QuestX.Native.PoseLib
         public int TotalPoints { get; }
 
         /// <summary>
+        /// Planar pose ambiguity and reprojection error of this solve over every correspondence
+        /// </summary>
+        public AprilTagAmbiguity.Result Quality { get; }
+
+        /// <summary>
         /// Creates a new CPnPResult from the native struct returned by the estimator
         /// </summary>
         /// <param name="cameraPose">The native CameraPose to convert</param>
         /// <param name="numInliersOut">The inlier count to convert</param>
         /// <param name="totalPoints">Total number of point correspondences</param>
+        /// <param name="quality">Ambiguity and fit error evaluated for this pose</param>
         public PoseLibResult(
             PoseLibNatives.PoseLibCameraPoseNative cameraPose,
             ulong numInliersOut,
-            int totalPoints
+            int totalPoints,
+            AprilTagAmbiguity.Result quality
         )
         {
             var q = new Quaternion(
@@ -43,6 +51,7 @@ namespace QuestX.QuestX.Native.PoseLib
 
             AcceptedPoints = numInliersOut;
             TotalPoints = totalPoints;
+            Quality = quality;
         }
     }
 }

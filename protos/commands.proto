@@ -43,11 +43,13 @@ enum QuestXCommandType {
   COMMAND_TYPE_UNSPECIFIED = 0;  // Default/invalid command type (required by proto3)
   
   /*
-   * POSE_RESET: Resets the robot's pose estimation to a specified target pose.
+   * POSE_RESET: Re-bases the published VIO frame on a specified target pose.
    * 
-   * This command is used to correct drift in the tracking system by setting
-   * the robot's position and orientation to known values. Typically used when
-   * the robot is placed at a known location on the field.
+   * The Quest rotates its VIO frame about the vertical axis and translates it so
+   * that the next VIO sample reports the target's position and yaw; roll and
+   * pitch remain gravity-referenced measurements. That sample carries a new
+   * tracking_epoch, so consumers never integrate the reset as motion. The reset
+   * is rejected while the headset is not tracking or a recenter is settling.
    * 
    * Requires: ProtobufQuestXPoseResetPayload
    */
@@ -81,9 +83,10 @@ message ProtobufQuestXPoseResetPayload {
   /*
    * The target pose to reset the robot to.
    * 
-   * This should represent the robot's actual position and orientation on the field
-   * in the WPILib coordinate system. The Quest will update its internal tracking
-   * to match this pose, effectively correcting any accumulated drift.
+   * This should represent the Quest's actual position and orientation on the field
+   * in the WPILib coordinate system (the robot pose transformed by the mount). The
+   * Quest re-bases VIO so its position and yaw match this pose and starts a new
+   * tracking epoch.
    * 
    * Units:
    * - Translation: meters

@@ -2,11 +2,21 @@ using QuestX.QuestX.Geometry;
 
 namespace QuestX.Network
 {
-    /// <summary>Version 2 atomic double[] measurements. See protos/measurement-v2.md.</summary>
+    /// <summary>
+    /// Atomic double[] measurements. See protos/measurement-v2.md and protos/measurement-v3.md.
+    /// A topic's version fixes its layout; incompatible changes get a new topic version.
+    /// </summary>
     public static class MeasurementWireFormat
     {
         public const int VioLength = 14;
         public const int AprilTagHeaderLength = 23;
+
+        /// <summary>
+        /// v3 AprilTag arrays repeat the v2 fields at indices 0-22, then add ambiguity (23) and
+        /// reprojection error in pixels (24). Tag IDs follow, then one ambiguity per tag:
+        /// 25 + 2 * tagCount doubles in total.
+        /// </summary>
+        public const int AprilTagV3HeaderLength = 25;
 
         public static void WriteCommon(
             double[] target,
@@ -66,9 +76,102 @@ namespace QuestX.Network
             double yawStdDev
         )
         {
-            WriteCommon(target, sequence, captureMicros, appTimestamp, pose);
+            WriteAprilTagHeader(
+                target,
+                sequence,
+                captureMicros,
+                appTimestamp,
+                pose,
+                tagIds,
+                inliers,
+                corners,
+                inlierRatio,
+                averageDistance,
+                xStdDev,
+                yStdDev,
+                zStdDev,
+                rollStdDev,
+                pitchStdDev,
+                yawStdDev
+            );
             int count = tagIds?.Length ?? 0;
-            target[12] = count;
+            for (int i = 0; i < count; i++)
+            {
+                target[AprilTagHeaderLength + i] = tagIds[i];
+            }
+        }
+
+        public static void WriteAprilTagV3(
+            double[] target,
+            ulong sequence,
+            long captureMicros,
+            double appTimestamp,
+            Pose3d pose,
+            int[] tagIds,
+            uint inliers,
+            uint corners,
+            double inlierRatio,
+            double averageDistance,
+            double xStdDev,
+            double yStdDev,
+            double zStdDev,
+            double rollStdDev,
+            double pitchStdDev,
+            double yawStdDev,
+            double ambiguity,
+            double reprojectionErrorPixels,
+            double[] tagAmbiguities
+        )
+        {
+            WriteAprilTagHeader(
+                target,
+                sequence,
+                captureMicros,
+                appTimestamp,
+                pose,
+                tagIds,
+                inliers,
+                corners,
+                inlierRatio,
+                averageDistance,
+                xStdDev,
+                yStdDev,
+                zStdDev,
+                rollStdDev,
+                pitchStdDev,
+                yawStdDev
+            );
+            target[23] = ambiguity;
+            target[24] = reprojectionErrorPixels;
+            int count = tagIds?.Length ?? 0;
+            for (int i = 0; i < count; i++)
+            {
+                target[AprilTagV3HeaderLength + i] = tagIds[i];
+                target[AprilTagV3HeaderLength + count + i] = tagAmbiguities[i];
+            }
+        }
+
+        private static void WriteAprilTagHeader(
+            double[] target,
+            ulong sequence,
+            long captureMicros,
+            double appTimestamp,
+            Pose3d pose,
+            int[] tagIds,
+            uint inliers,
+            uint corners,
+            double inlierRatio,
+            double averageDistance,
+            double xStdDev,
+            double yStdDev,
+            double zStdDev,
+            double rollStdDev,
+            double pitchStdDev,
+            double yawStdDev
+        )
+        {
+            WriteCommon(target, sequence, captureMicros, appTimestamp, pose);
+            target[12] = tagIds?.Length ?? 0;
             target[13] = inliers;
             target[14] = corners;
             target[15] = inlierRatio;
@@ -79,10 +182,6 @@ namespace QuestX.Network
             target[20] = rollStdDev;
             target[21] = pitchStdDev;
             target[22] = yawStdDev;
-            for (int i = 0; i < count; i++)
-            {
-                target[AprilTagHeaderLength + i] = tagIds[i];
-            }
         }
     }
 }

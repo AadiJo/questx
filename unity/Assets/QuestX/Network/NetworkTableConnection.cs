@@ -78,22 +78,7 @@ namespace QuestX.Network
         /// <summary>
         /// Publishes a field-relative AprilTag measurement and its quality metadata.
         /// </summary>
-        void PublishAprilTagData(
-            long captureTimestampMicros,
-            double appTimestamp,
-            Pose3d pose,
-            int[] tagIds,
-            uint inlierCount,
-            uint cornerCount,
-            double inlierRatio,
-            double averageTagDistanceMeters,
-            double xStdDevMeters,
-            double yStdDevMeters,
-            double zStdDevMeters,
-            double rollStdDevRadians,
-            double pitchStdDevRadians,
-            double yawStdDevRadians
-        );
+        void PublishAprilTagData(AprilTagMeasurement measurement);
 
         /// <summary>
         /// Gets the number of VIO measurements successfully handed to NTCore.
@@ -189,11 +174,13 @@ namespace QuestX.Network
 
         private readonly DoubleArrayPublisher vioV2Publisher;
         private readonly DoubleArrayPublisher aprilTagV2Publisher;
+        private readonly DoubleArrayPublisher aprilTagV3Publisher;
         private readonly MeasurementTelemetry vioTelemetry;
         private readonly MeasurementTelemetry aprilTagTelemetry;
         private readonly LimelightTelemetry limelightTelemetry;
         private readonly double[] vioV2 = new double[MeasurementWireFormat.VioLength];
         private double[] aprilTagV2 = new double[MeasurementWireFormat.AprilTagHeaderLength];
+        private double[] aprilTagV3 = new double[MeasurementWireFormat.AprilTagV3HeaderLength];
         private long nextTelemetryMicros;
 
         /// <summary>
@@ -268,6 +255,10 @@ namespace QuestX.Network
             );
             aprilTagV2Publisher = ntInstance.GetDoubleArrayPublisher(
                 QuestXConstants.Topics.APRIL_TAG_DATA_V2,
+                QuestXConstants.Network.NtPublisherSettings
+            );
+            aprilTagV3Publisher = ntInstance.GetDoubleArrayPublisher(
+                QuestXConstants.Topics.APRIL_TAG_DATA_V3,
                 QuestXConstants.Network.NtPublisherSettings
             );
             limelightTelemetry = new LimelightTelemetry(ntInstance);
@@ -543,23 +534,23 @@ namespace QuestX.Network
         }
 
         /// <inheritdoc />
-        public void PublishAprilTagData(
-            long captureTimestampMicros,
-            double appTimestamp,
-            Pose3d pose,
-            int[] tagIds,
-            uint inlierCount,
-            uint cornerCount,
-            double inlierRatio,
-            double averageTagDistanceMeters,
-            double xStdDevMeters,
-            double yStdDevMeters,
-            double zStdDevMeters,
-            double rollStdDevRadians,
-            double pitchStdDevRadians,
-            double yawStdDevRadians
-        )
+        public void PublishAprilTagData(AprilTagMeasurement measurement)
         {
+            long captureTimestampMicros = measurement.CaptureTimestampMicros;
+            double appTimestamp = measurement.AppTimestamp;
+            Pose3d pose = measurement.Pose;
+            int[] tagIds = measurement.TagIds;
+            uint inlierCount = (uint)measurement.InlierCount;
+            uint cornerCount = (uint)measurement.CornerCount;
+            double inlierRatio = measurement.InlierRatio;
+            double averageTagDistanceMeters = measurement.AverageTagDistanceMeters;
+            double xStdDevMeters = measurement.XStdDevMeters;
+            double yStdDevMeters = measurement.YStdDevMeters;
+            double zStdDevMeters = measurement.ZStdDevMeters;
+            double rollStdDevRadians = measurement.RollStdDevRadians;
+            double pitchStdDevRadians = measurement.PitchStdDevRadians;
+            double yawStdDevRadians = measurement.YawStdDevRadians;
+
             aprilTagData.SequenceId = nextAprilTagSequenceId++;
             aprilTagData.CaptureTimestampMicros = captureTimestampMicros;
             aprilTagData.AppTimestamp = appTimestamp;
@@ -609,8 +600,40 @@ namespace QuestX.Network
             {
                 AprilTagPublishCount++;
             }
-            aprilTagTelemetry.Update(aprilTagV2, pose);
-            limelightTelemetry.Update(pose, aprilTagV2, captureTimestampMicros, NtNow);
+
+            int tagCount = tagIds?.Length ?? 0;
+            var tagAmbiguities = new double[tagCount];
+            for (int i = 0; i < tagCount; i++)
+            {
+                tagAmbiguities[i] = measurement.Observations[i].Ambiguity;
+            }
+            int v3Length = MeasurementWireFormat.AprilTagV3HeaderLength + 2 * tagCount;
+            if (aprilTagV3.Length != v3Length)
+                aprilTagV3 = new double[v3Length];
+            MeasurementWireFormat.WriteAprilTagV3(
+                aprilTagV3,
+                aprilTagData.SequenceId,
+                captureTimestampMicros,
+                appTimestamp,
+                pose,
+                tagIds,
+                inlierCount,
+                cornerCount,
+                inlierRatio,
+                averageTagDistanceMeters,
+                xStdDevMeters,
+                yStdDevMeters,
+                zStdDevMeters,
+                rollStdDevRadians,
+                pitchStdDevRadians,
+                yawStdDevRadians,
+                measurement.Ambiguity,
+                measurement.ReprojectionErrorPixels,
+                tagAmbiguities
+            );
+            aprilTagV3Publisher.Set(aprilTagV3, captureTimestampMicros);
+            aprilTagTelemetry.Update(aprilTagV3, pose);
+            limelightTelemetry.Update(measurement, captureTimestampMicros, NtNow);
         }
 
         public void PublishAprilTagDiagnostics(AprilTagDiagnosticsSnapshot diagnostics) =>

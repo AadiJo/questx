@@ -20,6 +20,13 @@ import java.util.List;
  * <p>This record contains a solved pose and its quality metadata. It is not fused with Quest VIO.
  * Robot code should apply its own rejection policy before adding the measurement to an estimator.
  *
+ * <p>{@link #ambiguity()} follows PhotonVision's {@code getPoseAmbiguity()}: a planar tag usually
+ * admits two poses, and ambiguity is the lower RMS reprojection error divided by the higher (0 =
+ * one pose clearly fits, 1 = indistinguishable). Several coplanar tags are evaluated as one plane;
+ * tags on different planes report 0. A common policy rejects single-tag frames whose ambiguity
+ * exceeds about 0.2. Ambiguity fields are NaN or empty when the selected transport does not carry
+ * them ({@link MeasurementTransport#V2} and {@link MeasurementTransport#LEGACY_PROTOBUF}).
+ *
  * @param fieldPose3d field-relative pose of the Quest headset
  * @param measurementTimestamp NetworkTables server timestamp in seconds, translated to the robot
  *     clock; use this timestamp when fusing the measurement
@@ -34,6 +41,11 @@ import java.util.List;
  * @param inlierRatio accepted-corner ratio from zero to one
  * @param averageTagDistanceMeters average distance to the observed tags in meters
  * @param standardDeviations per-axis measurement standard deviations
+ * @param ambiguity planar pose ambiguity from 0 to 1, or NaN when not reported
+ * @param reprojectionErrorPixels RMS pixel error of the solved pose over every observed corner, or
+ *     NaN when not reported
+ * @param tagAmbiguities single-tag ambiguity for each tag, in {@code tagIds} order; empty when not
+ *     reported
  */
 public record AprilTagFrame(
     Pose3d fieldPose3d,
@@ -47,10 +59,13 @@ public record AprilTagFrame(
     long cornerCount,
     double inlierRatio,
     double averageTagDistanceMeters,
-    PoseStandardDeviations standardDeviations) {
+    PoseStandardDeviations standardDeviations,
+    double ambiguity,
+    double reprojectionErrorPixels,
+    List<Double> tagAmbiguities) {
 
   /**
-   * Creates an AprilTag frame and defensively copies its tag ID list.
+   * Creates an AprilTag frame and defensively copies its tag ID and ambiguity lists.
    *
    * @param fieldPose3d field-relative pose of the Quest headset
    * @param measurementTimestamp NetworkTables server timestamp in seconds
@@ -64,9 +79,22 @@ public record AprilTagFrame(
    * @param inlierRatio accepted-corner ratio from zero to one
    * @param averageTagDistanceMeters average distance to the observed tags in meters
    * @param standardDeviations per-axis measurement standard deviations
+   * @param ambiguity planar pose ambiguity from 0 to 1, or NaN when not reported
+   * @param reprojectionErrorPixels RMS reprojection error in pixels, or NaN when not reported
+   * @param tagAmbiguities single-tag ambiguity for each tag; empty when not reported
    */
   public AprilTagFrame {
     tagIds = List.copyOf(tagIds);
+    tagAmbiguities = List.copyOf(tagAmbiguities);
+  }
+
+  /**
+   * Returns whether the Quest reported pose ambiguity for this measurement.
+   *
+   * @return true when {@link #ambiguity()} is a number
+   */
+  public boolean hasAmbiguity() {
+    return !Double.isNaN(ambiguity);
   }
 
   /**

@@ -15,11 +15,13 @@ namespace QuestX.Network
         private readonly BooleanPublisher trackingPublisher;
         private readonly IntegerPublisher epochPublisher;
         private readonly DoubleArrayPublisher tagIdsPublisher;
+        private readonly DoubleArrayPublisher tagAmbiguitiesPublisher;
         private readonly DoublePublisher[] qualityPublishers;
         private readonly IntegerPublisher publishCountPublisher;
         private double[] measurement;
         private Pose3d pose;
         private double[] tagIds = new double[0];
+        private double[] tagAmbiguities = new double[0];
 
         public MeasurementTelemetry(NtInstance nt, string path, bool vio)
         {
@@ -53,6 +55,7 @@ namespace QuestX.Network
             else
             {
                 tagIdsPublisher = nt.GetDoubleArrayPublisher(path + "tagIds", options);
+                tagAmbiguitiesPublisher = nt.GetDoubleArrayPublisher(path + "tagAmbiguities", options);
                 string[] quality =
                 {
                     "tagCount",
@@ -66,6 +69,8 @@ namespace QuestX.Network
                     "stdDevRollRadians",
                     "stdDevPitchRadians",
                     "stdDevYawRadians",
+                    "ambiguity",
+                    "reprojectionErrorPixels",
                 };
                 qualityPublishers = new DoublePublisher[quality.Length];
                 for (int i = 0; i < quality.Length; i++)
@@ -74,6 +79,7 @@ namespace QuestX.Network
         }
 
         // The connection owns and reuses the arrays; all callbacks run on Unity's main thread.
+        // AprilTag telemetry reads the v3 layout (MeasurementWireFormat.AprilTagV3HeaderLength).
         public void Update(double[] value, Pose3d capturedPose)
         {
             measurement = value;
@@ -113,15 +119,26 @@ namespace QuestX.Network
                     qualityPublishers[i].Set(measurement[12 + i]);
                 int count = (int)measurement[12];
                 if (tagIds.Length != count)
+                {
                     tagIds = new double[count];
+                    tagAmbiguities = new double[count];
+                }
                 System.Array.Copy(
                     measurement,
-                    MeasurementWireFormat.AprilTagHeaderLength,
+                    MeasurementWireFormat.AprilTagV3HeaderLength,
                     tagIds,
                     0,
                     count
                 );
+                System.Array.Copy(
+                    measurement,
+                    MeasurementWireFormat.AprilTagV3HeaderLength + count,
+                    tagAmbiguities,
+                    0,
+                    count
+                );
                 tagIdsPublisher.Set(tagIds);
+                tagAmbiguitiesPublisher.Set(tagAmbiguities);
             }
         }
     }

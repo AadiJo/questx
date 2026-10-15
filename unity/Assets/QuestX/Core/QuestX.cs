@@ -37,10 +37,12 @@ namespace QuestX.Core
         private long vioCaptureTimestampMicros;
 
         /// <summary>
-        /// Increments whenever the local VIO coordinate frame is recentered or reset.
-        /// Consumers must not calculate pose deltas across an epoch boundary.
+        /// Frame that VIO is published in. Its epoch increments whenever the frame is recentered
+        /// or reset; consumers must not calculate pose deltas across an epoch boundary.
         /// </summary>
-        private uint trackingEpoch;
+        private readonly VioReferenceFrame vioFrame = new VioReferenceFrame(
+            QuestXConstants.Timing.RECENTER_SETTLE_SECONDS
+        );
 
         /// <summary>
         /// Reference to the OVR Camera Rig for tracking
@@ -272,6 +274,7 @@ namespace QuestX.Core
             );
 
             OVRManager.display.RecenteredPose += OnVioRecenter;
+            OVRManager.TrackingOriginChangePending += OnTrackingOriginChangePending;
 
             // Construct the camera arbiter before any subsystem that touches the camera.
             // Both PassthroughFrameSource (Low priority) and AprilTagManager (High priority)
@@ -309,6 +312,7 @@ namespace QuestX.Core
             webServerManager = new WebServerManager(
                 configManager,
                 networkTableConnection,
+                vioFrame,
                 vrCamera,
                 vrCameraRoot,
                 passthroughFrameSource,
@@ -320,6 +324,7 @@ namespace QuestX.Core
 
             commandProcessor = new CommandProcessor(
                 networkTableConnection,
+                vioFrame,
                 vrCamera,
                 vrCameraRoot,
                 resetTransform,
@@ -361,14 +366,14 @@ namespace QuestX.Core
             // This includes position (x,y,z) and rotation (quaternion) in Unity world space
             UpdateFrameData();
 
-            // Convert Unity coordinates to FRC field coordinates and publish to NetworkTables
-            // The robot subscribes to this data to know where the headset is on the field
+            // Publish the VIO sample in its reference frame. While a recenter settles, the frame
+            // repeats the last pre-recenter pose and reports it as not tracking.
             networkTableConnection.PublishVioData(
                 vioCaptureTimestampMicros,
                 timeStamp,
                 pose,
-                currentlyTracking,
-                trackingEpoch
+                vioFrame.PublishedTracking,
+                vioFrame.Epoch
             );
 
             // Check for and execute any pending commands from the robot
@@ -418,7 +423,7 @@ namespace QuestX.Core
                     frcRotation,
                     currentlyTracking,
                     trackingLostEvents,
-                    trackingEpoch,
+                    vioFrame.Epoch,
                     aprilTagManager.GetDiagnosticsSnapshot()
                 );
             }
@@ -438,6 +443,7 @@ namespace QuestX.Core
         private void OnDestroy()
         {
             OVRManager.display.RecenteredPose -= OnVioRecenter;
+            OVRManager.TrackingOriginChangePending -= OnTrackingOriginChangePending;
             if (aprilTagManager != null)
             {
                 aprilTagManager.MeasurementAvailable -= OnAprilTagMeasurementAvailable;
@@ -585,8 +591,9 @@ namespace QuestX.Core
         /// - Rotation quaternion represents the headset's orientation relative to the tracking origin
         /// - This data will be converted to FRC field coordinates before transmission to the robot
         ///
-        /// Using local pose is important: the legacy pose-reset command moves the camera-rig
-        /// root for display purposes, but must not field-align or otherwise mutate raw VIO.
+        /// Using local pose is important: the pose-reset command also moves the camera-rig root
+        /// for display purposes, which must not leak into VIO. Resets reach VIO only through
+        /// <see cref="vioFrame"/>, which starts a new tracking epoch for each one.
         /// </summary>
         private void UpdateFrameData()
         {
@@ -598,12 +605,14 @@ namespace QuestX.Core
             vioCaptureTimestampMicros = networkTableConnection.NtNow;
             timeStamp = Time.timeAsDouble;
 
-            pose = new Pose3d(
+            var localPose = new Pose3d(
                 Conversions.UnityToFrc3d(
                     cameraRig.centerEyeAnchor.localPosition,
                     cameraRig.centerEyeAnchor.localRotation
                 )
             );
+            vioFrame.Sample(localPose, currentlyTracking, timeStamp);
+            pose = vioFrame.PublishedPose;
         }
 
         /// <summary>
@@ -612,35 +621,37 @@ namespace QuestX.Core
         /// </summary>
         private void OnVioRecenter()
         {
-            OnTrackingOriginChanged();
+            OnTrackingOriginChanged("recenter");
         }
 
-        private void OnTrackingOriginChanged()
+        /// <summary>
+        /// The runtime's earliest notice that the local tracking origin is about to move.
+        /// </summary>
+        private void OnTrackingOriginChangePending(
+            OVRManager.TrackingOrigin trackingOrigin,
+            OVRPose? poseInPreviousSpace
+        )
         {
-            trackingEpoch++;
-            QueuedLogger.LogWarning(
-                $"VIO coordinate frame changed; publishing tracking epoch {trackingEpoch}"
-            );
+            OnTrackingOriginChanged($"{trackingOrigin} origin change");
+        }
+
+        private void OnTrackingOriginChanged(string cause)
+        {
+            uint previousEpoch = vioFrame.Epoch;
+            vioFrame.BeginOriginChange(Time.timeAsDouble);
+            if (vioFrame.Epoch != previousEpoch)
+            {
+                QueuedLogger.LogWarning(
+                    $"VIO coordinate frame changed ({cause}); holding VIO as not tracking for "
+                        + $"{QuestXConstants.Timing.RECENTER_SETTLE_SECONDS * 1000:F0} ms in "
+                        + $"tracking epoch {vioFrame.Epoch}"
+                );
+            }
         }
 
         private void OnAprilTagMeasurementAvailable(AprilTagMeasurement measurement)
         {
-            networkTableConnection.PublishAprilTagData(
-                measurement.CaptureTimestampMicros,
-                measurement.AppTimestamp,
-                measurement.Pose,
-                measurement.TagIds,
-                (uint)measurement.InlierCount,
-                (uint)measurement.CornerCount,
-                measurement.InlierRatio,
-                measurement.AverageTagDistanceMeters,
-                measurement.XStdDevMeters,
-                measurement.YStdDevMeters,
-                measurement.ZStdDevMeters,
-                measurement.RollStdDevRadians,
-                measurement.PitchStdDevRadians,
-                measurement.YawStdDevRadians
-            );
+            networkTableConnection.PublishAprilTagData(measurement);
         }
 
         /// <summary>

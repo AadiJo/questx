@@ -60,6 +60,44 @@ namespace QuestX.Editor.CI
             );
             Write(output, "apriltag", tags);
             Debug.Log("Measurement v2 C# fixtures exported to " + output);
+
+            string outputV3 = Path.GetFullPath(
+                Path.Combine(
+                    Application.dataPath,
+                    "../../questx-lib/src/test/resources/measurement-v3"
+                )
+            );
+            Directory.CreateDirectory(outputV3);
+            var tagsV3 = new double[MeasurementWireFormat.AprilTagV3HeaderLength + 2 * 3];
+            WriteAprilTagV3Fixture(tagsV3, pose);
+            Write(outputV3, "apriltag", tagsV3);
+            Debug.Log("Measurement v3 C# fixtures exported to " + outputV3);
+        }
+
+        /// <summary>The v2 AprilTag fixture's values plus ambiguity and fit error.</summary>
+        public static void WriteAprilTagV3Fixture(double[] target, Pose3d pose)
+        {
+            MeasurementWireFormat.WriteAprilTagV3(
+                target,
+                42,
+                987654321,
+                4.5,
+                pose,
+                new[] { 1, 22, 586 },
+                10,
+                12,
+                10.0 / 12,
+                2.75,
+                0.1,
+                0.2,
+                0.3,
+                0.01,
+                0.02,
+                0.03,
+                0.125,
+                0.875,
+                new[] { 0.5, 0.25, 0.0625 }
+            );
         }
 
         private static void Write(string directory, string name, double[] values)

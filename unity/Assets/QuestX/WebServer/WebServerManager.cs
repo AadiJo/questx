@@ -74,6 +74,7 @@ namespace QuestX.WebServer
         private readonly Transform vrCameraRoot;
         private readonly INetworkTableConnection networkTableConnection;
         private readonly Transform vrCamera;
+        private readonly VioReferenceFrame vioFrame;
         private readonly IConfigManager configManager;
         private readonly LogCollector logCollector;
         private readonly CameraResourceManager cameraArbiter;
@@ -96,6 +97,7 @@ namespace QuestX.WebServer
         public WebServerManager(
             IConfigManager configManager,
             INetworkTableConnection networkTableConnection,
+            VioReferenceFrame vioFrame,
             Transform vrCamera,
             Transform vrCameraRoot,
             VideoStreamProvider.IFrameSource frameSource,
@@ -107,6 +109,7 @@ namespace QuestX.WebServer
         {
             this.configManager = configManager;
             this.networkTableConnection = networkTableConnection;
+            this.vioFrame = vioFrame;
             this.vrCamera = vrCamera;
             this.vrCameraRoot = vrCameraRoot;
             this.resetTransform = resetTransform;
@@ -321,6 +324,7 @@ namespace QuestX.WebServer
             // Create a temporary command instance for web-initiated reset
             var webPoseResetCommand = new PoseResetCommand(
                 webContext, // Web context is no-op (no NetworkTables responses)
+                vioFrame,
                 vrCamera,
                 vrCameraRoot,
                 resetTransform
@@ -329,7 +333,7 @@ namespace QuestX.WebServer
             // Execute the pose reset using the existing command implementation
             webPoseResetCommand.Execute(command);
 
-            QueuedLogger.Log("[QuestX] Pose reset to origin completed");
+            QueuedLogger.Log("[QuestX] Pose reset to origin processed");
         }
 
         /// <summary>

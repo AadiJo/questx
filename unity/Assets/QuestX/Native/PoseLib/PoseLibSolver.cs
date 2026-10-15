@@ -33,6 +33,11 @@ namespace QuestX.Native.PoseLib
         }
 
         /// <summary>
+        /// Pinhole intrinsics used by the most recent solve: [fx, fy, cx, cy] in pixels.
+        /// </summary>
+        public IReadOnlyList<double> Intrinsics => intrinsicsArray;
+
+        /// <summary>
         /// Updates the cached camera intrinsics. Called from
         /// <c>AprilTagManager.OnAprilTagDetectorModeChanged</c> after the camera arbiter
         /// has applied a new resolution. The next solve uses the refreshed values.
@@ -101,13 +106,16 @@ namespace QuestX.Native.PoseLib
                 }
             }
 
+            double[] points2d = corners2d.ToArray();
+            double[] points3d = corners3d.ToArray();
+
             // 12 px RANSAC reprojection-error threshold was tuned for the Quest 3 / 3S
             // 1280-wide passthrough frames. (An earlier attempt to scale this with
             // colors.Length was based on a misread of the Meta SDK's GetColors over-
             // allocation; see AprilTagManager comment in AprilTagFrameCaptureCoroutine.)
             int status = PoseLibNatives.poselib_estimate_absolute_pose_simple(
-                corners2d.ToArray(),
-                corners3d.ToArray(),
+                points2d,
+                points3d,
                 (ulong)(count * 4),
                 (int)PoseLibNatives.PoseLibCameraModelIdNative.POSELIB_CAMERA_PINHOLE,
                 resolutionX,
@@ -121,7 +129,21 @@ namespace QuestX.Native.PoseLib
 
             if (status == 0)
             {
-                return new PoseLibResult(resultPose, resultInliers, count * 4);
+                // PoseLib returns one pose. Re-solve each planar tag (and a coplanar group)
+                // with IPPE so robot code receives the ambiguity it uses for rejection.
+                AprilTagAmbiguity.Result quality;
+                unsafe
+                {
+                    quality = AprilTagAmbiguity.Evaluate(
+                        points2d,
+                        points3d,
+                        count,
+                        intrinsicsArray,
+                        new[] { resultPose.Q[0], resultPose.Q[1], resultPose.Q[2], resultPose.Q[3] },
+                        new[] { resultPose.T[0], resultPose.T[1], resultPose.T[2] }
+                    );
+                }
+                return new PoseLibResult(resultPose, resultInliers, count * 4, quality);
             }
 
             QueuedLogger.LogError($"PoseLib solve failed! Error code: {status}");

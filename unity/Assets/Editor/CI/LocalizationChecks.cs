@@ -55,12 +55,24 @@ namespace QuestX.Editor.CI
             Assert(AprilTagPoseValidation.IsFacingCamera(forwardCamera, facingTag), "printed tag face in front accepted");
             Assert(!AprilTagPoseValidation.IsFacingCamera(new Pose3d(2, 3, 1, new Rotation3d(0, 0, Math.PI)), facingTag), "tag behind camera rejected");
             Assert(!AprilTagPoseValidation.IsFacingCamera(forwardCamera, new Pose3d(4, 3, 1, Rotation3d.Zero)), "camera behind printed tag rejected");
-            var ll = LimelightPoseFormat.Encode(good, 35, 2, 1.8);
-            Assert(ll.Length == 11, "Limelight length");
+            var observations = new[] {
+                new AprilTagObservation(7, 0.15, -3, 2, 0.4, 1.7, 1.75),
+                new AprilTagObservation(8, 0.05, 4, -1, 0.6, 1.9, 1.95),
+            };
+            var ll = LimelightPoseFormat.Encode(good, 35, 1.8, observations);
+            Assert(ll.Length == 11 + 7 * 2, "Limelight length includes raw fiducials");
             Near(ll[5], 90, "Limelight angles in degrees");
             Near(ll[6], 35, "Limelight latency in milliseconds");
             Near(ll[7], 2, "Limelight tag count");
             Near(ll[9], 1.8, "Limelight mean distance");
+            Near(ll[10], 0.5, "Limelight mean area");
+            Near(ll[11], 7, "Limelight fiducial ID");
+            Near(ll[17], 0.15, "Limelight fiducial ambiguity");
+            Near(ll[24], 0.05, "Limelight second fiducial ambiguity");
+            var raw = LimelightPoseFormat.RawFiducials(observations);
+            Assert(raw.Length == 14, "Limelight raw fiducial length");
+            Near(raw[7], 8, "Limelight raw fiducial order");
+            Near(raw[12], 1.95, "Limelight raw distance to robot");
             Assert(!LimelightPoseFormat.IsFresh(100, 0), "no observation invalid");
             Assert(LimelightPoseFormat.IsFresh(300000, 50000), "freshness boundary");
             Assert(!LimelightPoseFormat.IsFresh(300001, 50000), "stale observation invalid");
@@ -71,6 +83,14 @@ namespace QuestX.Editor.CI
             Near(packet[12], 2, "v2 tag count unchanged");
             Near(packet[22], 0.15, "v2 yaw sigma remains radians");
             Near(packet[24], 2, "v2 IDs unchanged");
+            var v3 = new double[MeasurementWireFormat.AprilTagV3HeaderLength + 4];
+            MeasurementWireFormat.WriteAprilTagV3(v3, 0, 123456, 2, good, new[]{1,2}, 8, 8, 1,
+                1.8, 0.1, 0.1, 0.2, 0.3, 0.3, 0.15, 0.04, 0.7, new[]{0.2, 0.6});
+            Near(v3[22], 0.15, "v3 keeps v2 header");
+            Near(v3[23], 0.04, "v3 ambiguity");
+            Near(v3[24], 0.7, "v3 reprojection error");
+            Near(v3[26], 2, "v3 IDs follow header");
+            Near(v3[28], 0.6, "v3 per-tag ambiguities follow IDs");
             string report = Path.GetFullPath(Path.Combine(Application.dataPath, "../../submission/localization-checks.json"));
             Directory.CreateDirectory(Path.GetDirectoryName(report));
             File.WriteAllText(report, JsonConvert.SerializeObject(new { passed = checks, failed = 0, utc = DateTime.UtcNow }));
