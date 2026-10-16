@@ -81,6 +81,12 @@ namespace QuestX.Core
             }
         }
 
+        /// <summary>Yaw (radians) that rotates the local frame into the published frame.</summary>
+        public double YawCorrectionRadians => yawCorrection.Z;
+
+        /// <summary>Translation added after the yaw correction to reach the published frame.</summary>
+        public Translation3d Offset => offset;
+
         /// <summary>Expresses a local-frame pose in the published frame.</summary>
         public Pose3d Apply(Pose3d localPose) =>
             new Pose3d(

@@ -231,6 +231,36 @@ namespace QuestX.Core
         }
 
         /// <summary>
+        /// VIO quality monitor: environment-depth raycasts compared against a keyframe to measure VIO drift.
+        /// </summary>
+        public static class VioQuality
+        {
+            /// <summary>Master switch. When false only tracking state is published.</summary>
+            public const bool ENABLED = true;
+
+            /// <summary>Analysis rate. Each tick casts RAY_COLUMNS x RAY_ROWS rays and compares with the keyframe.</summary>
+            public const int UPDATE_HZ = 15;
+
+            public const int RAY_COLUMNS = 16;
+            public const int RAY_ROWS = 10;
+
+            /// <summary>Half horizontal spread of the ray fan around the headset forward direction (degrees).</summary>
+            public const float RAY_HALF_YAW_DEG = 45f;
+
+            /// <summary>Vertical spread of the ray fan; negative looks down (degrees).</summary>
+            public const float RAY_PITCH_MIN_DEG = -35f;
+            public const float RAY_PITCH_MAX_DEG = 20f;
+
+            /// <summary>Hits closer than this count as near-field occlusion and are not used (m).</summary>
+            public const float MIN_RANGE_METERS = 0.3f;
+
+            /// <summary>Raycast maximum distance; depth beyond this is too noisy to help (m).</summary>
+            public const float MAX_RANGE_METERS = 5f;
+
+            public const float MIN_NORMAL_CONFIDENCE = 0.5f;
+        }
+
+        /// <summary>
         /// Constants for the web server configuration
         /// </summary>
         public static class WebServer

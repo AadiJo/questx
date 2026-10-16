@@ -7,6 +7,7 @@ using QuestX.QuestX.AprilTag;
 using QuestX.QuestX.Geometry;
 using QuestX.UI;
 using QuestX.Utils;
+using QuestX.VioQuality;
 using QuestX.WebServer;
 using TMPro;
 using UnityEngine;
@@ -199,6 +200,11 @@ namespace QuestX.Core
         private INetworkTableConnection networkTableConnection;
 
         /// <summary>
+        /// Environment-depth VIO drift check published on /v2/vioQuality
+        /// </summary>
+        private VioQualityMonitor vioQualityMonitor;
+
+        /// <summary>
         /// Reference to the command processor component
         /// </summary>
         private ICommandProcessor commandProcessor;
@@ -343,6 +349,13 @@ namespace QuestX.Core
             InvokeRepeating(nameof(SlowUpdate), 0, 1f / QuestXConstants.Timing.SLOW_UPDATE_HZ);
             InvokeRepeating(nameof(MainUpdate), 0, 1f / QuestXConstants.Timing.MAIN_UPDATE_HZ);
 
+            vioQualityMonitor = new VioQualityMonitor(cameraRig, gameObject);
+            InvokeRepeating(
+                nameof(VioQualityUpdate),
+                1f,
+                1f / QuestXConstants.VioQuality.UPDATE_HZ
+            );
+
             initialized = true;
         }
 
@@ -382,6 +395,22 @@ namespace QuestX.Core
 
             // Update the UI position to keep it in view of the user
             tagAlongUI.Periodic();
+        }
+
+        /// <summary>
+        /// VIO quality loop (QuestXConstants.VioQuality.UPDATE_HZ): samples environment depth with a fixed ray fan,
+        /// measures how far static surfaces appear to have moved in the VIO frame since a keyframe (that apparent
+        /// motion is VIO error), and publishes it with head tracking state on /v2/vioQuality.
+        /// Kept off MainUpdate so raycasts never delay the VIO pose publisher.
+        /// </summary>
+        private void VioQualityUpdate()
+        {
+            if (vioQualityMonitor == null)
+                return;
+            long capture = networkTableConnection.NtNow;
+            double appTime = Time.timeAsDouble;
+            var quality = vioQualityMonitor.Sample(appTime, vioFrame);
+            networkTableConnection.PublishVioQuality(capture, appTime, quality);
         }
 
         /// <summary>
