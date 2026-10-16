@@ -8,6 +8,7 @@ using QuestX.Protos.Generated;
 using QuestX.QuestX.Geometry;
 using QuestX.QuestX.AprilTag;
 using QuestX.Utils;
+using QuestX.VioQuality;
 using UnityEngine;
 using Quaternion = UnityEngine.Quaternion;
 
@@ -79,6 +80,15 @@ namespace QuestX.Network
         /// Publishes a field-relative AprilTag measurement and its quality metadata.
         /// </summary>
         void PublishAprilTagData(AprilTagMeasurement measurement);
+
+        /// <summary>
+        /// Publishes a VIO quality report (environment-depth drift check and head tracking state) to /v2/vioQuality.
+        /// </summary>
+        void PublishVioQuality(
+            long captureTimestampMicros,
+            double appTimestamp,
+            VioQualitySample quality
+        );
 
         /// <summary>
         /// Gets the number of VIO measurements successfully handed to NTCore.
@@ -179,6 +189,9 @@ namespace QuestX.Network
         private readonly MeasurementTelemetry aprilTagTelemetry;
         private readonly LimelightTelemetry limelightTelemetry;
         private readonly double[] vioV2 = new double[MeasurementWireFormat.VioLength];
+        private readonly DoubleArrayPublisher vioQualityPublisher;
+        private readonly double[] vioQualityV2 = new double[MeasurementWireFormat.VioQualityLength];
+        private ulong nextVioQualitySequenceId;
         private double[] aprilTagV2 = new double[MeasurementWireFormat.AprilTagHeaderLength];
         private double[] aprilTagV3 = new double[MeasurementWireFormat.AprilTagV3HeaderLength];
         private long nextTelemetryMicros;
@@ -259,6 +272,10 @@ namespace QuestX.Network
             );
             aprilTagV3Publisher = ntInstance.GetDoubleArrayPublisher(
                 QuestXConstants.Topics.APRIL_TAG_DATA_V3,
+                QuestXConstants.Network.NtPublisherSettings
+            );
+            vioQualityPublisher = ntInstance.GetDoubleArrayPublisher(
+                QuestXConstants.Topics.VIO_QUALITY_V2,
                 QuestXConstants.Network.NtPublisherSettings
             );
             limelightTelemetry = new LimelightTelemetry(ntInstance);
@@ -531,6 +548,23 @@ namespace QuestX.Network
             }
             vioTelemetry.Update(vioV2, pose);
             PublishTelemetry();
+        }
+
+        /// <inheritdoc />
+        public void PublishVioQuality(
+            long captureTimestampMicros,
+            double appTimestamp,
+            VioQualitySample quality
+        )
+        {
+            MeasurementWireFormat.WriteVioQuality(
+                vioQualityV2,
+                nextVioQualitySequenceId++,
+                captureTimestampMicros,
+                appTimestamp,
+                quality
+            );
+            vioQualityPublisher.Set(vioQualityV2, captureTimestampMicros);
         }
 
         /// <inheritdoc />

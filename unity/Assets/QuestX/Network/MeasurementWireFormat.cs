@@ -1,4 +1,5 @@
 using QuestX.QuestX.Geometry;
+using QuestX.VioQuality;
 
 namespace QuestX.Network
 {
@@ -10,6 +11,7 @@ namespace QuestX.Network
     {
         public const int VioLength = 14;
         public const int AprilTagHeaderLength = 23;
+        public const int VioQualityLength = 25;
 
         /// <summary>
         /// v3 AprilTag arrays repeat the v2 fields at indices 0-22, then add ambiguity (23),
@@ -184,6 +186,52 @@ namespace QuestX.Network
             target[20] = rollStdDev;
             target[21] = pitchStdDev;
             target[22] = yawStdDev;
+        }
+
+        /// <summary>
+        /// /v2/vioQuality: [0-1] sequence words, [2-3] capture micros words, [4] app time s, [5] status
+        /// (0 ok, 1 not supported, 2 not ready, 3 not tracking, 4 too few hits, 5 new keyframe, 6 too few matches),
+        /// [6] tracking epoch, [7] position tracked, [8] position valid, [9] orientation tracked,
+        /// [10] head angular speed rad/s, [11] head linear speed m/s, [12] keyframe baseline s, [13] rays, [14] hits,
+        /// [15] near-occlusion fraction, [16] matched, [17] inlier ratio, [18-20] drift X/Y/Z m,
+        /// [21-23] drift standard deviation X/Y/Z m, [24] residual RMS m.
+        /// Drift is the VIO displacement error accumulated since the keyframe, in the published VIO frame (FRC axes,
+        /// same frame as /v2/vio); fields 12 and 16-24 are meaningful only when status is 0.
+        /// </summary>
+        public static void WriteVioQuality(
+            double[] target,
+            ulong sequence,
+            long captureMicros,
+            double appTimestamp,
+            VioQualitySample q
+        )
+        {
+            target[0] = (uint)sequence;
+            target[1] = (uint)(sequence >> 32);
+            target[2] = (uint)captureMicros;
+            target[3] = (uint)((ulong)captureMicros >> 32);
+            target[4] = appTimestamp;
+            var d = q.Drift;
+            target[5] = (int)d.Status;
+            target[6] = q.TrackingEpoch;
+            target[7] = q.PositionTracked ? 1 : 0;
+            target[8] = q.PositionValid ? 1 : 0;
+            target[9] = q.OrientationTracked ? 1 : 0;
+            target[10] = q.AngularSpeedRadPerSec;
+            target[11] = q.LinearSpeedMetersPerSec;
+            target[12] = d.BaselineSeconds;
+            target[13] = q.Rays;
+            target[14] = d.Hits;
+            target[15] = q.NearFraction;
+            target[16] = d.Matched;
+            target[17] = d.InlierRatio;
+            target[18] = d.Drift.X;
+            target[19] = d.Drift.Y;
+            target[20] = d.Drift.Z;
+            target[21] = d.DriftStdDev.X;
+            target[22] = d.DriftStdDev.Y;
+            target[23] = d.DriftStdDev.Z;
+            target[24] = d.ResidualRms;
         }
     }
 }
