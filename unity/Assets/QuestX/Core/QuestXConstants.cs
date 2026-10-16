@@ -86,6 +86,11 @@ namespace QuestX.Core
             public const string APRIL_TAG_DATA = NT_BASE_PATH + "/aprilTagData";
 
             public const string VIO_DATA_V2 = NT_BASE_PATH + "/v2/vio";
+
+            /// <summary>
+            /// VIO quality from environment depth (separate topic so /v2/vio decoders keep their fixed length)
+            /// </summary>
+            public const string VIO_QUALITY_V2 = NT_BASE_PATH + "/v2/vioQuality";
             public const string APRIL_TAG_DATA_V2 = NT_BASE_PATH + "/v2/apriltag";
 
             /// <summary>
