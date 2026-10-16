@@ -215,6 +215,7 @@ Check(nearOblique < 0.1, "Near, oblique single tag should not be ambiguous");
 
 VioFrameChecks.Run(Check);
 WireChecks.Run(Check);
+VioQualityChecks.Run(Check);
 
 // 8. Sample v3 frames for robot-side decoder tests: real 2026 REBUILT tags on the blue hub face
 // (25 and 26 share the x = 4.022 m plane and face the blue wall), seen from headset height.
