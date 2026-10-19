@@ -9,6 +9,7 @@ using EmbedIO;
 using EmbedIO.Actions;
 using Meta.XR;
 using Newtonsoft.Json;
+using QuestX.Camera;
 using QuestX.Config;
 using QuestX.Core;
 using QuestX.Utils;
@@ -457,6 +458,7 @@ namespace QuestX.WebServer.Server
                 enableAutoStartOnBoot = await configManager.GetEnableAutoStartOnBootAsync(),
                 enablePassthroughStream = await configManager.GetEnablePassthroughStreamAsync(),
                 enableHighQualityStream = await configManager.GetEnableHighQualityStreamsAsync(),
+                cameraOrientation = (int)await configManager.GetCameraOrientationAsync(),
                 streamMode = new StreamModeModel
                 {
                     width = streamMode.Width,
@@ -542,6 +544,27 @@ namespace QuestX.WebServer.Server
                 {
                     await configManager.SetEnableHighQualityStreamsAsync(
                         request.EnableHighQualityStream.Value
+                    );
+                }
+                if (request.CameraOrientation.HasValue)
+                {
+                    if (!CameraOrientationMath.IsValid(request.CameraOrientation.Value))
+                    {
+                        context.Response.StatusCode = 400;
+                        await SendJsonResponse(
+                            context,
+                            new SimpleResponse
+                            {
+                                success = false,
+                                message =
+                                    $"Camera orientation {request.CameraOrientation.Value} is not supported. "
+                                    + "Use 0 (normal), 1 (upside-down), 2 (left), or 3 (right).",
+                            }
+                        );
+                        return;
+                    }
+                    await configManager.SetCameraOrientationAsync(
+                        (CameraOrientation)request.CameraOrientation.Value
                     );
                 }
                 if (request.StreamMode != null)
@@ -1744,6 +1767,8 @@ namespace QuestX.WebServer.Server
                 parts.Add($"enablePassthroughStream={request.EnablePassthroughStream.Value}");
             if (request.EnableHighQualityStream.HasValue)
                 parts.Add($"enableHighQualityStream={request.EnableHighQualityStream.Value}");
+            if (request.CameraOrientation.HasValue)
+                parts.Add($"cameraOrientation={request.CameraOrientation.Value}");
             if (request.StreamMode != null)
             {
                 var s = request.StreamMode;

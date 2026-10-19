@@ -124,6 +124,9 @@ namespace QuestX.WebServer
         public bool enableAutoStartOnBoot;
         public bool enablePassthroughStream;
         public bool enableHighQualityStream;
+
+        /// <summary>Headset roll on its mount; see <see cref="Camera.CameraOrientation"/>.</summary>
+        public int cameraOrientation;
         public StreamModeModel streamMode;
         public bool enableAprilTagDetector;
         public AprilTagDetectorModeModel aprilTagDetectorMode;
@@ -143,6 +146,7 @@ namespace QuestX.WebServer
         public bool? EnableAutoStartOnBoot;
         public bool? EnablePassthroughStream;
         public bool? EnableHighQualityStream;
+        public int? CameraOrientation;
         public StreamModeModel StreamMode;
         public bool? EnableAprilTagDetector;
         public AprilTagDetectorModeModel AprilTagDetectorMode;

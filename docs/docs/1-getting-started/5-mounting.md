@@ -74,6 +74,8 @@ The headset's orientation doesn't really matter for tracking quality, as long as
 The only requirement is that the rotation must be reflected in the `ROBOT_TO_QUEST` transform in your robot code, so reported pose data converts correctly to robot-frame coordinates. See [Robot Code Setup](./robot-code) for how to specify rotation offsets.
 :::
 
+If the headset is upside-down or on its side, set **Orientation** on the web interface's Camera tab to **Upside-down**, **Left**, or **Right**. Left and Right are the direction the top of the headset is rolled, seen from behind it (as if you were wearing it and tilted your head). Pick whichever makes the camera preview upright. This rotates the camera stream, the AprilTag preview, the Limelight-compatible `txnc`/`tync` angles, and every reported headset pose (VIO, AprilTag, and `botpose`). Poses are reported as an upright headset at the same point, so leave that roll out of `ROBOT_TO_QUEST`, or it is applied twice. Position and yaw are unchanged.
+
 ### Field of View Requirements
 
 The Quest tracks the world using SLAM cameras built into the housing. The headset fuses the feeds from all of these cameras to drive its visual-inertial odometry (VIO) solver. Tracking relies on those cameras seeing distinctive environmental features, so anything that blocks their view reduces the feature count available to VIO and degrades tracking.

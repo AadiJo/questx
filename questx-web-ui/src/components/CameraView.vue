@@ -15,6 +15,14 @@
             <input type="checkbox" v-model="overlayEnabled" :disabled="!streamEnabled" />
             AprilTag Overlay
           </label>
+          <div class="control-container" title="How the headset is rolled on its mount, viewed from behind it. Rotates the stream, preview, Limelight tx/ty, and reported poses upright.">
+            <label for="camera-orientation">Orientation:</label>
+            <select id="camera-orientation" :value="cameraOrientation" @change="handleOrientationChange">
+              <option v-for="option in orientationOptions" :key="option.value" :value="option.value">
+                {{ option.text }}
+              </option>
+            </select>
+          </div>
           <button @click="toggleFullscreen" class="secondary fullscreen-button">
             <Minimize2 v-if="isFullscreen" :size="15" :stroke-width="1.75" aria-hidden="true" />
             <Maximize2 v-else :size="15" :stroke-width="1.75" aria-hidden="true" />
@@ -74,7 +82,7 @@
     <p v-if="streamEnabled && overlayEnabled" class="overlay-help">
       Image and outlines are synchronized. Preview speed is limited by detection. Includes ignored tag IDs.
     </p>
-    <div v-if="streamEnabled" class="camera-container" ref="cameraContainer" :style="{ aspectRatio: cameraAspectRatio }">
+    <div v-if="streamEnabled" :class="['camera-container', { portrait: cameraPortrait }]" ref="cameraContainer" :style="{ aspectRatio: cameraAspectRatio }">
       <img v-if="!overlayEnabled && active" :src="streamUrl" alt="Camera Stream" class="camera-stream" @error="streamFailed = true" />
       <AprilTagOverlay v-if="overlayEnabled && active" :key="streamUrl" @dimensions="previewResolution = $event" />
       <span v-if="!overlayEnabled && streamFailed" class="stream-error">Camera stream unavailable. Toggle the stream to reconnect.</span>
@@ -87,7 +95,7 @@ import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useConfigStore } from '../stores/config'
 import { videoApi } from '../api/video'
 import { configApi } from '../api/config'
-import type { HeadsetStatus } from '../types'
+import { CameraOrientation, type HeadsetStatus } from '../types'
 import AprilTagOverlay from './AprilTagOverlay.vue'
 import { CameraOff, LockKeyhole, Maximize2, Minimize2 } from '@lucide/vue'
 
@@ -99,6 +107,16 @@ const isFullscreen = ref(false)
 const overlayEnabled = ref(false)
 const streamFailed = ref(false)
 const previewResolution = ref<{ width: number; height: number } | null>(null)
+
+const orientationOptions = [
+  { text: 'Normal', value: CameraOrientation.Normal },
+  { text: 'Upside-down', value: CameraOrientation.UpsideDown },
+  { text: 'Left (90° CCW)', value: CameraOrientation.Left },
+  { text: 'Right (90° CW)', value: CameraOrientation.Right },
+]
+const cameraOrientation = computed(() => configStore.config?.cameraOrientation ?? CameraOrientation.Normal)
+const swapsAxes = computed(() =>
+  cameraOrientation.value === CameraOrientation.Left || cameraOrientation.value === CameraOrientation.Right)
 
 const streamEnabled = computed(() => configStore.config?.enablePassthroughStream ?? false)
 const highQualityStreamEnabled = computed(() => configStore.config?.enableHighQualityStream ?? false)
@@ -141,11 +159,21 @@ watch([streamUrl, overlayEnabled], () => {
   previewResolution.value = null
 })
 
+const cameraResolution = computed(() => {
+  // The preview reports its upright size; camera modes are sensor-oriented.
+  const preview = overlayEnabled.value ? previewResolution.value : null
+  const mode = cameraStatus.value?.effectivePassthroughResolution ?? configStore.config?.streamMode
+  const resolution = preview ?? (mode && swapsAxes.value ? { width: mode.height, height: mode.width } : mode)
+  return resolution && resolution.width > 0 && resolution.height > 0 ? resolution : null
+})
 const cameraAspectRatio = computed(() => {
-  const resolution = (overlayEnabled.value ? previewResolution.value : null) ??
-    cameraStatus.value?.effectivePassthroughResolution ?? configStore.config?.streamMode
-  return resolution && resolution.width > 0 && resolution.height > 0
-    ? `${resolution.width} / ${resolution.height}` : '4 / 3'
+  const resolution = cameraResolution.value
+  return resolution ? `${resolution.width} / ${resolution.height}` : '4 / 3'
+})
+// A full-width portrait stream would be far taller than the window; letterbox it instead.
+const cameraPortrait = computed(() => {
+  const resolution = cameraResolution.value
+  return resolution !== null && resolution.height > resolution.width
 })
 
 const activeStreamSettings = computed(() => {
@@ -241,6 +269,13 @@ async function loadVideoModes() {
 async function handlePassthroughStreamChange(event: Event) {
   const target = event.target as HTMLInputElement
   await configStore.updateEnablePassthroughStream(target.checked)
+}
+
+async function handleOrientationChange(event: Event) {
+  const target = event.target as HTMLSelectElement
+  if (!(await configStore.updateCameraOrientation(Number(target.value) as CameraOrientation))) {
+    target.value = String(cameraOrientation.value)
+  }
 }
 
 function applySettings() {
@@ -475,11 +510,16 @@ onUnmounted(() => {
   justify-content: center;
 }
 
+.camera-container.portrait {
+  max-height: 80vh;
+}
+
 .camera-container:fullscreen {
   background: #000;
   border-radius: 0;
   border: none;
   height: 100vh;
+  max-height: none;
 }
 
 .camera-stream {

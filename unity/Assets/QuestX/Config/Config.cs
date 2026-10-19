@@ -1,3 +1,4 @@
+using QuestX.Camera;
 using QuestX.Core;
 using SQLite;
 
@@ -106,6 +107,12 @@ namespace QuestX.Config
             /// Whether to allow high-resolution stream modes (greater than 640x480).
             /// </summary>
             public bool EnableHighQualityStreams { get; set; } = false;
+
+            /// <summary>
+            /// How the headset is rolled on its mount, stored as a <see cref="CameraOrientation"/>.
+            /// Streams, previews, tag angles, and headset poses are rotated to match. Default is upright.
+            /// </summary>
+            public int Orientation { get; set; } = (int)CameraOrientation.NORMAL;
         }
 
         /// <summary>

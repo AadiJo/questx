@@ -111,6 +111,16 @@ namespace QuestX.Core
         }
 
         /// <summary>
+        /// Starts a new epoch at the next published sample because the headset axes that samples
+        /// are expressed in changed (for example the configured mount orientation). Position and
+        /// yaw are unaffected, so the current reset is kept.
+        /// </summary>
+        public void BeginNewEpoch()
+        {
+            Epoch++;
+        }
+
+        /// <summary>
         /// Re-bases the published frame so the newest sample reports <paramref name="target"/>'s
         /// position and yaw, and starts a new epoch at the next published sample.
         /// </summary>

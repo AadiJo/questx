@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using QuestX.Camera;
 using QuestX.Core;
 using QuestX.Utils;
 using SQLite;
@@ -75,6 +76,11 @@ namespace QuestX.Config
         /// Raised when the high quality stream setting changes.
         /// </summary>
         public event Action<bool> OnEnableHighQualityStreamsChanged;
+
+        /// <summary>
+        /// Raised when the camera orientation changes.
+        /// </summary>
+        public event Action<CameraOrientation> OnCameraOrientationChanged;
         #endregion
 
         #region AprilTag
@@ -168,6 +174,14 @@ namespace QuestX.Config
         /// True if high quality streaming is enabled.
         /// </returns>
         public Task<bool> GetEnableHighQualityStreamsAsync();
+
+        /// <summary>
+        /// Gets how the headset is rolled on its mount.
+        /// </summary>
+        /// <returns>
+        /// The orientation used to rotate streams, previews, tag angles, and headset poses.
+        /// </returns>
+        public Task<CameraOrientation> GetCameraOrientationAsync();
         #endregion
 
         #region AprilTag
@@ -258,6 +272,11 @@ namespace QuestX.Config
         /// Sets whether to allow high quality stream modes.
         /// </summary>
         public Task SetEnableHighQualityStreamsAsync(bool enabled);
+
+        /// <summary>
+        /// Sets how the headset is rolled on its mount.
+        /// </summary>
+        public Task SetCameraOrientationAsync(CameraOrientation orientation);
         #endregion
 
         #region AprilTag
@@ -362,6 +381,7 @@ namespace QuestX.Config
             OnEnablePassthroughStreamChanged?.Invoke(await GetEnablePassthroughStreamAsync());
             OnPassthroughStreamModeChanged?.Invoke(await GetPassthroughStreamModeAsync());
             OnEnableHighQualityStreamsChanged?.Invoke(await GetEnableHighQualityStreamsAsync());
+            OnCameraOrientationChanged?.Invoke(await GetCameraOrientationAsync());
 
             // Mode MUST fire before Enable. AprilTagManager caches the requested
             // resolution from the Mode event and uses it when Enable triggers the
@@ -392,6 +412,7 @@ namespace QuestX.Config
 
             await SetEnablePassthroughStreamAsync(cameraDefaults.EnablePassthroughStream);
             await SetEnableHighQualityStreamsAsync(cameraDefaults.EnableHighQualityStreams);
+            await SetCameraOrientationAsync((CameraOrientation)cameraDefaults.Orientation);
             await SetPassthroughStreamModeAsync(
                 new StreamMode(
                     cameraDefaults.PassthroughStreamWidth,
@@ -463,6 +484,9 @@ namespace QuestX.Config
 
         /// <inheritdoc/>
         public event Action<bool> OnEnableHighQualityStreamsChanged;
+
+        /// <inheritdoc/>
+        public event Action<CameraOrientation> OnCameraOrientationChanged;
         #endregion
 
         #region AprilTag
@@ -548,6 +572,16 @@ namespace QuestX.Config
             var config = await GetCameraConfigAsync();
 
             return config.EnableHighQualityStreams;
+        }
+
+        /// <inheritdoc/>
+        public async Task<CameraOrientation> GetCameraOrientationAsync()
+        {
+            var config = await GetCameraConfigAsync();
+
+            return CameraOrientationMath.IsValid(config.Orientation)
+                ? (CameraOrientation)config.Orientation
+                : CameraOrientation.NORMAL;
         }
 
         #endregion
@@ -725,6 +759,18 @@ namespace QuestX.Config
             // Notify subscribed methods on the main thread
             invokeOnMainThread(() => OnEnableHighQualityStreamsChanged?.Invoke(enabled));
             QueuedLogger.Log($"Updated Key 'enableHighQualityStreams' to {enabled}");
+        }
+
+        /// <inheritdoc/>
+        public async Task SetCameraOrientationAsync(CameraOrientation orientation)
+        {
+            var config = await GetCameraConfigAsync();
+            config.Orientation = (int)orientation;
+            await SaveCameraConfigAsync(config);
+
+            // Notify subscribed methods on the main thread
+            invokeOnMainThread(() => OnCameraOrientationChanged?.Invoke(orientation));
+            QueuedLogger.Log($"Updated Key 'cameraOrientation' to {orientation}");
         }
         #endregion
 

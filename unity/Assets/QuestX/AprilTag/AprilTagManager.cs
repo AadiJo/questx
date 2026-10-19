@@ -12,6 +12,7 @@ using QuestX.Native.PoseLib;
 using QuestX.QuestX.Geometry;
 using QuestX.Utils;
 using Unity.Collections;
+using Unity.Collections.LowLevel.Unsafe;
 using UnityEngine;
 
 namespace QuestX.QuestX.AprilTag
@@ -54,6 +55,11 @@ namespace QuestX.QuestX.AprilTag
         private int overlayQuality = 75;
         private double overlayFrameIntervalMs = 1000.0 / 24;
         private double nextOverlayFrameAt;
+
+        /// <summary>
+        /// How the headset is rolled. The preview, tag angles, and headset pose are reported upright.
+        /// </summary>
+        private CameraOrientation orientation;
 
         /// <summary>
         /// Single source of truth for the detector lifecycle. The capture coroutine checks
@@ -138,6 +144,7 @@ namespace QuestX.QuestX.AprilTag
             configManager.OnAprilTagDetectorModeChanged += OnAprilTagDetectorModeChanged;
             configManager.OnPassthroughStreamModeChanged += OnOverlayStreamModeChanged;
             configManager.OnEnablePassthroughStreamChanged += OnOverlayStreamEnabledChanged;
+            configManager.OnCameraOrientationChanged += OnCameraOrientationChanged;
 
             // Refresh PoseLib's cached intrinsics whenever the camera arbiter changes
             // the effective resolution. Meta SDK exposes per-resolution intrinsics
@@ -608,15 +615,16 @@ namespace QuestX.QuestX.AprilTag
                     rawIds.Add(detection.Id);
                     // Copy raw detections, including ignored/unknown IDs, before pose
                     // filtering. An outline means "detected", not "accepted pose".
-                    // The preview encodes the detector's own image, so corners need no flip.
+                    // The preview encodes the detector's own image, so corners need no flip,
+                    // only the same upright rotation as the image.
                     if (overlayTags != null)
                     {
                         overlayTags[overlayIndex++] = new AprilTagOverlayTag(
                             detection.Id,
-                            ToOverlayPoint(detection.CornerBottomRight0),
-                            ToOverlayPoint(detection.CornerBottomLeft1),
-                            ToOverlayPoint(detection.CornerUpperLeft2),
-                            ToOverlayPoint(detection.CornerUpperRight3)
+                            ToOverlayPoint(detection.CornerBottomRight0, actualW, actualH),
+                            ToOverlayPoint(detection.CornerBottomLeft1, actualW, actualH),
+                            ToOverlayPoint(detection.CornerUpperLeft2, actualW, actualH),
+                            ToOverlayPoint(detection.CornerUpperRight3, actualW, actualH)
                         );
                     }
                     if (ignoredIdSet.Contains(detection.Id))
@@ -702,7 +710,13 @@ namespace QuestX.QuestX.AprilTag
                             yield return new WaitForSeconds(frameDelaySeconds);
                             continue;
                         }
-                        var headsetPose = AprilTagPoseValidation.CameraToHeadset(cameraPose, cameraAccess.Intrinsics.LensOffset);
+                        var headsetPose = CameraOrientationMath.UprightPose(
+                            orientation,
+                            AprilTagPoseValidation.CameraToHeadset(
+                                cameraPose,
+                                cameraAccess.Intrinsics.LensOffset
+                            )
+                        );
 
                         int tagCount = kept.Count;
                         double inlierRatio =
@@ -844,12 +858,24 @@ namespace QuestX.QuestX.AprilTag
             }
         }
 
-        private static AprilTagOverlayPoint ToOverlayPoint(Point2D point) =>
-            new AprilTagOverlayPoint(point.x, point.y);
+        private AprilTagOverlayPoint ToOverlayPoint(Point2D point, int width, int height)
+        {
+            CameraOrientationMath.RotatePoint(
+                orientation,
+                point.x,
+                point.y,
+                width,
+                height,
+                out double x,
+                out double y
+            );
+            return new AprilTagOverlayPoint(x, y);
+        }
 
         /// <summary>
         /// Describes each solved tag in detector order. Pixel coordinates have a top-left origin
-        /// (ImageU8 flips the readback), so "up" is decreasing y.
+        /// (ImageU8 flips the readback), so "up" is decreasing y. Angles are then rotated to
+        /// match the upright image for the configured orientation.
         /// </summary>
         private AprilTagObservation[] BuildObservations(
             List<AprilTagDetection> detections,
@@ -878,11 +904,18 @@ namespace QuestX.QuestX.AprilTag
                     doubledArea += a.x * b.y - b.x * a.y;
                 }
                 var tagTranslation = aprilTagFieldLayout.GetTagPose(detection.Id).Translation;
+                CameraOrientationMath.RotateAngles(
+                    orientation,
+                    Math.Atan2(detection.Center.x - cx, fx) * DegreesPerRadian,
+                    Math.Atan2(cy - detection.Center.y, fy) * DegreesPerRadian,
+                    out double tx,
+                    out double ty
+                );
                 observations[i] = new AprilTagObservation(
                     detection.Id,
                     ambiguities[i],
-                    Math.Atan2(detection.Center.x - cx, fx) * DegreesPerRadian,
-                    Math.Atan2(cy - detection.Center.y, fy) * DegreesPerRadian,
+                    tx,
+                    ty,
                     100.0 * Math.Abs(doubledArea) / 2.0 / ((double)imageWidth * imageHeight),
                     tagTranslation.GetDistance(cameraPose.Translation),
                     tagTranslation.GetDistance(headsetPose.Translation)
@@ -898,6 +931,12 @@ namespace QuestX.QuestX.AprilTag
             overlayQuality = Math.Clamp(mode.Quality, 1, 100);
             overlayFrameIntervalMs = 1000.0 / Math.Max(1, mode.Framerate);
             nextOverlayFrameAt = 0;
+            Overlay.Clear();
+        }
+
+        private void OnCameraOrientationChanged(CameraOrientation value)
+        {
+            orientation = value;
             Overlay.Clear();
         }
 
@@ -926,16 +965,61 @@ namespace QuestX.QuestX.AprilTag
                 int width = image->width;
                 int height = image->height;
                 overlayCompressor ??= new LJTCompressor();
-                byte[] jpeg = overlayCompressor.Compress(
-                    image->buf,
-                    image->stride,
-                    width,
-                    height,
-                    LJTPixelFormat.Gray,
-                    LJTSubsamplingOption.Gray,
-                    overlayQuality,
-                    LJTFlags.None
-                );
+                byte[] jpeg;
+                if (orientation == CameraOrientation.NORMAL)
+                {
+                    jpeg = overlayCompressor.Compress(
+                        image->buf,
+                        image->stride,
+                        width,
+                        height,
+                        LJTPixelFormat.Gray,
+                        LJTSubsamplingOption.Gray,
+                        overlayQuality,
+                        LJTFlags.None
+                    );
+                }
+                else
+                {
+                    var source = NativeArrayUnsafeUtility.ConvertExistingDataToNativeArray<byte>(
+                        (void*)image->buf,
+                        height * image->stride,
+                        Allocator.None
+                    );
+#if ENABLE_UNITY_COLLECTIONS_CHECKS
+                    NativeArrayUnsafeUtility.SetAtomicSafetyHandle(
+                        ref source,
+                        AtomicSafetyHandle.GetTempMemoryHandle()
+                    );
+#endif
+                    using var rotated = ImageRotationJob.Rotate(
+                        source,
+                        width,
+                        height,
+                        image->stride,
+                        1,
+                        sourceBottomUp: false,
+                        orientation,
+                        Allocator.TempJob
+                    );
+                    CameraOrientationMath.RotateSize(
+                        orientation,
+                        image->width,
+                        image->height,
+                        out width,
+                        out height
+                    );
+                    jpeg = overlayCompressor.Compress(
+                        (IntPtr)NativeArrayUnsafeUtility.GetUnsafeReadOnlyPtr(rotated),
+                        width,
+                        width,
+                        height,
+                        LJTPixelFormat.Gray,
+                        LJTSubsamplingOption.Gray,
+                        overlayQuality,
+                        LJTFlags.None
+                    );
+                }
                 Overlay.Publish(width, height, capturedAt, tags, jpeg);
             }
             catch (Exception ex)
