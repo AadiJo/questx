@@ -39,8 +39,8 @@ namespace QuestX.Native.Napa
             double sharpening = 0.25
         )
         {
-            if (minTagPixels < 8)
-                throw new ArgumentOutOfRangeException(nameof(minTagPixels), "must be at least 8");
+            if (minTagPixels < 8 || minTagPixels > 30000)
+                throw new ArgumentOutOfRangeException(nameof(minTagPixels), "must be 8 to 30000");
             if (maxHamming < 0 || maxHamming > 3)
                 throw new ArgumentOutOfRangeException(nameof(maxHamming), "must be 0 to 3");
             if (minContrast < 1 || minContrast > 255)
@@ -97,6 +97,7 @@ namespace QuestX.Native.Napa
                     output,
                     MaxDetections
                 );
+                // -1: invalid image or parameters; -2: allocation failed.
                 if (count < 0)
                     throw new InvalidOperationException($"napa_detect failed with status {count}");
                 for (int i = 0; i < count; i++)

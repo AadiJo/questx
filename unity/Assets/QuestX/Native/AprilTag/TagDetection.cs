@@ -15,8 +15,9 @@ namespace QuestX.Native.AprilTag
         public int Hamming { get; }
 
         /// <summary>
-        /// Decode quality. libapriltag reports its decision margin; Napa reports the grey-level
-        /// contrast between the tag's white and black cells. Compare values within one backend only.
+        /// Decode quality: the smaller of the white and black payload cells' mean distance from
+        /// the threshold, in grey levels. Both backends define it this way, but each samples
+        /// cells differently, so compare values within one backend.
         /// </summary>
         public float DecisionMargin { get; }
 

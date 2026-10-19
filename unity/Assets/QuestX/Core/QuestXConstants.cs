@@ -338,7 +338,8 @@ namespace QuestX.Core
             public const int NAPA_MIN_TAG_PIXELS = 24;
 
             /// <summary>
-            /// Payload bits Napa may correct (tag36h11 allows 3). Unknown IDs are still dropped
+            /// Payload bits Napa may correct (tag36h11 allows 3). Napa accepts a third bit only
+            /// when the wrong cells touch, as real damage does, and unknown IDs are still dropped
             /// against the field layout before solving.
             /// </summary>
             public const int NAPA_MAX_HAMMING = 3;

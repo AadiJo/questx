@@ -20,7 +20,7 @@ The coroutine samples both NetworkTables time and app uptime beside camera captu
 
 Two backends are available, selected by **Tag Detector** on the AprilTag page (API: `aprilTagDetectorMode.detector`, 0 = Napa, 1 = AprilTag). A change takes effect on the next frame:
 
-- **Napa** (default) is a sparse-sampling tag36h11 detector (`native/napa`). It samples one pixel every 3/4 of the smallest cell, skips flat tiles, and fits sub-pixel edges at full resolution. It guarantees tags of at least 24 px (`NAPA_MIN_TAG_PIXELS`) and corrects up to 3 payload bits.
+- **Napa** (default) is a sparse-sampling tag36h11 detector (`native/napa`). It samples one pixel every 3/4 of the smallest cell, skips flat tiles, and fits sub-pixel edges at full resolution. It guarantees tags of at least 24 px (`NAPA_MIN_TAG_PIXELS`) and corrects up to 3 payload bits, the third only when the wrong cells touch.
 - **AprilTag** is the University of Michigan libapriltag detector (quad decimation 2, 2 corrected bits).
 
 Napa's results are converted to libapriltag's corner order and pixel convention, so PoseLib, the overlay and the observation metrics see identical inputs from either backend. The AprilTag preview encodes the grayscale image the running backend actually read (`ITagDetector.Image`); both backends produce identical pixels. If `libnapa` cannot be loaded, QuestX logs an error and falls back to libapriltag. The status page reports the running backend and its grayscale-plus-detect time (`aprilTag.detector`, `lastDetectMs`, `averageDetectMs`).
