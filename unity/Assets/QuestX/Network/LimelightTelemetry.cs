@@ -11,9 +11,22 @@ namespace QuestX.Network
     internal sealed class LimelightTelemetry
     {
         private const string Root = "/QuestX/limelight/";
-        private readonly DoubleArrayPublisher botpose, headsetpose, rawFiducials, stddevs, ids, detectedIds;
-        private readonly DoublePublisher tv, tid, hb, latency, age, layoutTags;
-        private readonly StringPublisher frame, layout, status, reason;
+        private readonly DoubleArrayPublisher botpose,
+            headsetpose,
+            rawFiducials,
+            stddevs,
+            ids,
+            detectedIds;
+        private readonly DoublePublisher tv,
+            tid,
+            hb,
+            latency,
+            age,
+            layoutTags;
+        private readonly StringPublisher frame,
+            layout,
+            status,
+            reason;
         private readonly BooleanPublisher layoutLoaded;
         private long captureMicros;
         private int firstId = -1;
@@ -40,7 +53,9 @@ namespace QuestX.Network
             layout = nt.GetStringPublisher(Root + "fieldLayout", options);
             status = nt.GetStringPublisher(Root + "status", options);
             reason = nt.GetStringPublisher(Root + "reason", options);
-            frame.Set("WPILib blue origin, headset center. botpose assumes zero robot mount offset.");
+            frame.Set(
+                "WPILib blue origin, headset center. botpose assumes zero robot mount offset."
+            );
             tv.Set(0);
             tid.Set(-1);
             age.Set(-1);
@@ -51,11 +66,16 @@ namespace QuestX.Network
             captureMicros = capture;
             var tags = measurement.Observations;
             var tagIds = new double[tags.Length];
-            for (int i = 0; i < tags.Length; i++) tagIds[i] = tags[i].Id;
+            for (int i = 0; i < tags.Length; i++)
+                tagIds[i] = tags[i].Id;
             firstId = tags.Length > 0 ? tags[0].Id : -1;
             double latencyMs = System.Math.Max(0, (now - capture) / 1000.0);
             var value = LimelightPoseFormat.Encode(
-                measurement.Pose, latencyMs, measurement.AverageTagDistanceMeters, tags);
+                measurement.Pose,
+                latencyMs,
+                measurement.AverageTagDistanceMeters,
+                tags
+            );
             // Like Limelight, these compatibility topics carry PUBLICATION timestamps.
             // Subtract value[6] from the synchronized NT publication time once. The v2
             // topics instead carry CAPTURE timestamps and must not subtract it again.
@@ -64,12 +84,17 @@ namespace QuestX.Network
             rawFiducials.Set(LimelightPoseFormat.RawFiducials(tags), now);
             latency.Set(latencyMs);
             ids.Set(tagIds);
-            stddevs.Set(new[] {
-                measurement.XStdDevMeters, measurement.YStdDevMeters, measurement.ZStdDevMeters,
-                measurement.RollStdDevRadians * LimelightPoseFormat.RadiansToDegrees,
-                measurement.PitchStdDevRadians * LimelightPoseFormat.RadiansToDegrees,
-                measurement.YawStdDevRadians * LimelightPoseFormat.RadiansToDegrees
-            });
+            stddevs.Set(
+                new[]
+                {
+                    measurement.XStdDevMeters,
+                    measurement.YStdDevMeters,
+                    measurement.ZStdDevMeters,
+                    measurement.RollStdDevRadians * LimelightPoseFormat.RadiansToDegrees,
+                    measurement.PitchStdDevRadians * LimelightPoseFormat.RadiansToDegrees,
+                    measurement.YawStdDevRadians * LimelightPoseFormat.RadiansToDegrees,
+                }
+            );
         }
 
         public void Publish(long now)
@@ -89,7 +114,8 @@ namespace QuestX.Network
             status.Set(snapshot.LastOutcome);
             reason.Set(snapshot.LastReason);
             var values = new double[snapshot.DetectedIds.Length];
-            for (int i = 0; i < values.Length; i++) values[i] = snapshot.DetectedIds[i];
+            for (int i = 0; i < values.Length; i++)
+                values[i] = snapshot.DetectedIds[i];
             detectedIds.Set(values);
         }
     }

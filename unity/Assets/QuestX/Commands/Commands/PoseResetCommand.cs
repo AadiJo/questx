@@ -129,8 +129,7 @@ namespace QuestX.Commands.Commands
             vrCameraRoot.rotation = newRotation;
 
             // Step 4: Recalculate position after rotation
-            Vector3 newRootPosition =
-                targetCameraPosition - (newRotation * vrCamera.localPosition);
+            Vector3 newRootPosition = targetCameraPosition - (newRotation * vrCamera.localPosition);
 
             // Step 5: Apply the new position to vrCameraRoot
             vrCameraRoot.position = newRootPosition;

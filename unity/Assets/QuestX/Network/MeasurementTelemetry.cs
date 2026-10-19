@@ -55,7 +55,10 @@ namespace QuestX.Network
             else
             {
                 tagIdsPublisher = nt.GetDoubleArrayPublisher(path + "tagIds", options);
-                tagAmbiguitiesPublisher = nt.GetDoubleArrayPublisher(path + "tagAmbiguities", options);
+                tagAmbiguitiesPublisher = nt.GetDoubleArrayPublisher(
+                    path + "tagAmbiguities",
+                    options
+                );
                 string[] quality =
                 {
                     "tagCount",

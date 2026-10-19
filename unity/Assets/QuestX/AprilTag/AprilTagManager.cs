@@ -381,13 +381,14 @@ namespace QuestX.QuestX.AprilTag
                     lastLinearStdDevMeters,
                     lastOutcome,
                     lastReason
-                ) {
+                )
+                {
                     FieldLayoutFile = aprilTagFieldLayout.LoadedFile,
                     LayoutLoaded = aprilTagFieldLayout.IsLoaded,
                     LayoutTagCount = aprilTagFieldLayout.Tags?.Count ?? 0,
                     DetectedIds = (int[])detectedIds.Clone(),
                     LastAmbiguity = lastAmbiguity,
-                    LastReprojectionErrorPixels = lastReprojectionErrorPixels
+                    LastReprojectionErrorPixels = lastReprojectionErrorPixels,
                 };
             }
         }
@@ -447,7 +448,10 @@ namespace QuestX.QuestX.AprilTag
                 double exposureAgeSeconds = (DateTime.UtcNow - cameraAccess.Timestamp).TotalSeconds;
                 if (exposureAgeSeconds < -0.01 || exposureAgeSeconds > 0.5)
                 {
-                    RecordOutcome("Camera timestamp invalid", $"Exposure age {exposureAgeSeconds:F3}s");
+                    RecordOutcome(
+                        "Camera timestamp invalid",
+                        $"Exposure age {exposureAgeSeconds:F3}s"
+                    );
                     yield return new WaitForSeconds(frameDelaySeconds);
                     continue;
                 }
@@ -640,7 +644,8 @@ namespace QuestX.QuestX.AprilTag
                     kept.Add(detection);
                 }
 
-                lock (diagnosticsLock) detectedIds = rawIds.ToArray();
+                lock (diagnosticsLock)
+                    detectedIds = rawIds.ToArray();
 
                 if (overlayTags != null)
                 {
@@ -680,9 +685,19 @@ namespace QuestX.QuestX.AprilTag
                             new Geometry.Quaternion(frcRot.w, frcRot.x, frcRot.y, frcRot.z)
                         );
 
-                        var cameraPose = new Pose3d(new Translation3d(frcPos.x, frcPos.y, frcPos.z), measuredRotation);
-                        if (!AprilTagPoseValidation.TryValidate(cameraPose, aprilTagFieldLayout.Field,
-                            poseLibResult.AcceptedPoints, poseLibResult.TotalPoints, out string rejectedReason))
+                        var cameraPose = new Pose3d(
+                            new Translation3d(frcPos.x, frcPos.y, frcPos.z),
+                            measuredRotation
+                        );
+                        if (
+                            !AprilTagPoseValidation.TryValidate(
+                                cameraPose,
+                                aprilTagFieldLayout.Field,
+                                poseLibResult.AcceptedPoints,
+                                poseLibResult.TotalPoints,
+                                out string rejectedReason
+                            )
+                        )
                         {
                             RecordOutcome("Measurement rejected locally", rejectedReason);
                             yield return new WaitForSeconds(frameDelaySeconds);
@@ -691,7 +706,12 @@ namespace QuestX.QuestX.AprilTag
                         bool facesCamera = true;
                         foreach (var detection in kept)
                         {
-                            if (!AprilTagPoseValidation.IsFacingCamera(cameraPose, aprilTagFieldLayout.GetTagPose(detection.Id)))
+                            if (
+                                !AprilTagPoseValidation.IsFacingCamera(
+                                    cameraPose,
+                                    aprilTagFieldLayout.GetTagPose(detection.Id)
+                                )
+                            )
                             {
                                 facesCamera = false;
                                 break;
@@ -699,14 +719,20 @@ namespace QuestX.QuestX.AprilTag
                         }
                         if (!facesCamera)
                         {
-                            RecordOutcome("Measurement rejected locally", "Tag is behind the solved camera or the camera is behind the printed tag face");
+                            RecordOutcome(
+                                "Measurement rejected locally",
+                                "Tag is behind the solved camera or the camera is behind the printed tag face"
+                            );
                             yield return new WaitForSeconds(frameDelaySeconds);
                             continue;
                         }
                         var quality = poseLibResult.Quality;
                         if (!double.IsFinite(quality.ReprojectionErrorPixels))
                         {
-                            RecordOutcome("Measurement rejected locally", "Solved pose places an observed corner behind the camera");
+                            RecordOutcome(
+                                "Measurement rejected locally",
+                                "Solved pose places an observed corner behind the camera"
+                            );
                             yield return new WaitForSeconds(frameDelaySeconds);
                             continue;
                         }
@@ -745,7 +771,8 @@ namespace QuestX.QuestX.AprilTag
                         double avgTagDistance = 0.0;
                         foreach (var observation in observations)
                         {
-                            avgTagDistance += observation.CameraDistanceMeters / observations.Length;
+                            avgTagDistance +=
+                                observation.CameraDistanceMeters / observations.Length;
                         }
 
                         if (avgTagDistance > maxDistance)
