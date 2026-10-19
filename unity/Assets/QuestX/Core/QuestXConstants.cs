@@ -330,6 +330,21 @@ namespace QuestX.Core
             public const double MAX_CAMERA_EXPOSURE_AGE_SECONDS = 5.0;
 
             /// <summary>
+            /// Smallest black-square side, in pixels, that the Napa detector guarantees to find.
+            /// Napa samples every <c>NAPA_MIN_TAG_PIXELS * 3 / 32</c> pixels, so 24 keeps a 2 px
+            /// stride; 20 or less drops to full-resolution sampling and costs several times more.
+            /// A 0.1651 m tag at the 4 m default max distance spans roughly 30+ px at 1280 wide.
+            /// </summary>
+            public const int NAPA_MIN_TAG_PIXELS = 24;
+
+            /// <summary>
+            /// Payload bits Napa may correct (tag36h11 allows 3). Napa accepts a third bit only
+            /// when the wrong cells touch, as real damage does, and unknown IDs are still dropped
+            /// against the field layout before solving.
+            /// </summary>
+            public const int NAPA_MAX_HAMMING = 3;
+
+            /// <summary>
             /// Bundled field-layout JSON files that ship inside the APK under
             /// <c>StreamingAssets/apriltag/fieldlayouts/</c>. Hardcoded here because
             /// Android's <c>UnityWebRequest</c> path to streaming assets does not allow

@@ -62,6 +62,12 @@ namespace QuestX.WebServer
         /// The current app reports per-measurement uncertainty instead.
         /// </summary>
         public double? noiseScale;
+
+        /// <summary>
+        /// Tag detector backend: 0 = Napa (default), 1 = libapriltag. Omit to keep the
+        /// current backend. Switching takes effect on the next camera frame.
+        /// </summary>
+        public int? detector;
     }
 
     /// <summary>

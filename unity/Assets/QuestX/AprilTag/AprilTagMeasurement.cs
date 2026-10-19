@@ -143,6 +143,15 @@ namespace QuestX.QuestX.AprilTag
         public int LayoutTagCount { get; set; }
         public int[] DetectedIds { get; set; } = System.Array.Empty<int>();
 
+        /// <summary>Backend that is actually running ("Napa" or "AprilTag"), empty when disabled.</summary>
+        public string DetectorName { get; set; } = "";
+
+        /// <summary>Grayscale conversion plus detection for the latest frame, in milliseconds.</summary>
+        public double LastDetectMilliseconds { get; set; }
+
+        /// <summary>Exponential moving average (alpha 0.05) of <see cref="LastDetectMilliseconds"/>.</summary>
+        public double AverageDetectMilliseconds { get; set; }
+
         public AprilTagDiagnosticsSnapshot(
             bool detectorActive,
             long cameraFrameCount,

@@ -14,6 +14,7 @@ The app connects as an NT4 client on port `5810`. Application data uses the `/Qu
 | --- | --- | --- | --- |
 | `/QuestX/vioData` | `proto:questx.protos.data.ProtobufQuestXVioData` | Nominally 120 Hz after app initialization | Unfused center-eye VIO pose in the Quest's local tracking frame, plus timing, sequence, and tracking-state metadata. The app explicitly uses `capture_timestamp_micros` as the NT value timestamp. |
 | `/QuestX/aprilTagData` | `proto:questx.protos.data.ProtobufQuestXAprilTagData` | Event-driven; only when the detector produces a locally accepted pose | Field-relative AprilTag pose plus contributing-tag, solve-quality, distance, and suggested-uncertainty metadata. The app explicitly uses `capture_timestamp_micros` as the NT value timestamp. |
+| `/QuestX/v2/vioQuality` | `double[]` (25 values) | Nominally 15 Hz after app initialization | VIO quality: the VIO displacement error measured from environment depth since a keyframe, its per-axis uncertainty, and head tracking state. Separate topic so `/QuestX/v2/vio` keeps its fixed 14-value length. The app uses the capture timestamp as the NT value timestamp. |
 | `/QuestX/deviceData` | `proto:questx.protos.data.ProtobufQuestXDeviceData` | Nominally 3 Hz | Battery percentage and number of transitions from tracking to not-tracking during the current app process. |
 | `/QuestX/response` | `proto:questx.protos.commands.ProtobufQuestXCommandResponse` | Once per handled `/QuestX/request` command | Command ID, success/failure status, and an error message on failure. |
 | `/QuestX/version` | `string` | Set during NT initialization | Unity's `Application.version`; for this build, `afc6ee4-dev`. |
@@ -52,6 +53,28 @@ The app connects as an NT4 client on port `5810`. Application data uses the `/Qu
 | `pose_std_devs.pitch_radians` | Twice the suggested yaw uncertainty. |
 
 The standard deviations are a Quest-side suggestion derived from observed geometry; they are not covariance supplied by Meta or the AprilTag SDK. Robot code remains responsible for rejection and estimator tuning.
+
+### `/QuestX/v2/vioQuality` values
+
+How it works: each tick the app casts a 16 x 10 fan of Meta environment-depth raycasts (+-45 deg yaw, -35..+20 deg pitch, 0.3-5 m) from the headset. Hits come back placed in the local tracking frame by the headset's own VIO pose, so a static surface stays put in that frame unless VIO is wrong; if VIO's displacement since a keyframe is off by e, every static surface appears shifted by e. `DepthDriftEstimator` matches the hits to a keyframe up to 1 s old (nearest point, point-to-plane, three ICP-style re-matching rounds), weights each match by a depth-noise model (0.5 cm + 1 % of range, plus normal error times in-plane offset), rejects outliers such as moving robots, and solves for that common shift along the directions the visible surfaces actually constrain. Directions they cannot constrain (for example horizontal motion when only the floor is visible) report zero drift with a 2 m standard deviation.
+
+| Index | Meaning |
+| --- | --- |
+| 0-1 | Report sequence, low and high unsigned 32-bit words. |
+| 2-3 | NT capture time in microseconds, low and high words (sampled when the rays are cast; depth itself may be a frame older). |
+| 4 | App time, seconds. |
+| 5 | Status: 0 ok, 1 environment raycast not supported, 2 not ready, 3 headset not position-tracked or a recenter is settling, 4 too few depth hits, 5 new keyframe (nothing to compare yet), 6 too few matches. |
+| 6 | Tracking epoch (same counter as `/QuestX/v2/vio`). A new epoch (pose reset or recenter) starts a new keyframe, so drift never spans two frames. |
+| 7-9 | Head position tracked, position valid, orientation tracked (0/1). Position valid but not tracked means the runtime is coasting on the IMU. |
+| 10-11 | Head angular speed (rad/s) and linear speed (m/s) from the runtime. |
+| 12 | Keyframe baseline, seconds (status 0 only). |
+| 13-15 | Rays cast, usable hits, fraction of rays blocked closer than 0.3 m. |
+| 16-17 | Matched hits and inlier ratio (status 0 only). |
+| 18-20 | Drift X/Y/Z, meters: VIO displacement error accumulated since the keyframe, in the published VIO frame with FRC axes (same frame as the `/QuestX/v2/vio` pose, including pose resets). |
+| 21-23 | Drift standard deviation X/Y/Z, meters (floor 1 cm; 2 m along unconstrained directions). |
+| 24 | Inlier point-to-plane residual RMS, meters. |
+
+Robot use: rotate drift into the robot's frame with the VIO yaw exactly like a VIO displacement, and treat it (with its standard deviation) as evidence about how wrong VIO was over the baseline. Large drift relative to its standard deviation means VIO, not the wheels, is wrong. Consecutive reports share a keyframe, so they are not independent. Synthetic checks: `tests/vio-quality/` (`python check_depth_drift.py`); not yet measured on a headset.
 
 ### `/QuestX/deviceData` fields
 
@@ -123,6 +146,7 @@ The NT instance also registers protobuf schema metadata for decoding `data.proto
 - App publication values: [`unity/Assets/QuestX/Network/NetworkTableConnection.cs`](unity/Assets/QuestX/Network/NetworkTableConnection.cs)
 - VIO capture and app loops: [`unity/Assets/QuestX/Core/QuestX.cs`](unity/Assets/QuestX/Core/QuestX.cs)
 - Coordinate conversion: [`unity/Assets/QuestX/Utils/Conversions.cs`](unity/Assets/QuestX/Utils/Conversions.cs)
+- VIO quality (depth drift): [`unity/Assets/QuestX/VioQuality/`](unity/Assets/QuestX/VioQuality/)
 - AprilTag quality and uncertainty calculation: [`unity/Assets/QuestX/AprilTag/AprilTagManager.cs`](unity/Assets/QuestX/AprilTag/AprilTagManager.cs)
 - Camera metadata: [`unity/Assets/QuestX/Network/NtCameraSource.cs`](unity/Assets/QuestX/Network/NtCameraSource.cs) and [`unity/Assets/QuestX/Camera/PassthroughFrameSource.cs`](unity/Assets/QuestX/Camera/PassthroughFrameSource.cs)
 - Wire schemas: [`protos/data.proto`](protos/data.proto), [`protos/commands.proto`](protos/commands.proto), and [`protos/geometry3d.proto`](protos/geometry3d.proto)

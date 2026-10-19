@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>disable</Nullable>
+    <PlatformTarget>x64</PlatformTarget>
+    <NuGetAudit>false</NuGetAudit>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../unity/Assets/QuestX/Camera/GrayscaleConversionJob.cs" Link="Linked/GrayscaleConversionJob.cs" />
+    <Compile Include="../../unity/Assets/QuestX/Native/AprilTag/AprilTagDetection.cs" Link="Linked/AprilTagDetection.cs" />
+    <Compile Include="../../unity/Assets/QuestX/Native/AprilTag/AprilTagDetectionResults.cs" Link="Linked/AprilTagDetectionResults.cs" />
+    <Compile Include="../../unity/Assets/QuestX/Native/AprilTag/AprilTagDetector.cs" Link="Linked/AprilTagDetector.cs" />
+    <Compile Include="../../unity/Assets/QuestX/Native/AprilTag/AprilTagFamily.cs" Link="Linked/AprilTagFamily.cs" />
+    <Compile Include="../../unity/Assets/QuestX/Native/AprilTag/AprilTagNatives.cs" Link="Linked/AprilTagNatives.cs" />
+    <Compile Include="../../unity/Assets/QuestX/Native/AprilTag/ImageU8.cs" Link="Linked/ImageU8.cs" />
+    <Compile Include="../../unity/Assets/QuestX/Native/AprilTag/ITagDetector.cs" Link="Linked/ITagDetector.cs" />
+    <Compile Include="../../unity/Assets/QuestX/Native/AprilTag/TagDetection.cs" Link="Linked/TagDetection.cs" />
+    <Compile Include="../../unity/Assets/QuestX/Native/Napa/NapaCore.cs" Link="Linked/NapaCore.cs" />
+    <Compile Include="../../unity/Assets/QuestX/Native/Napa/NapaNatives.cs" Link="Linked/NapaNatives.cs" />
+    <Compile Include="../../unity/Assets/QuestX/Native/Napa/NapaTagDetector.cs" Link="Linked/NapaTagDetector.cs" />
+  </ItemGroup>
+  <!-- The same Editor binaries Unity loads; the checks run on Windows x64. -->
+  <ItemGroup>
+    <None Include="../../unity/Assets/Plugins/napa/Windows/x64/napa.dll" Link="napa.dll" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../unity/Assets/Plugins/apriltag/Windows/x64/apriltag.dll" Link="apriltag.dll" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

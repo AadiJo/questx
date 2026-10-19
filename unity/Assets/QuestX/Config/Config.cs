@@ -203,6 +203,12 @@ namespace QuestX.Config
             /// New robot-side fusion ignores this value.
             /// </summary>
             public double AprilTagNoiseScale { get; set; } = 1.0;
+
+            /// <summary>
+            /// Tag detector backend, a <see cref="TagDetectorBackend"/> value. Rows written
+            /// before this column existed read as 0, which is <c>NAPA</c>.
+            /// </summary>
+            public int AprilTagDetectorBackend { get; set; } = (int)TagDetectorBackend.NAPA;
         }
 
         public class Logging
@@ -266,6 +272,24 @@ namespace QuestX.Config
             {
                 return $"{Width}x{Height}@{Framerate}fps Quality: {Quality}";
             }
+        }
+
+        /// <summary>
+        /// Which native library finds tag36h11 tags in the passthrough frames. Both feed the
+        /// same PoseLib solve with identical corner conventions.
+        /// </summary>
+        public enum TagDetectorBackend
+        {
+            /// <summary>
+            /// Napa sparse-sampling detector: several times faster than libapriltag, finds
+            /// smaller tags, and corrects up to 3 payload bits.
+            /// </summary>
+            NAPA = 0,
+
+            /// <summary>
+            /// University of Michigan libapriltag (quad decimation 2, 2 corrected bits).
+            /// </summary>
+            APRILTAG = 1,
         }
 
         public readonly struct AprilTagDetectorMode
