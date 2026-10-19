@@ -97,6 +97,11 @@ namespace QuestX.Config
         /// Raised when the legacy Quest-fusion noise-scale value changes.
         /// </summary>
         public event Action<double> OnAprilTagNoiseScaleChanged;
+
+        /// <summary>
+        /// Raised when the tag detector backend changes.
+        /// </summary>
+        public event Action<TagDetectorBackend> OnAprilTagDetectorBackendChanged;
         #endregion
 
         #region Logging
@@ -203,6 +208,11 @@ namespace QuestX.Config
         /// Gets the legacy Quest-fusion noise scale retained for downgrade compatibility.
         /// </summary>
         public Task<double> GetAprilTagNoiseScaleAsync();
+
+        /// <summary>
+        /// Gets the tag detector backend.
+        /// </summary>
+        public Task<TagDetectorBackend> GetAprilTagDetectorBackendAsync();
         #endregion
 
         #region Logging
@@ -288,6 +298,11 @@ namespace QuestX.Config
         /// Persists the legacy Quest-fusion noise scale. Clamped to [0.5, 2.0].
         /// </summary>
         public Task SetAprilTagNoiseScaleAsync(double scale);
+
+        /// <summary>
+        /// Persists the tag detector backend. A running detector switches on its next frame.
+        /// </summary>
+        public Task SetAprilTagDetectorBackendAsync(TagDetectorBackend backend);
         #endregion
         #region Logging
         /// <summary>
@@ -369,6 +384,8 @@ namespace QuestX.Config
             // (0,0) and the first AprilTag frame fed to libapriltag is malformed,
             // which causes a native SIGSEGV in gradient_clusters.
             OnAprilTagDetectorModeChanged?.Invoke(await GetAprilTagDetectorModeAsync());
+            // Backend before Enable too, so enabling allocates the configured detector.
+            OnAprilTagDetectorBackendChanged?.Invoke(await GetAprilTagDetectorBackendAsync());
             // Retain the legacy notifications so a downgraded app can reuse this config.
             OnAprilTagConfidencePresetChanged?.Invoke(await GetAprilTagConfidencePresetAsync());
             OnAprilTagNoiseScaleChanged?.Invoke(await GetAprilTagNoiseScaleAsync());
@@ -416,6 +433,9 @@ namespace QuestX.Config
             await SetAprilTagFieldLayoutFileAsync(aprilTagDefaults.AprilTagFieldLayoutFile);
             await SetAprilTagConfidencePresetAsync(aprilTagDefaults.AprilTagConfidencePreset);
             await SetAprilTagNoiseScaleAsync(aprilTagDefaults.AprilTagNoiseScale);
+            await SetAprilTagDetectorBackendAsync(
+                (TagDetectorBackend)aprilTagDefaults.AprilTagDetectorBackend
+            );
 
             await SetEnableDebugLoggingAsync(loggingDefaults.EnableDebugLogging);
 
@@ -477,6 +497,9 @@ namespace QuestX.Config
 
         /// <inheritdoc/>
         public event Action<double> OnAprilTagNoiseScaleChanged;
+
+        /// <inheritdoc/>
+        public event Action<TagDetectorBackend> OnAprilTagDetectorBackendChanged;
         #endregion
         #region Logging
         public event Action<bool> OnEnableDebugLoggingChanged;
@@ -597,6 +620,15 @@ namespace QuestX.Config
         {
             var config = await GetAprilTagConfigAsync();
             return config.AprilTagNoiseScale;
+        }
+
+        /// <inheritdoc/>
+        public async Task<TagDetectorBackend> GetAprilTagDetectorBackendAsync()
+        {
+            var config = await GetAprilTagConfigAsync();
+            return Enum.IsDefined(typeof(TagDetectorBackend), config.AprilTagDetectorBackend)
+                ? (TagDetectorBackend)config.AprilTagDetectorBackend
+                : TagDetectorBackend.NAPA;
         }
         #endregion
 
@@ -814,6 +846,30 @@ namespace QuestX.Config
 
             invokeOnMainThread(() => OnAprilTagNoiseScaleChanged?.Invoke(sanitized));
             QueuedLogger.Log($"Updated Key 'aprilTagNoiseScale' to {sanitized:F2}");
+        }
+
+        /// <inheritdoc/>
+        public async Task SetAprilTagDetectorBackendAsync(TagDetectorBackend backend)
+        {
+            if (!Enum.IsDefined(typeof(TagDetectorBackend), backend))
+            {
+                QueuedLogger.LogError(
+                    $"Refusing unknown tag detector backend {(int)backend}; ignoring."
+                );
+                return;
+            }
+
+            var config = await GetAprilTagConfigAsync();
+            if (config.AprilTagDetectorBackend == (int)backend)
+            {
+                QueuedLogger.Log($"Key 'aprilTagDetectorBackend' already {backend}; no-op write");
+                return;
+            }
+            config.AprilTagDetectorBackend = (int)backend;
+            await SaveAprilTagConfigAsync(config);
+
+            invokeOnMainThread(() => OnAprilTagDetectorBackendChanged?.Invoke(backend));
+            QueuedLogger.Log($"Updated Key 'aprilTagDetectorBackend' to {backend}");
         }
 
         /// <inheritdoc/>

@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading;
 using LibJpegTurboUnity;
 using Meta.XR;
@@ -8,12 +9,14 @@ using QuestX.Camera;
 using QuestX.Config;
 using QuestX.Core;
 using QuestX.Native.AprilTag;
+using QuestX.Native.Napa;
 using QuestX.Native.PoseLib;
 using QuestX.QuestX.Geometry;
 using QuestX.Utils;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using UnityEngine;
+using TagDetectorBackend = QuestX.Config.Config.TagDetectorBackend;
 
 namespace QuestX.QuestX.AprilTag
 {
@@ -41,11 +44,13 @@ namespace QuestX.QuestX.AprilTag
         private readonly CameraResourceManager cameraArbiter;
         private readonly IConfigManager configManager;
 
-        // Detector and family are re-allocated on each enable. They are nullable because
-        // the disable path tears them down completely. Both AprilTagDetector.Dispose and
-        // Tag36h11.Dispose are idempotent guards so a second dispose is safe but wasteful.
-        private AprilTagDetector aprilTagDetector;
-        private AprilTagFamily aprilTagFamily;
+        // The detector is re-allocated on each enable (and on a backend change while enabled).
+        // It is nullable because the disable path tears it down completely.
+        private ITagDetector tagDetector;
+        private TagDetectorBackend detectorBackend = TagDetectorBackend.NAPA;
+
+        /// <summary>Reused per frame; filled by <see cref="ITagDetector.Detect"/>.</summary>
+        private readonly List<TagDetection> detections = new List<TagDetection>();
 
         private readonly PoseLibSolver poseLibSolver;
         private readonly MonoBehaviour coroutineHost;
@@ -101,6 +106,9 @@ namespace QuestX.QuestX.AprilTag
         private double lastLinearStdDevMeters;
         private double lastAmbiguity;
         private double lastReprojectionErrorPixels;
+        private string detectorName = "";
+        private double lastDetectMilliseconds;
+        private double averageDetectMilliseconds;
         private string lastOutcome = "Not started";
         private string lastReason = "";
 
@@ -137,6 +145,7 @@ namespace QuestX.QuestX.AprilTag
 
             configManager.OnEnableAprilTagDetectorChanged += OnEnableAprilTagDetectorChanged;
             configManager.OnAprilTagDetectorModeChanged += OnAprilTagDetectorModeChanged;
+            configManager.OnAprilTagDetectorBackendChanged += OnAprilTagDetectorBackendChanged;
             configManager.OnPassthroughStreamModeChanged += OnOverlayStreamModeChanged;
             configManager.OnEnablePassthroughStreamChanged += OnOverlayStreamEnabledChanged;
 
@@ -221,22 +230,12 @@ namespace QuestX.QuestX.AprilTag
 
                 try
                 {
-                    // Allocate a fresh family each time. The detector takes ownership and
-                    // disposes it as part of AprilTagDetector.Dispose(); we intentionally
-                    // do NOT also call aprilTagFamily.Dispose() in the disable path to
-                    // avoid double-dispose.
-                    aprilTagFamily = new Tag36h11();
-                    aprilTagDetector = new AprilTagDetector();
-                    aprilTagDetector.AddFamily(aprilTagFamily);
+                    SetDetector(CreateDetector(detectorBackend));
                 }
                 catch (Exception ex)
                 {
-                    QueuedLogger.LogError(
-                        $"Failed to allocate AprilTag detector/family: {ex.Message}"
-                    );
-                    aprilTagDetector?.Dispose();
-                    aprilTagDetector = null;
-                    aprilTagFamily = null;
+                    QueuedLogger.LogError($"Failed to allocate tag detector: {ex.Message}");
+                    SetDetector(null);
                     return;
                 }
 
@@ -294,8 +293,7 @@ namespace QuestX.QuestX.AprilTag
 
                 try
                 {
-                    // AprilTagDetector.Dispose disposes its registered family for us.
-                    aprilTagDetector?.Dispose();
+                    tagDetector?.Dispose();
                 }
                 catch (Exception ex)
                 {
@@ -303,11 +301,88 @@ namespace QuestX.QuestX.AprilTag
                         $"AprilTag detector disable: detector dispose failed: {ex.Message}"
                     );
                 }
-                aprilTagDetector = null;
-                aprilTagFamily = null;
+                SetDetector(null);
                 RecordOutcome("Detector disabled", "");
                 QueuedLogger.Log("AprilTagDetector Disabled");
             }
+        }
+
+        /// <summary>
+        /// Allocates the requested backend. If Napa's native library cannot be loaded (for
+        /// example a build without libnapa.so), fall back to libapriltag so localization keeps
+        /// working; diagnostics report which backend actually runs.
+        /// </summary>
+        private static ITagDetector CreateDetector(TagDetectorBackend backend)
+        {
+            if (backend == TagDetectorBackend.NAPA)
+            {
+                try
+                {
+                    return new NapaTagDetector(
+                        QuestXConstants.AprilTag.NAPA_MIN_TAG_PIXELS,
+                        QuestXConstants.AprilTag.NAPA_MAX_HAMMING
+                    );
+                }
+                catch (Exception ex)
+                    when (ex is DllNotFoundException
+                        || ex is EntryPointNotFoundException
+                        || ex is InvalidOperationException
+                    )
+                {
+                    QueuedLogger.LogError(
+                        $"Napa tag detector unavailable ({ex.Message}); falling back to libapriltag."
+                    );
+                }
+            }
+            return new LibAprilTagDetector();
+        }
+
+        private void SetDetector(ITagDetector detector)
+        {
+            tagDetector = detector;
+            lock (diagnosticsLock)
+            {
+                detectorName = detector?.Name ?? "";
+                lastDetectMilliseconds = 0;
+                averageDetectMilliseconds = 0;
+            }
+        }
+
+        private void OnAprilTagDetectorBackendChanged(TagDetectorBackend backend)
+        {
+            detectorBackend = backend;
+            if (!detectorActive || tagDetector == null)
+            {
+                return;
+            }
+
+            // Config events and the capture coroutine both run on the Unity main thread, so
+            // the swap cannot interleave with a Detect call.
+            ITagDetector replacement;
+            try
+            {
+                replacement = CreateDetector(backend);
+            }
+            catch (Exception ex)
+            {
+                QueuedLogger.LogError(
+                    $"Failed to allocate {backend} tag detector; keeping {tagDetector.Name}. {ex.Message}"
+                );
+                return;
+            }
+
+            var previous = tagDetector;
+            SetDetector(replacement);
+            Overlay.Clear();
+            try
+            {
+                previous.Dispose();
+            }
+            catch (Exception ex)
+            {
+                QueuedLogger.LogError($"Tag detector dispose failed: {ex.Message}");
+            }
+            QueuedLogger.Log($"Tag detector switched to {replacement.Name}");
         }
 
         private void OnAprilTagDetectorModeChanged(Config.Config.AprilTagDetectorMode configuration)
@@ -381,7 +456,10 @@ namespace QuestX.QuestX.AprilTag
                     LayoutTagCount = aprilTagFieldLayout.Tags?.Count ?? 0,
                     DetectedIds = (int[])detectedIds.Clone(),
                     LastAmbiguity = lastAmbiguity,
-                    LastReprojectionErrorPixels = lastReprojectionErrorPixels
+                    LastReprojectionErrorPixels = lastReprojectionErrorPixels,
+                    DetectorName = detectorName,
+                    LastDetectMilliseconds = lastDetectMilliseconds,
+                    AverageDetectMilliseconds = averageDetectMilliseconds
                 };
             }
         }
@@ -402,7 +480,7 @@ namespace QuestX.QuestX.AprilTag
                 // Bail out cleanly if the detector was disabled between iterations. Checked
                 // BEFORE any cameraAccess / detector access so a torn-down detector cannot
                 // be touched on a coroutine that is mid-iteration when disable runs.
-                if (!detectorActive || aprilTagDetector == null)
+                if (!detectorActive || tagDetector == null)
                 {
                     yield break;
                 }
@@ -551,39 +629,49 @@ namespace QuestX.QuestX.AprilTag
                     continue;
                 }
 
-                var converted = ImageU8.FromPassthroughCamera(colors, actualW, actualH);
-
-                // ImageU8 returns null when the colors NativeArray is uninitialized or
-                // empty (e.g. the camera was just enabled and hasn't produced a frame yet).
-                // Skip this iteration cleanly instead of throwing inside Detect.
-                if (converted == null)
-                {
-                    yield return new WaitForSeconds(frameDelaySeconds);
-                    continue;
-                }
-
-                AprilTagDetectionResults results = null;
+                // The backend converts the readback to grayscale (flipped to a top-left
+                // origin) and copies its results into managed TagDetections, so no native
+                // result memory outlives this call.
+                bool converted = false;
                 bool detectFailed = false;
+                long detectStart = Stopwatch.GetTimestamp();
                 try
                 {
-                    results = aprilTagDetector.Detect(converted);
+                    converted = tagDetector.Detect(colors, actualW, actualH, detections);
                 }
                 catch (Exception ex)
                 {
-                    QueuedLogger.LogError($"AprilTagDetector.Detect threw: {ex.Message}");
+                    QueuedLogger.LogError($"{tagDetector.Name} tag detector threw: {ex.Message}");
                     detectFailed = true;
                 }
-                if (detectFailed || results == null)
+                if (detectFailed)
                 {
                     Overlay.Clear();
-                    RecordOutcome("Detection failed", "AprilTag detector did not return results");
+                    RecordOutcome("Detection failed", $"{tagDetector.Name} detector did not return results");
                     yield return new WaitForSeconds(frameDelaySeconds);
                     continue;
                 }
 
-                // Every detector call owns a native result array, even with zero tags.
-                // The using scope also releases it on rejection, coroutine stop, or error.
-                using var ownedResults = results;
+                // A null/empty readback (e.g. the camera was just enabled and hasn't produced
+                // a frame yet) is skipped cleanly.
+                if (!converted)
+                {
+                    yield return new WaitForSeconds(frameDelaySeconds);
+                    continue;
+                }
+
+                // Grayscale conversion plus detection, for the status page.
+                double detectMilliseconds =
+                    (Stopwatch.GetTimestamp() - detectStart) * 1000.0 / Stopwatch.Frequency;
+                lock (diagnosticsLock)
+                {
+                    lastDetectMilliseconds = detectMilliseconds;
+                    averageDetectMilliseconds =
+                        averageDetectMilliseconds <= 0
+                            ? detectMilliseconds
+                            : averageDetectMilliseconds
+                                + 0.05 * (detectMilliseconds - averageDetectMilliseconds);
+                }
 
                 // Apply two filters before counting / solving:
                 //   1) User's ignored-IDs blacklist (empty set keeps every detection).
@@ -593,18 +681,17 @@ namespace QuestX.QuestX.AprilTag
                 //      such an ID to PoseLib mismatches the 2D/3D corner buffer lengths
                 //      (8 push, 0 push) and produces a garbage pose tens of meters out,
                 //      which the estimator then has to reject as a position jump.
-                // Building the kept list in-line avoids allocating an AprilTagDetectionResults clone.
-                var kept = new List<AprilTagDetection>(results.NumberOfDetections);
+                var kept = new List<TagDetection>(detections.Count);
                 var overlayTags =
                     Overlay.IsRequested
                     && AprilTagOverlay.MonotonicMilliseconds() >= nextOverlayFrameAt
-                        ? new AprilTagOverlayTag[results.NumberOfDetections]
+                        ? new AprilTagOverlayTag[detections.Count]
                         : null;
                 int overlayIndex = 0;
                 int ignoredCount = 0;
                 int unknownIdCount = 0;
                 var rawIds = new List<int>();
-                foreach (var detection in results)
+                foreach (var detection in detections)
                 {
                     rawIds.Add(detection.Id);
                     // Copy raw detections, including ignored/unknown IDs, before pose
@@ -856,7 +943,7 @@ namespace QuestX.QuestX.AprilTag
         /// (ImageU8 flips the readback), so "up" is decreasing y.
         /// </summary>
         private AprilTagObservation[] BuildObservations(
-            List<AprilTagDetection> detections,
+            List<TagDetection> detections,
             double[] ambiguities,
             Pose3d cameraPose,
             Pose3d headsetPose,

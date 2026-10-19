@@ -46,6 +46,8 @@ export interface AprilTagDetectorMode {
   // Legacy Quest-fusion settings retained only for configuration downgrade compatibility.
   confidencePreset?: number
   noiseScale?: number
+  // Tag detector backend: 0 = Napa (default), 1 = libapriltag. Switches on the next frame.
+  detector?: number
 }
 
 export interface AprilTagFieldLayoutEntry {
@@ -147,6 +149,11 @@ export interface HeadsetStatus {
     linearStdDevMeters: number
     lastOutcome: string
     lastReason: string
+    // Backend actually running ("Napa" or "AprilTag"); empty while disabled.
+    detector?: string
+    // Grayscale conversion plus detection: latest frame and moving average, milliseconds.
+    lastDetectMs?: number
+    averageDetectMs?: number
   }
 
   passthroughStream: {

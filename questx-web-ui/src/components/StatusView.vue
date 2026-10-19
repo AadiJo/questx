@@ -100,6 +100,13 @@
               {{ status.aprilTag.detectorActive ? 'Active' : 'Disabled' }}
             </span>
           </div>
+          <div v-if="status.aprilTag.detector" class="status-item">
+            <span class="label">Detect Time:</span>
+            <span class="value mono">
+              {{ status.aprilTag.detector }} {{ (status.aprilTag.averageDetectMs ?? 0).toFixed(1) }} ms avg
+              ({{ (status.aprilTag.lastDetectMs ?? 0).toFixed(1) }} ms last)
+            </span>
+          </div>
           <div class="status-item">
             <span class="label">Last Outcome:</span>
             <span class="value">{{ status.aprilTag.lastOutcome }}</span>

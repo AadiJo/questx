@@ -477,6 +477,7 @@ namespace QuestX.WebServer.Server
                     fieldLayoutFile = await configManager.GetAprilTagFieldLayoutFileAsync(),
                     confidencePreset = await configManager.GetAprilTagConfidencePresetAsync(),
                     noiseScale = await configManager.GetAprilTagNoiseScaleAsync(),
+                    detector = (int)await configManager.GetAprilTagDetectorBackendAsync(),
                 },
                 enableDebugLogging = await configManager.GetEnableDebugLoggingAsync(),
                 timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
@@ -689,6 +690,27 @@ namespace QuestX.WebServer.Server
                             return;
                         }
                         await configManager.SetAprilTagNoiseScaleAsync(n);
+                    }
+
+                    if (atm.detector.HasValue)
+                    {
+                        int d = atm.detector.Value;
+                        if (!Enum.IsDefined(typeof(TagDetectorBackend), d))
+                        {
+                            context.Response.StatusCode = 400;
+                            await SendJsonResponse(
+                                context,
+                                new SimpleResponse
+                                {
+                                    success = false,
+                                    message =
+                                        $"detector={d} is out of range. "
+                                        + "Allowed: 0 (Napa), 1 (AprilTag).",
+                                }
+                            );
+                            return;
+                        }
+                        await configManager.SetAprilTagDetectorBackendAsync((TagDetectorBackend)d);
                     }
                 }
                 if (request.EnableAprilTagDetector.HasValue)
@@ -1772,6 +1794,8 @@ namespace QuestX.WebServer.Server
                     atParts.Add($"confidencePreset={a.confidencePreset.Value}");
                 if (a.noiseScale.HasValue)
                     atParts.Add($"noiseScale={a.noiseScale.Value:F2}");
+                if (a.detector.HasValue)
+                    atParts.Add($"detector={a.detector.Value}");
                 parts.Add($"aprilTagDetectorMode={{{string.Join(",", atParts)}}}");
             }
             if (request.EnableDebugLogging.HasValue)

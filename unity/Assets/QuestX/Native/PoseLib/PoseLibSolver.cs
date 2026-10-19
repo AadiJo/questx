@@ -59,20 +59,20 @@ namespace QuestX.Native.PoseLib
         {
             // Materialize the collection so the IReadOnlyList overload can iterate twice
             // (once to count and once to fill the buffers).
-            var list = new List<AprilTagDetection>(detections.NumberOfDetections);
+            var list = new List<TagDetection>(detections.NumberOfDetections);
             foreach (var detection in detections)
             {
-                list.Add(detection);
+                list.Add(TagDetection.From(detection));
             }
             return PoseLibSolve(list);
         }
 
         /// <summary>
-        /// Overload that accepts a pre-filtered list of detections. Used by
-        /// <c>AprilTagManager.AprilTagFrameCaptureCoroutine</c> to drop ignored tag IDs
-        /// before solving without allocating a fake <see cref="AprilTagDetectionResults"/>.
+        /// Overload that accepts a pre-filtered list of detections from either detector
+        /// backend. Used by <c>AprilTagManager.AprilTagFrameCaptureCoroutine</c> after it
+        /// drops ignored and unknown tag IDs.
         /// </summary>
-        public PoseLibResult PoseLibSolve(IReadOnlyList<AprilTagDetection> detections)
+        public PoseLibResult PoseLibSolve(IReadOnlyList<TagDetection> detections)
         {
             int count = detections?.Count ?? 0;
             if (count == 0)

@@ -348,6 +348,9 @@ namespace QuestX.WebServer
                         linearStdDevMeters = aprilTagLinearStdDevMeters,
                         lastOutcome = aprilTagLastOutcome,
                         lastReason = aprilTagLastReason,
+                        detector = aprilTagDiagnostics?.DetectorName ?? "",
+                        lastDetectMs = aprilTagDiagnostics?.LastDetectMilliseconds ?? 0,
+                        averageDetectMs = aprilTagDiagnostics?.AverageDetectMilliseconds ?? 0,
                     },
 
                     passthroughStream = new

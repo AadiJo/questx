@@ -72,6 +72,19 @@
       </select>
     </ConfigField>
 
+    <!-- Tag detector backend. Both feed the same PoseLib solve; libapriltag remains
+         available for comparison or as a fallback. -->
+    <ConfigField v-if="configStore.config?.enableAprilTagDetector" title="Tag Detector"
+                 description="Napa is several times faster and finds smaller tags. AprilTag is the original libapriltag detector."
+                 control-class="input-control">
+      <template #badge>
+        <span v-if="isDetectorFieldDirty" class="dirty-badge">●</span>
+      </template>
+      <select :value="pendingMode.detector ?? 0" @change="handleDetectorChange">
+        <option v-for="opt in DETECTOR_OPTIONS" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+      </select>
+    </ConfigField>
+
     <!-- Max Tag Distance. Reject pose updates whose mean camera-to-tag distance
          exceeds this. The detector still runs at full range; only the pose update
          is gated. (See AprilTagManager: "AprilTag observation rejected: avgTagDistance=...") -->
@@ -162,6 +175,12 @@ import { RotateCw } from '@lucide/vue'
 // validation rejects values outside this set so keep these in sync.
 const MIN_TAGS_OPTIONS = [1, 2, 3, 4]
 
+// Mirrors Config.TagDetectorBackend on the server.
+const DETECTOR_OPTIONS = [
+  { value: 0, label: 'Napa' },
+  { value: 1, label: 'AprilTag' }
+]
+
 // Use mock store if available (for testing), otherwise use real store
 const injectedStore = inject('configStore', null)
 const configStore = injectedStore || (window as any).__MOCK_CONFIG_STORE__ || useConfigStore()
@@ -177,7 +196,8 @@ const pendingMode = ref<AprilTagDetectorMode>({
   minimumNumberOfTags: 2,
   fieldLayoutFile: '2026-rebuilt-welded.json',
   confidencePreset: 1,
-  noiseScale: 1.0
+  noiseScale: 1.0,
+  detector: 0
 })
 
 // FRC tag36h11 IDs in current use never exceed ~40; clamp to 50 for headroom.
@@ -207,6 +227,9 @@ watch(() => configStore.config?.aprilTagDetectorMode, (newMode) => {
       if (!userModifiedFields.value.has('fieldLayoutFile')) updated.fieldLayoutFile = newMode.fieldLayoutFile
       if (!userModifiedFields.value.has('confidencePreset') && newMode.confidencePreset !== undefined) {
         updated.confidencePreset = newMode.confidencePreset
+      }
+      if (!userModifiedFields.value.has('detector') && newMode.detector !== undefined) {
+        updated.detector = newMode.detector
       }
       if (!userModifiedFields.value.has('noiseScale') && newMode.noiseScale !== undefined) {
         updated.noiseScale = newMode.noiseScale
@@ -292,6 +315,10 @@ const isIgnoredIdsFieldDirty = computed(() => {
   return userModifiedFields.value.has('ignoredIds')
 })
 
+const isDetectorFieldDirty = computed(() => {
+  return userModifiedFields.value.has('detector')
+})
+
 // Event handlers
 async function handleDetectorEnabledChange(event: Event) {
   const target = event.target as HTMLInputElement
@@ -375,6 +402,15 @@ function handleMinimumTagsChange(event: Event) {
   if (!isNaN(value) && MIN_TAGS_OPTIONS.includes(value)) {
     pendingMode.value.minimumNumberOfTags = value
     userModifiedFields.value.add('minimumNumberOfTags')
+  }
+}
+
+function handleDetectorChange(event: Event) {
+  const target = event.target as HTMLSelectElement
+  const value = parseInt(target.value)
+  if (DETECTOR_OPTIONS.some(opt => opt.value === value)) {
+    pendingMode.value.detector = value
+    userModifiedFields.value.add('detector')
   }
 }
 
