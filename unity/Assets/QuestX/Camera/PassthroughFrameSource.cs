@@ -8,6 +8,8 @@ using QuestX.Config;
 using QuestX.Network;
 using QuestX.Utils;
 using QuestX.WebServer;
+using Unity.Collections;
+using Unity.Collections.LowLevel.Unsafe;
 using UnityEngine;
 using static QuestX.Config.Config;
 using static QuestX.Core.QuestXConstants;
@@ -81,6 +83,11 @@ namespace QuestX.Camera
         /// Whether high quality streaming is enabled.
         /// </summary>
         private bool isHighQualityStreamEnabled;
+
+        /// <summary>
+        /// How the headset is rolled; frames are rotated upright before encoding.
+        /// </summary>
+        private CameraOrientation orientation;
 
         /// <summary>
         /// Cached base URL for stream endpoints.
@@ -402,6 +409,16 @@ namespace QuestX.Camera
             configManager.OnPassthroughStreamModeChanged += OnPassthroughStreamModeChanged;
             configManager.OnEnableHighQualityStreamsChanged +=
                 OnEnableHighQualityPassthroughStreamChanged;
+            configManager.OnCameraOrientationChanged += OnCameraOrientationChanged;
+        }
+
+        /// <summary>
+        /// Handles camera orientation config changes. Takes effect on the next frame.
+        /// </summary>
+        /// <param name="value">How the headset is rolled on its mount.</param>
+        private void OnCameraOrientationChanged(CameraOrientation value)
+        {
+            orientation = value;
         }
 
         /// <summary>
@@ -702,7 +719,10 @@ namespace QuestX.Camera
                 }
 
                 compressor ??= new LJTCompressor();
-                byte[] rawJpeg = compressor.EncodeJPG(texture2D, compressionQuality);
+                byte[] rawJpeg =
+                    orientation == CameraOrientation.NORMAL
+                        ? compressor.EncodeJPG(texture2D, compressionQuality)
+                        : EncodeRotatedJpeg(compressor, texture2D);
                 if (rawJpeg == null || rawJpeg.Length == 0)
                 {
                     RecordCaptureFailure("The JPEG compressor returned an empty frame");
@@ -802,6 +822,76 @@ namespace QuestX.Camera
                     $"{message}{detail} (consecutive failures: {consecutive}; capture will retry)"
                 );
             }
+        }
+
+        /// <summary>
+        /// Rotates the bottom-up texture upright for <see cref="orientation"/> and encodes it.
+        /// </summary>
+        private unsafe byte[] EncodeRotatedJpeg(LJTCompressor compressor, Texture2D texture)
+        {
+            LJTPixelFormat format;
+            int bytesPerPixel;
+            switch (texture.format)
+            {
+                case TextureFormat.RGB24:
+                    format = LJTPixelFormat.RGB;
+                    bytesPerPixel = 3;
+                    break;
+                case TextureFormat.RGBA32:
+                    format = LJTPixelFormat.RGBA;
+                    bytesPerPixel = 4;
+                    break;
+                case TextureFormat.ARGB32:
+                    format = LJTPixelFormat.ARGB;
+                    bytesPerPixel = 4;
+                    break;
+                case TextureFormat.BGRA32:
+                    format = LJTPixelFormat.BGRA;
+                    bytesPerPixel = 4;
+                    break;
+                default:
+                    throw new NotSupportedException(
+                        $"Cannot rotate {texture.format} frames for the {orientation} orientation"
+                    );
+            }
+
+            int width = texture.width;
+            int height = texture.height;
+            var source = texture.GetRawTextureData<byte>();
+            if (source.Length < width * height * bytesPerPixel)
+            {
+                throw new InvalidOperationException(
+                    $"Texture data is {source.Length} bytes; expected {width * height * bytesPerPixel}"
+                );
+            }
+
+            using var rotated = ImageRotationJob.Rotate(
+                source,
+                width,
+                height,
+                width * bytesPerPixel,
+                bytesPerPixel,
+                sourceBottomUp: true,
+                orientation,
+                Allocator.TempJob
+            );
+            CameraOrientationMath.RotateSize(
+                orientation,
+                width,
+                height,
+                out int rotatedWidth,
+                out int rotatedHeight
+            );
+            return compressor.Compress(
+                (IntPtr)NativeArrayUnsafeUtility.GetUnsafeReadOnlyPtr(rotated),
+                rotatedWidth * bytesPerPixel,
+                rotatedWidth,
+                rotatedHeight,
+                format,
+                LJTSubsamplingOption.Chrominance420,
+                compressionQuality,
+                LJTFlags.None
+            );
         }
 
         private enum CaptureAttempt

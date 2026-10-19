@@ -26,6 +26,8 @@ namespace QuestX.Native.Napa
 
         public string Name => "Napa";
 
+        public GrayImage Image { get; private set; }
+
         public bool Detect(
             NativeArray<Color32> colors,
             int width,
@@ -36,6 +38,7 @@ namespace QuestX.Native.Napa
             if (core == null)
                 throw new ObjectDisposedException(nameof(NapaTagDetector));
             detections.Clear();
+            Image = default;
             if (!colors.IsCreated || width <= 0 || height <= 0 || colors.Length < width * height)
                 return false;
 
@@ -63,7 +66,9 @@ namespace QuestX.Native.Napa
                 .Schedule(height, 32)
                 .Complete();
 
-            core.Detect((byte*)gray.GetUnsafeReadOnlyPtr(), width, height, width, detections);
+            var buffer = (byte*)gray.GetUnsafeReadOnlyPtr();
+            core.Detect(buffer, width, height, width, detections);
+            Image = new GrayImage((IntPtr)buffer, width, height, width);
             return true;
         }
 
@@ -71,6 +76,7 @@ namespace QuestX.Native.Napa
         {
             core?.Dispose();
             core = null;
+            Image = default;
             if (gray.IsCreated)
                 gray.Dispose();
         }

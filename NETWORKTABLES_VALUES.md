@@ -104,6 +104,8 @@ These values exist for the single camera source named `Passthrough`.
 | `/CameraPublisher/Passthrough/mode` | `string` | Selected stream mode in the form `<width>x<height> MJPEG <fps> fps`, for example `640x360 MJPEG 24 fps`. |
 | `/CameraPublisher/Passthrough/modes` | `string[]` | Every Meta-supported camera resolution crossed with supported FPS values `1, 5, 15, 24, 30, 48, 60`, using the same mode string format. |
 
+`mode` and `modes` describe the camera's own capture resolution. The MJPEG frames are rotated upright for the configured camera orientation, so with Left or Right their width and height are swapped relative to `mode`.
+
 Some camera values are change-triggered. For example, the initial in-memory `connected = false` is not sent by its property setter; a consumer should not assume that absence is equivalent to an explicitly published `false`.
 
 ## Publishers with no current application value

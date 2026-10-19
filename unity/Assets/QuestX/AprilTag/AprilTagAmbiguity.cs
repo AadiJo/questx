@@ -280,9 +280,14 @@ namespace QuestX.QuestX.AprilTag
             }
             double[] h = normalVector;
             // Undo the plane-coordinate scale: columns 0 and 1 multiply x / scale and y / scale.
-            double h00 = h[0] / scale, h01 = h[1] / scale, h02 = h[2];
-            double h10 = h[3] / scale, h11 = h[4] / scale, h12 = h[5];
-            double h20 = h[6] / scale, h21 = h[7] / scale;
+            double h00 = h[0] / scale,
+                h01 = h[1] / scale,
+                h02 = h[2];
+            double h10 = h[3] / scale,
+                h11 = h[4] / scale,
+                h12 = h[5];
+            double h20 = h[6] / scale,
+                h21 = h[7] / scale;
 
             // IPPE: the plane origin projects to (p, q). J is the homography's Jacobian there.
             double p = h02;
@@ -349,11 +354,17 @@ namespace QuestX.QuestX.AprilTag
                 for (int r = 0; r < 3; r++)
                 {
                     planeToCamera[r * 3] =
-                        rv[r * 3] * column0[0] + rv[r * 3 + 1] * column0[1] + rv[r * 3 + 2] * column0[2];
+                        rv[r * 3] * column0[0]
+                        + rv[r * 3 + 1] * column0[1]
+                        + rv[r * 3 + 2] * column0[2];
                     planeToCamera[r * 3 + 1] =
-                        rv[r * 3] * column1[0] + rv[r * 3 + 1] * column1[1] + rv[r * 3 + 2] * column1[2];
+                        rv[r * 3] * column1[0]
+                        + rv[r * 3 + 1] * column1[1]
+                        + rv[r * 3 + 2] * column1[2];
                     planeToCamera[r * 3 + 2] =
-                        rv[r * 3] * column2[0] + rv[r * 3 + 1] * column2[1] + rv[r * 3 + 2] * column2[2];
+                        rv[r * 3] * column2[0]
+                        + rv[r * 3 + 1] * column2[1]
+                        + rv[r * 3 + 2] * column2[2];
                 }
 
                 if (
@@ -493,9 +504,12 @@ namespace QuestX.QuestX.AprilTag
                 double x = points3d[i * 3];
                 double y = points3d[i * 3 + 1];
                 double z = points3d[i * 3 + 2];
-                double cameraX = rotation[0] * x + rotation[1] * y + rotation[2] * z + translation[0];
-                double cameraY = rotation[3] * x + rotation[4] * y + rotation[5] * z + translation[1];
-                double cameraZ = rotation[6] * x + rotation[7] * y + rotation[8] * z + translation[2];
+                double cameraX =
+                    rotation[0] * x + rotation[1] * y + rotation[2] * z + translation[0];
+                double cameraY =
+                    rotation[3] * x + rotation[4] * y + rotation[5] * z + translation[1];
+                double cameraZ =
+                    rotation[6] * x + rotation[7] * y + rotation[8] * z + translation[2];
                 if (!(cameraZ > 1e-9))
                 {
                     return double.PositiveInfinity;
@@ -614,12 +628,19 @@ namespace QuestX.QuestX.AprilTag
         private static double[] Subtract(double[] a, double[] b) =>
             new[] { a[0] - b[0], a[1] - b[1], a[2] - b[2] };
 
-        private static double[] Scale(double[] a, double s) => new[] { a[0] * s, a[1] * s, a[2] * s };
+        private static double[] Scale(double[] a, double s) =>
+            new[] { a[0] * s, a[1] * s, a[2] * s };
 
-        private static double Dot(double[] a, double[] b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        private static double Dot(double[] a, double[] b) =>
+            a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 
         private static double[] Cross(double[] a, double[] b) =>
-            new[] { a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0] };
+            new[]
+            {
+                a[1] * b[2] - a[2] * b[1],
+                a[2] * b[0] - a[0] * b[2],
+                a[0] * b[1] - a[1] * b[0],
+            };
 
         private static bool TryNormalize(double[] v)
         {

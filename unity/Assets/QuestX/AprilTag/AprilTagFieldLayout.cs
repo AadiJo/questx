@@ -28,9 +28,14 @@ namespace QuestX.QuestX.AprilTag
         /// </summary>
         private HashSet<int> knownIds = new HashSet<int>();
 
-        [JsonIgnore] public string LoadedFile { get; private set; } = "";
-        [JsonIgnore] public string LoadError { get; private set; } = "Not loaded";
-        [JsonIgnore] public bool IsLoaded => knownIds.Count > 0 && string.IsNullOrEmpty(LoadError);
+        [JsonIgnore]
+        public string LoadedFile { get; private set; } = "";
+
+        [JsonIgnore]
+        public string LoadError { get; private set; } = "Not loaded";
+
+        [JsonIgnore]
+        public bool IsLoaded => knownIds.Count > 0 && string.IsNullOrEmpty(LoadError);
 
         /// <summary>
         /// Represents the physical size of the AprilTags on the field
@@ -133,7 +138,9 @@ namespace QuestX.QuestX.AprilTag
                 }
 
                 if (root.Field == null || root.Field.X <= 0 || root.Field.Y <= 0)
-                    throw new InvalidDataException("Field dimensions length/width must be positive");
+                    throw new InvalidDataException(
+                        "Field dimensions length/width must be positive"
+                    );
                 var unique = new HashSet<int>();
                 foreach (var tag in root.Tags)
                 {

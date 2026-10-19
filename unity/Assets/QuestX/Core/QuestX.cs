@@ -46,6 +46,11 @@ namespace QuestX.Core
         );
 
         /// <summary>
+        /// How the headset is rolled on its mount. VIO is reported as an upright headset.
+        /// </summary>
+        private CameraOrientation cameraOrientation;
+
+        /// <summary>
         /// Reference to the OVR Camera Rig for tracking
         /// </summary>
         [SerializeField]
@@ -260,6 +265,7 @@ namespace QuestX.Core
             versionText.text = Application.version;
 
             configManager = new ConfigManager();
+            configManager.OnCameraOrientationChanged += OnCameraOrientationChanged;
 
             networkTableConnection = new NetworkTableConnection(configManager);
 
@@ -426,7 +432,9 @@ namespace QuestX.Core
         /// </summary>
         private void SlowUpdate()
         {
-            networkTableConnection.PublishAprilTagDiagnostics(aprilTagManager.GetDiagnosticsSnapshot());
+            networkTableConnection.PublishAprilTagDiagnostics(
+                aprilTagManager.GetDiagnosticsSnapshot()
+            );
             // Poll for connection status, logging, ip address changes, etc.
             networkTableConnection.Periodic();
 
@@ -634,14 +642,37 @@ namespace QuestX.Core
             vioCaptureTimestampMicros = networkTableConnection.NtNow;
             timeStamp = Time.timeAsDouble;
 
-            var localPose = new Pose3d(
-                Conversions.UnityToFrc3d(
-                    cameraRig.centerEyeAnchor.localPosition,
-                    cameraRig.centerEyeAnchor.localRotation
+            var localPose = CameraOrientationMath.UprightPose(
+                cameraOrientation,
+                new Pose3d(
+                    Conversions.UnityToFrc3d(
+                        cameraRig.centerEyeAnchor.localPosition,
+                        cameraRig.centerEyeAnchor.localRotation
+                    )
                 )
             );
             vioFrame.Sample(localPose, currentlyTracking, timeStamp);
             pose = vioFrame.PublishedPose;
+        }
+
+        /// <summary>
+        /// Handles mount orientation changes. The published roll and pitch change at once, so
+        /// samples after the change start a new epoch rather than appearing as motion.
+        /// </summary>
+        private void OnCameraOrientationChanged(CameraOrientation orientation)
+        {
+            if (orientation == cameraOrientation)
+            {
+                return;
+            }
+            cameraOrientation = orientation;
+            if (pose != null)
+            {
+                vioFrame.BeginNewEpoch();
+                QueuedLogger.Log(
+                    $"Headset mount orientation is now {orientation}; VIO tracking epoch is now {vioFrame.Epoch}"
+                );
+            }
         }
 
         /// <summary>
@@ -689,9 +720,8 @@ namespace QuestX.Core
         private void UpdateDeviceData()
         {
             float batteryLevel = SystemInfo.batteryLevel;
-            batteryPercent = batteryLevel < 0
-                ? -1
-                : Mathf.Clamp(Mathf.RoundToInt(batteryLevel * 100), 0, 100);
+            batteryPercent =
+                batteryLevel < 0 ? -1 : Mathf.Clamp(Mathf.RoundToInt(batteryLevel * 100), 0, 100);
         }
 
         /// <summary>

@@ -13,6 +13,16 @@ export interface VideoModeModel {
   framerate: number
 }
 
+// How the headset is rolled on its mount, viewed from behind it (as worn). The stream,
+// AprilTag preview, Limelight tx/ty, and reported headset poses are rotated upright to
+// match, so the robot-to-headset transform should not include this roll.
+export enum CameraOrientation {
+  Normal = 0,
+  UpsideDown = 1,
+  Left = 2,
+  Right = 3,
+}
+
 export interface AprilTagFrameMetadata {
   version: 1
   enabled: boolean
@@ -65,6 +75,7 @@ export interface ConfigResponse {
   enableAutoStartOnBoot: boolean
   enablePassthroughStream: boolean
   enableHighQualityStream: boolean
+  cameraOrientation: CameraOrientation
   enableDebugLogging: boolean
   streamMode: StreamModeModel
   enableAprilTagDetector: boolean
@@ -79,6 +90,7 @@ export interface ConfigUpdateRequest {
   enableAutoStartOnBoot?: boolean
   enablePassthroughStream?: boolean
   enableHighQualityStream?: boolean
+  cameraOrientation?: CameraOrientation
   enableDebugLogging?: boolean
   streamMode?: StreamModeModel
   enableAprilTagDetector?: boolean

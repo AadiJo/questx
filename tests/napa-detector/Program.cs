@@ -174,6 +174,21 @@ static double Median(List<double> values) => values.OrderBy(v => v).ElementAt(va
 static double Percentile(List<double> values, double p) =>
     values.OrderBy(v => v).ElementAt(Math.Min(values.Count - 1, (int)(p * values.Count)));
 
+// The overlay preview encodes ITagDetector.Image, so it must be the same pixels either way.
+static unsafe bool SameImage(GrayImage a, GrayImage b, int width, int height)
+{
+    if (!a.IsValid || !b.IsValid || a.Width != width || b.Width != width || a.Height != height || b.Height != height)
+        return false;
+    for (int y = 0; y < height; y++)
+    {
+        var rowA = new ReadOnlySpan<byte>((byte*)a.Buffer + (long)y * a.Stride, width);
+        var rowB = new ReadOnlySpan<byte>((byte*)b.Buffer + (long)y * b.Stride, width);
+        if (!rowA.SequenceEqual(rowB))
+            return false;
+    }
+    return true;
+}
+
 var napa = new NapaTagDetector(24, 3);
 var aprilTag = new LibAprilTagDetector();
 Check(napa.Name == "Napa" && aprilTag.Name == "AprilTag", "backend names");
@@ -208,6 +223,8 @@ for (int trial = 0; trial < trials; trial++)
     var (colors, truth) = Render(width, height, new[] { (id, quad) }, random);
     Check(napa.Detect(colors, width, height, napaDetections), "napa converted frame");
     Check(aprilTag.Detect(colors, width, height, aprilTagDetections), "apriltag converted frame");
+    if (trial < 5)
+        Check(SameImage(napa.Image, aprilTag.Image, width, height), "both backends expose the same top-down grayscale image");
     colors.Dispose();
 
     Check(napaDetections.All(d => d.Id == id), $"trial {trial}: napa false ID {string.Join(",", napaDetections.Select(d => d.Id))}");
@@ -249,6 +266,7 @@ Check(Median(napaTruthError) < 0.25, "napa corners are accurate in libapriltag's
 
 // Lifecycle and edge cases.
 Check(!napa.Detect(default, 640, 480, napaDetections), "uncreated readback is skipped");
+Check(!napa.Image.IsValid, "a skipped frame leaves no image to preview");
 var tiny = new NativeArray<Color32>(8 * 8, Allocator.Persistent);
 Check(napa.Detect(tiny, 8, 8, napaDetections) && napaDetections.Count == 0, "tiny frame yields nothing");
 Check(!napa.Detect(tiny, 640, 480, napaDetections), "short readback is skipped");
@@ -288,6 +306,7 @@ napa.Dispose();
 napa.Dispose();
 aprilTag.Dispose();
 aprilTag.Dispose();
+Check(!napa.Image.IsValid && !aprilTag.Image.IsValid, "disposed detectors expose no image");
 bool threw = false;
 try
 {

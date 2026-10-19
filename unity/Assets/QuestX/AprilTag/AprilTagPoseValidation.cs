@@ -24,7 +24,11 @@ namespace QuestX.QuestX.AprilTag
         }
 
         public static bool TryValidate(
-            Pose3d camera, Field2d field, double inliers, int corners, out string reason
+            Pose3d camera,
+            Field2d field,
+            double inliers,
+            int corners,
+            out string reason
         )
         {
             var q = camera.Rotation.Quaternion;
@@ -39,14 +43,23 @@ namespace QuestX.QuestX.AprilTag
             }
             if (corners < 4 || inliers < 4 || inliers / corners < 0.75)
             {
-                reason = $"Insufficient inliers: {inliers}/{corners}, require four and at least 75%";
+                reason =
+                    $"Insufficient inliers: {inliers}/{corners}, require four and at least 75%";
                 return false;
             }
             // Allow practice targets and a robot just outside the carpet, but reject
             // mirrored solutions below the floor or far beyond the selected field.
-            if (camera.Z < -0.25 || camera.Z > 3.5 || field == null || field.X <= 0 || field.Y <= 0
-                || camera.X < -2 || camera.X > field.X + 2
-                || camera.Y < -2 || camera.Y > field.Y + 2)
+            if (
+                camera.Z < -0.25
+                || camera.Z > 3.5
+                || field == null
+                || field.X <= 0
+                || field.Y <= 0
+                || camera.X < -2
+                || camera.X > field.X + 2
+                || camera.Y < -2
+                || camera.Y > field.Y + 2
+            )
             {
                 reason = "Solved camera position is outside the physical field/height limits";
                 return false;
@@ -65,7 +78,8 @@ namespace QuestX.QuestX.AprilTag
         {
             var cameraToTag = tag.Translation.Minus(camera.Translation);
             var inCamera = cameraToTag.RotateBy(camera.Rotation.UnaryMinus());
-            var tagToCamera = camera.Translation.Minus(tag.Translation)
+            var tagToCamera = camera
+                .Translation.Minus(tag.Translation)
                 .RotateBy(tag.Rotation.UnaryMinus());
             return inCamera.X > 0.05 && tagToCamera.X > 0.02;
         }

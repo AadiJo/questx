@@ -87,6 +87,13 @@ ambiguity. `LimelightHelpers.getBotPoseEstimate_wpiBlue` fills `rawFiducials`
 only when the length is exactly `11 + 7 × tagCount`, which these arrays satisfy.
 Index 10 is now the mean tag area; tag span (index 8) is still unsupported and 0.
 
+Like Limelight's orientation setting, `txnc` and `tync` are measured in the
+upright image for the configured camera orientation (web interface, Camera tab):
+upside-down negates both, and Left or Right swaps them, so right and up stay
+positive. Headset poses (VIO, AprilTag, and `botpose`) are reported as an upright
+headset at the same point: the mount roll is undone about the headset's forward axis,
+which leaves position and yaw unchanged.
+
 ## Telemetry
 
 `/QuestX/telemetry/apriltag/` adds `ambiguity`, `reprojectionErrorPixels`,

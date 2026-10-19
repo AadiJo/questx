@@ -7,6 +7,7 @@
   <ItemGroup>
     <Compile Include="../../unity/Assets/QuestX/AprilTag/AprilTagAmbiguity.cs" Link="Production/AprilTagAmbiguity.cs" />
     <Compile Include="../../unity/Assets/QuestX/AprilTag/AprilTagMeasurement.cs" Link="Production/AprilTagMeasurement.cs" />
+    <Compile Include="../../unity/Assets/QuestX/Camera/CameraOrientation.cs" Link="Production/CameraOrientation.cs" />
     <Compile Include="../../unity/Assets/QuestX/Core/VioReferenceFrame.cs" Link="Production/VioReferenceFrame.cs" />
     <Compile Include="../../unity/Assets/QuestX/Network/LimelightPoseFormat.cs" Link="Production/LimelightPoseFormat.cs" />
     <Compile Include="../../unity/Assets/QuestX/Network/MeasurementWireFormat.cs" Link="Production/MeasurementWireFormat.cs" />

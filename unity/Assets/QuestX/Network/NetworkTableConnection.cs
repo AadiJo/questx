@@ -5,8 +5,8 @@ using QuestX.Config;
 using QuestX.Core;
 using QuestX.Native.NTCore;
 using QuestX.Protos.Generated;
-using QuestX.QuestX.Geometry;
 using QuestX.QuestX.AprilTag;
+using QuestX.QuestX.Geometry;
 using QuestX.Utils;
 using QuestX.VioQuality;
 using UnityEngine;
@@ -643,7 +643,10 @@ namespace QuestX.Network
             }
             // Same value as /QuestX/limelight/latencyMilliseconds, so one atomic v3 read carries it.
             long now = NtNow;
-            double processingLatencyMilliseconds = Math.Max(0, (now - captureTimestampMicros) / 1000.0);
+            double processingLatencyMilliseconds = Math.Max(
+                0,
+                (now - captureTimestampMicros) / 1000.0
+            );
             int v3Length = MeasurementWireFormat.AprilTagV3HeaderLength + 2 * tagCount;
             if (aprilTagV3.Length != v3Length)
                 aprilTagV3 = new double[v3Length];

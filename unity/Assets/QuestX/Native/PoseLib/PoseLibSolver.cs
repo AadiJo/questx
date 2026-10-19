@@ -139,7 +139,13 @@ namespace QuestX.Native.PoseLib
                         points3d,
                         count,
                         intrinsicsArray,
-                        new[] { resultPose.Q[0], resultPose.Q[1], resultPose.Q[2], resultPose.Q[3] },
+                        new[]
+                        {
+                            resultPose.Q[0],
+                            resultPose.Q[1],
+                            resultPose.Q[2],
+                            resultPose.Q[3],
+                        },
                         new[] { resultPose.T[0], resultPose.T[1], resultPose.T[2] }
                     );
                 }

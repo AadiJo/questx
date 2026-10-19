@@ -411,8 +411,16 @@ namespace QuestX.WebServer
             await FileManager.ExtractAndroidFileAsync("index.html", "ui", targetPath);
             await FileManager.ExtractAndroidFileAsync("main.css", "ui/assets", assetsDir);
             await FileManager.ExtractAndroidFileAsync("main.js", "ui/assets", assetsDir);
-            await FileManager.ExtractAndroidFileAsync("geist-latin-wght-normal.woff2", "ui/assets", assetsDir);
-            await FileManager.ExtractAndroidFileAsync("newsreader-latin-wght-normal.woff2", "ui/assets", assetsDir);
+            await FileManager.ExtractAndroidFileAsync(
+                "geist-latin-wght-normal.woff2",
+                "ui/assets",
+                assetsDir
+            );
+            await FileManager.ExtractAndroidFileAsync(
+                "newsreader-latin-wght-normal.woff2",
+                "ui/assets",
+                assetsDir
+            );
             await FileManager.ExtractAndroidFileAsync("bird-logo.svg", "ui", targetPath);
 
             QueuedLogger.Log("UI extraction complete");
