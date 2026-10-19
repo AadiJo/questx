@@ -12,7 +12,6 @@ using QuestX.Native.PoseLib;
 using QuestX.QuestX.Geometry;
 using QuestX.Utils;
 using Unity.Collections;
-using Unity.Collections.LowLevel.Unsafe;
 using UnityEngine;
 
 namespace QuestX.QuestX.AprilTag
@@ -609,8 +608,7 @@ namespace QuestX.QuestX.AprilTag
                     rawIds.Add(detection.Id);
                     // Copy raw detections, including ignored/unknown IDs, before pose
                     // filtering. An outline means "detected", not "accepted pose".
-                    // ImageU8 flips vertically and JPEG uses BottomUp, so both images
-                    // use the same top-left pixel origin; no additional flip is needed.
+                    // The preview encodes the detector's own image, so corners need no flip.
                     if (overlayTags != null)
                     {
                         overlayTags[overlayIndex++] = new AprilTagOverlayTag(
@@ -639,9 +637,7 @@ namespace QuestX.QuestX.AprilTag
                 if (overlayTags != null)
                 {
                     PublishOverlayFrame(
-                        colors,
-                        actualW,
-                        actualH,
+                        converted,
                         overlayCaptureTime - exposureAgeSeconds * 1000.0,
                         overlayTags
                     );
@@ -916,29 +912,29 @@ namespace QuestX.QuestX.AprilTag
         }
 
         private unsafe void PublishOverlayFrame(
-            NativeArray<Color32> colors,
-            int width,
-            int height,
+            ImageU8 detectorImage,
             double capturedAt,
             AprilTagOverlayTag[] tags
         )
         {
-            // Consume the SAME readback used by ImageU8, before any coroutine yield.
-            // Never cache or mutate the SDK-owned NativeArray. BottomUp matches the
-            // detector's vertical flip; width/height exclude the SDK's excess capacity.
+            // Encode the exact luma image the detector read, top-down and 1 byte per
+            // pixel, before any coroutine yield: ImageU8 reuses the buffer next frame.
             nextOverlayFrameAt = AprilTagOverlay.MonotonicMilliseconds() + overlayFrameIntervalMs;
             try
             {
+                var image = detectorImage.Handle;
+                int width = image->width;
+                int height = image->height;
                 overlayCompressor ??= new LJTCompressor();
                 byte[] jpeg = overlayCompressor.Compress(
-                    (IntPtr)NativeArrayUnsafeUtility.GetUnsafeReadOnlyPtr(colors),
-                    width * 4,
+                    image->buf,
+                    image->stride,
                     width,
                     height,
-                    LJTPixelFormat.RGBA,
-                    LJTSubsamplingOption.Chrominance420,
+                    LJTPixelFormat.Gray,
+                    LJTSubsamplingOption.Gray,
                     overlayQuality,
-                    LJTFlags.BottomUp
+                    LJTFlags.None
                 );
                 Overlay.Publish(width, height, capturedAt, tags, jpeg);
             }
