@@ -1,7 +1,7 @@
 # Napa tag36h11 detector (vendored)
 
 `src/` is the dependency-free C core of Napa, unmodified from
-[Zw96042/apriltag-detector](https://github.com/Zw96042/apriltag-detector) `master` at `8105d66`
+[zwatx/NAPA](https://github.com/zwatx/NAPA) `master` at `c5f25e2`
 (`src/napa_vision/_native/`). QuestX calls it through `unity/Assets/QuestX/Native/Napa` and uses it
 as the default backend behind `ITagDetector`. To update, copy the three files from upstream, rebuild,
 and rerun the checks below.
