@@ -225,10 +225,16 @@ namespace QuestX.QuestX.AprilTag
         /// diagnostic values when heading is undefined. In that case the v4 planar block is
         /// explicitly unavailable, and these values must not be used for planar fusion.
         /// </summary>
-        public double[] EstimatorStdDevs()
+        public double[] EstimatorStdDevs() => EstimatorStdDevs(out _);
+
+        /// <summary>
+        /// Also returns a fresh field X/Y/heading covariance, or null when heading is undefined,
+        /// so the serializer can publish both summaries without projecting every solution twice.
+        /// </summary>
+        internal double[] EstimatorStdDevs(out double[] planar)
         {
             double[] result = LocalStdDevs();
-            if (TryToPose2d(out double[] pose, out double[] planar))
+            if (TryToPose2d(out double[] pose, out planar))
             {
                 double cosine = Math.Cos(pose[2]);
                 double sine = Math.Sin(pose[2]);

@@ -187,7 +187,7 @@ namespace QuestX.Network
             double[] tagAmbiguities
         )
         {
-            double[] stdDevs = covariance.EstimatorStdDevs();
+            double[] stdDevs = covariance.EstimatorStdDevs(out double[] planar);
             WriteAprilTagHeader(
                 target,
                 sequence,
@@ -216,7 +216,7 @@ namespace QuestX.Network
                 AprilTagV3HeaderLength,
                 CovarianceLength
             );
-            if (covariance.TryToPose2d(out _, out double[] planar))
+            if (planar != null)
             {
                 int index = AprilTagV3HeaderLength + CovarianceLength;
                 for (int r = 0; r < 3; r++)
