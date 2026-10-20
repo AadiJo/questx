@@ -282,6 +282,37 @@ namespace QuestX.Core
         }
 
         /// <summary>
+        /// Constants for the mDNS responder that makes the headset reachable as quest.local
+        /// </summary>
+        public static class Mdns
+        {
+            /// <summary>
+            /// Hostname without the .local suffix. Answered as quest.local and quest-TEAM.local
+            /// </summary>
+            public const string HOSTNAME = "quest";
+
+            /// <summary>
+            /// Standard mDNS port
+            /// </summary>
+            public const int PORT = 5353;
+
+            /// <summary>
+            /// Standard mDNS IPv4 multicast group
+            /// </summary>
+            public const string MULTICAST_ADDRESS = "224.0.0.251";
+
+            /// <summary>
+            /// Record TTL for multicast responses (RFC 6762 recommends 120s for host records)
+            /// </summary>
+            public const uint TTL_SECONDS = 120;
+
+            /// <summary>
+            /// Record TTL for legacy unicast responses (RFC 6762 caps these at 10s)
+            /// </summary>
+            public const uint LEGACY_UNICAST_TTL_SECONDS = 10;
+        }
+
+        /// <summary>
         /// Constants for the Tagalong UI behavior
         /// </summary>
         public static class TagalongUI

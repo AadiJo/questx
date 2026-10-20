@@ -240,6 +240,11 @@ namespace QuestX.Core
         private IWebServerManager webServerManager;
 
         /// <summary>
+        /// Answers quest.local lookups with the headset's address
+        /// </summary>
+        private IMdnsResponder mdnsResponder;
+
+        /// <summary>
         /// Captures passthrough frames for streaming.
         /// </summary>
         private PassthroughFrameSource passthroughFrameSource;
@@ -363,8 +368,12 @@ namespace QuestX.Core
             );
             tagAlongUI = new TagAlongUI(vrCamera, tagalongUiTransform);
 
+            // Constructed before config initialization so it receives the team number
+            mdnsResponder = new MdnsResponder(configManager);
+
             await configManager.InitializeAsync();
             await webServerManager.InitializeAsync();
+            mdnsResponder.Start();
 
             networkTableConnection.Initialize();
 
@@ -522,6 +531,7 @@ namespace QuestX.Core
             }
             configManager.CloseAsync();
             webServerManager?.Shutdown();
+            mdnsResponder?.Dispose();
         }
 
         /// <summary>
@@ -784,12 +794,13 @@ namespace QuestX.Core
         }
 
         /// <summary>
-        /// Updates the list of streams and the published dashboard URL
+        /// Updates the list of streams, the published dashboard URL, and the quest.local address
         /// </summary>
         private void UpdateCameraServers()
         {
             passthroughFrameSource.BaseUrl = webServerManager.BaseUrl;
             networkTableConnection.PublishWebUrl(webServerManager.BaseUrl);
+            mdnsResponder.Periodic(webServerManager.IpAddress);
         }
         #endregion
     }

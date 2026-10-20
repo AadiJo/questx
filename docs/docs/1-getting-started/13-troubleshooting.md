@@ -288,7 +288,7 @@ If you compiled QuestX from source (not the official release APK), the Unity pro
 
 ## Diagnostic Tools
 
-QuestX exposes a web interface at `http://<Quest IP Address>:5801` that provides several tools for diagnosing issues without needing to touch the headset or write any code.
+QuestX exposes a web interface at `http://<Quest IP Address>:5801` that provides several tools for diagnosing issues without needing to touch the headset or write any code. On most networks it is also reachable as `http://quest.local:5801` (or `http://quest-TEAM.local:5801`), and the full URL is published on the `/QuestX/webUrl` NetworkTables topic.
 
 ### Web Interface Status
 

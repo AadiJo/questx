@@ -27,21 +27,26 @@ Open the QuestX app from your Quest's app library (under **Unknown Sources** if 
 
 ### 3. Connect to the Quest's network
 
-Connect the device you'll use for calibration (a laptop or phone) to the **same network as the Quest** — typically your robot radio's network. QuestX displays the headset's current IP address in the app; note it for the next step.
-
-:::info
-The headset's IP address is also reported through the [`/api/status`](../api-reference/web-api) endpoint as `ipAddress`. When connected to your robot radio, the Quest uses your team's network (`10.TE.AM.x`).
-:::
+Connect the device you'll use for calibration (a laptop or phone) to the **same network as the Quest** — typically your robot radio's network.
 
 ### 4. Open the web interface
 
 In a browser on that same network, navigate to:
 
 ```
-http://<quest-ip>:5801
+http://quest.local:5801
 ```
 
-Replace `<quest-ip>` with the IP address shown in the QuestX app. This opens the QuestX **ConfigServer** web interface, where you can view live status (tracking state, battery, pose), adjust configuration, and reset the pose. See the [Web API reference](../api-reference/web-api) for the full list of available endpoints.
+If more than one Quest is on the network, use `http://quest-TEAM.local:5801` instead (for example, `quest-1234.local`). This opens the QuestX **ConfigServer** web interface, where you can view live status (tracking state, battery, pose), adjust configuration, and reset the pose. See the [Web API reference](../api-reference/web-api) for the full list of available endpoints.
+
+:::tip If quest.local doesn't load
+`.local` names can be unreliable on competition field networks, and some Linux systems need Avahi installed to resolve them. Use the headset's IP address instead: `http://<quest-ip>:5801`. You can find it without putting on the headset:
+
+- Read the `/QuestX/webUrl` NetworkTables topic in AdvantageScope, Elastic, or OutlineViewer. It holds the full dashboard URL, e.g. `http://10.TE.AM.x:5801`.
+- Call `getWebUrl()` on the `QuestX` object in your robot code.
+
+QuestX also displays the IP address in the headset. When connected to your robot radio, the Quest uses your team's network (`10.TE.AM.x`).
+:::
 
 ### 5. Mount the headset to the robot
 
