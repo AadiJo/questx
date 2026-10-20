@@ -605,6 +605,9 @@ namespace QuestX.Network
             }
             vioTelemetry.Update(vioV2, pose);
             PublishTelemetry();
+            // Send the sample now rather than at ntcore's next periodic send, so the robot
+            // sees it as early as possible.
+            ntInstance.Flush();
         }
 
         /// <inheritdoc />
@@ -732,6 +735,7 @@ namespace QuestX.Network
             aprilTagV3Publisher.Set(aprilTagV3, captureTimestampMicros);
             aprilTagTelemetry.Update(aprilTagV3, pose);
             limelightTelemetry.Update(measurement, captureTimestampMicros, now);
+            ntInstance.Flush();
         }
 
         public void PublishAprilTagDiagnostics(AprilTagDiagnosticsSnapshot diagnostics) =>
