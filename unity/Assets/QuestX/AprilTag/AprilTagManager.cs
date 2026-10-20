@@ -56,6 +56,15 @@ namespace QuestX.QuestX.AprilTag
         private readonly MonoBehaviour coroutineHost;
         private Coroutine captureCoroutine;
         private float frameDelaySeconds;
+
+        /// <summary>Exposure time, in seconds, of the next frame to process.</summary>
+        private double nextFrameExposureSeconds;
+
+        /// <summary>
+        /// How early a frame may be exposed and still count as due: a quarter of the 60 Hz
+        /// camera period, which absorbs timestamp jitter without taking the frame before.
+        /// </summary>
+        private const double FrameScheduleToleranceSeconds = 0.004;
         private LJTCompressor overlayCompressor;
         private int overlayQuality = 75;
         private double overlayFrameIntervalMs = 1000.0 / 24;
@@ -261,6 +270,7 @@ namespace QuestX.QuestX.AprilTag
                 );
 
                 intrinsicsStale = true;
+                nextFrameExposureSeconds = 0;
                 detectorActive = true;
                 Overlay.SetEnabled(true);
                 captureCoroutine = coroutineHost.StartCoroutine(AprilTagFrameCaptureCoroutine());
@@ -419,7 +429,7 @@ namespace QuestX.QuestX.AprilTag
 
             // Only ask the arbiter to re-apply when we are currently the active high-priority
             // requester AND the resolution actually changed. A pure FPS change does not need
-            // to bounce the camera (the framerate is enforced by the coroutine's WaitForSeconds).
+            // to bounce the camera (the framerate is enforced by IsFrameDue).
             if (resolutionChanged && detectorActive)
             {
                 cameraArbiter.Reserve(
@@ -475,6 +485,27 @@ namespace QuestX.QuestX.AprilTag
                     AverageDetectMilliseconds = averageDetectMilliseconds,
                 };
             }
+        }
+
+        /// <summary>
+        /// Paces detection against exposure times instead of sleeping after each frame. The
+        /// camera delivers frames on a fixed grid, so 30 Hz takes every second 60 Hz frame;
+        /// sleeping a full period after the work instead landed on every second or third
+        /// frame (about 23 Hz). The schedule advances by whole periods so rates that don't
+        /// divide the camera's (24 Hz) still average out, and re-anchors on this frame after a
+        /// stall or a timestamp jump. Returns whether the frame should be processed.
+        /// </summary>
+        private bool IsFrameDue(double exposureSeconds)
+        {
+            double period = frameDelaySeconds;
+            double early = nextFrameExposureSeconds - exposureSeconds;
+            if (early > FrameScheduleToleranceSeconds && early <= period)
+            {
+                return false;
+            }
+            nextFrameExposureSeconds =
+                (Math.Abs(early) > period ? exposureSeconds : nextFrameExposureSeconds) + period;
+            return true;
         }
 
         private void RecordOutcome(string outcome, string reason)
@@ -540,6 +571,11 @@ namespace QuestX.QuestX.AprilTag
                     continue;
                 }
                 exposureAgeSeconds = Math.Max(0.0, exposureAgeSeconds);
+                if (!IsFrameDue(cameraAccess.Timestamp.Ticks / (double)TimeSpan.TicksPerSecond))
+                {
+                    yield return null;
+                    continue;
+                }
                 double captureAppTimestamp = Math.Max(0.0, Time.timeAsDouble - exposureAgeSeconds);
                 long captureTimestampMicros =
                     captureTimestampProvider() - (long)Math.Round(exposureAgeSeconds * 1_000_000.0);
@@ -641,6 +677,7 @@ namespace QuestX.QuestX.AprilTag
 
                     // This frame may have been captured before the refreshed intrinsics
                     // became visible. Start solving with the next delivered frame.
+                    nextFrameExposureSeconds = 0;
                     yield return null;
                     continue;
                 }
@@ -786,7 +823,7 @@ namespace QuestX.QuestX.AprilTag
                 if (!aprilTagFieldLayout.IsLoaded)
                 {
                     RecordOutcome("Field layout unavailable", aprilTagFieldLayout.LoadError);
-                    yield return new WaitForSeconds(frameDelaySeconds);
+                    yield return null;
                     continue;
                 }
 
@@ -827,7 +864,7 @@ namespace QuestX.QuestX.AprilTag
                         )
                         {
                             RecordOutcome("Measurement rejected locally", rejectedReason);
-                            yield return new WaitForSeconds(frameDelaySeconds);
+                            yield return null;
                             continue;
                         }
                         bool facesCamera = true;
@@ -850,7 +887,7 @@ namespace QuestX.QuestX.AprilTag
                                 "Measurement rejected locally",
                                 "Tag is behind the solved camera or the camera is behind the printed tag face"
                             );
-                            yield return new WaitForSeconds(frameDelaySeconds);
+                            yield return null;
                             continue;
                         }
                         var quality = poseLibResult.Quality;
@@ -860,7 +897,7 @@ namespace QuestX.QuestX.AprilTag
                                 "Measurement rejected locally",
                                 "Solved pose places an observed corner behind the camera"
                             );
-                            yield return new WaitForSeconds(frameDelaySeconds);
+                            yield return null;
                             continue;
                         }
                         var headsetPose = AprilTagPoseValidation.CameraToHeadset(
@@ -909,7 +946,7 @@ namespace QuestX.QuestX.AprilTag
                                 $"AprilTag observation rejected: avgTagDistance={avgTagDistance:F2}m "
                                     + $"> maxDistance={maxDistance:F2}m"
                             );
-                            yield return new WaitForSeconds(frameDelaySeconds);
+                            yield return null;
                             continue;
                         }
 
@@ -1005,7 +1042,7 @@ namespace QuestX.QuestX.AprilTag
                     );
                 }
 
-                yield return new WaitForSeconds(frameDelaySeconds);
+                yield return null;
             }
         }
 
