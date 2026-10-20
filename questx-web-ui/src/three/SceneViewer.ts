@@ -27,9 +27,9 @@ export interface ViewerInput {
   robotStyle: { bumperColor: number; teamNumber: number | null }
 }
 
-// Fixed palette modeled on Limelight's field visualizer, which is dark in every theme.
+// Fixed dark palette matching the dashboard theme (style.css).
 const PALETTE = {
-  background: 0x1b1b1b,
+  background: 0x0c0d0f,
   gridMajor: 0x3a3a3a,
   gridMinor: 0x2a2a2a,
   carpet: 0x2e3133,
@@ -39,7 +39,7 @@ const PALETTE = {
 } as const
 
 const STATUS_COLORS: Record<SceneTagStatus, number> = {
-  used: 0x3fae6b,
+  used: 0x6371f0,
   ignored: 0x8a8a8a,
   unknown: 0xd0453f,
 }

@@ -13,7 +13,7 @@ The [QuestX Robot Sim Example](https://github.com/juchong/QuestX-Robot-Sim-Examp
 - AdvantageScope-friendly NetworkTables telemetry
 
 :::note
-The robot-to-Quest mount is now set on the headset, in the web interface's **3D** tab. If your copy of the example applies a `ROBOT_TO_QUEST` transform to QuestX poses, remove it, or the mount is applied twice. See [Robot-to-Quest mount](./robot-code#robot-to-quest-mount).
+The robot-to-Quest mount is now set on the headset, on the web interface's **3D view** page. If your copy of the example applies a `ROBOT_TO_QUEST` transform to QuestX poses, remove it, or the mount is applied twice. See [Robot-to-Quest mount](./robot-code#robot-to-quest-mount).
 :::
 
 :::tip

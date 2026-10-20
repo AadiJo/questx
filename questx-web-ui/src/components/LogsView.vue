@@ -1,49 +1,29 @@
 <template>
   <div class="logs-view">
-    <div class="logs-controls">
-      <div class="controls-left">
-        <button @click="loadLogs" class="secondary action-button"><RefreshCw :size="15" :stroke-width="1.75" aria-hidden="true" /> Refresh</button>
-        <button @click="exportLogs" class="secondary action-button"><Download :size="15" :stroke-width="1.75" aria-hidden="true" /> Export</button>
-        <button @click="clearLogs" class="danger action-button"><Trash2 :size="15" :stroke-width="1.75" aria-hidden="true" /> Clear Logs</button>
-        <label class="auto-scroll-label">
-          <input type="checkbox" v-model="autoScroll" />
-          Auto-scroll
-        </label>
-      </div>
-      <div class="controls-right">
-        <select v-model="filterLevel" class="filter-select">
-          <option value="all">All Levels</option>
-          <option value="Log">Log</option>
-          <option value="Warning">Warning</option>
-          <option value="Error">Error</option>
-        </select>
-        <span class="log-count">{{ filteredLogs.length }} logs</span>
-      </div>
+    <div class="tools">
+      <select v-model="filterLevel" class="level" aria-label="Log level">
+        <option value="all">All levels</option>
+        <option value="Log">Log</option>
+        <option value="Warning">Warning</option>
+        <option value="Error">Error</option>
+      </select>
+      <label class="switch"><input v-model="autoScroll" type="checkbox" /> Auto-scroll</label>
+      <span class="muted">{{ filteredLogs.length }} lines</span>
+      <span class="grow" />
+      <button class="btn" @click="exportLogs"><Download :size="14" :stroke-width="2" aria-hidden="true" /> Export</button>
+      <ConfirmButton class="btn danger" confirm-text="Clear all logs?" @confirm="clearLogs">Clear</ConfirmButton>
     </div>
 
-    <div v-if="loading" class="loading-container">
-      <div class="spinner"></div>
-      <p>Loading logs...</p>
-    </div>
+    <p v-if="error" class="error-text">{{ error }}</p>
 
-    <div v-else-if="error" class="error-message">
-      {{ error }}
-    </div>
-
-    <div v-else class="logs-container terminal" ref="logsContainer">
-      <div v-if="filteredLogs.length === 0" class="empty-logs">
-        No logs to display
-      </div>
-      
-      <div
-        v-for="(log, index) in filteredLogs"
-        :key="index"
-        :class="['log-line', `log-${log.Type.toLowerCase()}`]"
-      >
-        <span class="log-timestamp">{{ formatTime(log.Timestamp) }}</span>
-        <span :class="['log-level', `level-${log.Type.toLowerCase()}`]">{{ getLogPrefix(log.Type) }}</span>
-        <span class="log-text">{{ log.Message }}</span>
-        <pre v-if="log.StackTrace && log.Type !== 'Log'" class="log-stacktrace">{{ log.StackTrace }}</pre>
+    <div ref="logsContainer" class="panel terminal">
+      <div v-if="loading" class="muted">Loading logs…</div>
+      <div v-else-if="filteredLogs.length === 0" class="muted">No logs to show</div>
+      <div v-for="(log, index) in filteredLogs" :key="index" :class="['line', log.Type]">
+        <span class="time">{{ formatTime(log.Timestamp) }}</span>
+        <span :class="['level-tag', levelClass(log.Type)]">{{ getLogPrefix(log.Type) }}</span>
+        <span class="message">{{ log.Message }}</span>
+        <pre v-if="log.StackTrace && log.Type !== 'Log'" class="stack">{{ log.StackTrace }}</pre>
       </div>
     </div>
   </div>
@@ -52,7 +32,8 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { configApi } from '../api/config'
-import { Download, RefreshCw, Trash2 } from '@lucide/vue'
+import { Download } from '@lucide/vue'
+import ConfirmButton from './ConfirmButton.vue'
 
 interface LogEntry {
   Message: string
@@ -92,7 +73,6 @@ async function loadLogs() {
 }
 
 async function clearLogs() {
-  if (!confirm('Are you sure you want to clear all logs?')) return
   
   try {
     await configApi.clearLogs()
@@ -170,12 +150,17 @@ function formatTime(timestamp: number): string {
 
 function getLogPrefix(type: string): string {
   switch (type) {
-    case 'Error': return '[ERROR]'
-    case 'Warning': return '[WARN ]'
-    case 'Assert': return '[ASSRT]'
-    case 'Exception': return '[EXCPT]'
-    default: return '[INFO ]'
+    case 'Error': return 'ERROR'
+    case 'Warning': return 'WARN'
+    case 'Assert': return 'ASSERT'
+    case 'Exception': return 'EXCEPT'
+    default: return 'INFO'
   }
+}
+
+function levelClass(type: string) {
+  if (type === 'Warning') return 'warn'
+  return type === 'Log' ? 'info' : 'error'
 }
 
 watch(filteredLogs, async () => {
@@ -210,239 +195,74 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.logs-view {
-  width: 100%;
-  max-width: 1400px;
-  margin: 0 auto;
-}
-
-.logs-controls {
+.tools {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 1rem;
-  margin-bottom: 1.5rem;
   flex-wrap: wrap;
-  padding: 1rem;
-  background: var(--card-bg);
-  border-radius: 4px;
-  border: 1px solid var(--border-color);
-}
-
-.controls-left,
-.controls-right {
-  display: flex;
   align-items: center;
-  gap: 0.75rem;
-  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 12px;
 }
 
-.action-button {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.45rem;
+.level {
+  width: 140px;
 }
 
-.auto-scroll-label {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  color: var(--text-primary);
-  cursor: pointer;
-  font-size: 0.875rem; /* Small text: 14px */
-  font-weight: 600;
-  padding: 0.5rem 1rem;
-  background: var(--bg-tertiary);
-  border-radius: 4px;
-  transition: all 0.2s ease;
-  border: 1px solid var(--border-color);
+.grow {
+  flex: 1;
 }
 
-.auto-scroll-label:hover {
-  background: var(--bg-secondary);
-  border-color: var(--primary-color);
-}
-
-.auto-scroll-label input[type="checkbox"] {
-  width: 1.2rem;
-  height: 1.2rem;
-  cursor: pointer;
-}
-
-.filter-select {
-  padding: 0.6rem 1rem;
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: 4px;
-  color: var(--text-primary);
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.filter-select:hover {
-  border-color: var(--primary-color);
-}
-
-.filter-select:focus {
-  outline: none;
-  border-color: var(--primary-color);
-  box-shadow: 0 0 0 2px var(--focus-ring);
-}
-
-.log-count {
-  font-size: 0.875rem; /* Small text: 14px */
-  color: var(--text-secondary);
-  font-weight: 700;
-  background: var(--bg-tertiary);
-  padding: 0.5rem 1rem;
-  border-radius: 4px;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-}
-
-.loading-container {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 4rem 2rem;
-  gap: 1.5rem;
-}
-
-.loading-container p {
-  color: var(--primary-color);
-  font-size: 1rem; /* Base body text: 16px */
-  font-weight: 500;
-}
-
-.error-message {
-  padding: 1.5rem;
-  background: var(--card-bg);
-  border: 1px solid var(--danger-color);
-  border-radius: 4px;
-  color: var(--danger-color);
-  text-align: center;
-  font-weight: 600;
-}
-
-.logs-container {
-  max-height: 600px;
-  overflow-y: auto;
-  padding: 1.5rem;
-  font-size: 0.875rem;
-  background: #090909;
-  color: #d9d9d4;
-  border-radius: 4px;
-  border: 1px solid var(--border-color);
-  scrollbar-width: thin;
-  scrollbar-color: #555 #2a2a2a;
+.terminal {
+  height: calc(100vh - 170px);
+  min-height: 320px;
+  overflow: auto;
+  padding: 10px 14px;
+  background: #0b0c0d;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
   line-height: 1.6;
 }
 
-.logs-container.terminal {
-  background: #090909;
+.line {
+  display: grid;
+  grid-template-columns: 96px 60px minmax(0, 1fr);
+  gap: 10px;
 }
 
-.logs-container::-webkit-scrollbar {
-  width: 8px;
+.time {
+  color: var(--muted);
 }
 
-.logs-container::-webkit-scrollbar-track {
-  background: #2a2a2a;
-  border-radius: 4px;
+.level-tag {
+  font-weight: 500;
 }
 
-.logs-container::-webkit-scrollbar-thumb {
-  background: #555;
-  border-radius: 4px;
+.level-tag.info {
+  color: var(--blue-soft);
 }
 
-.logs-container::-webkit-scrollbar-thumb:hover {
-  background: #666;
+.level-tag.warn {
+  color: var(--amber);
 }
 
-.empty-logs {
-  text-align: center;
-  padding: 3rem;
-  color: #888;
-  font-size: 1rem; /* Base text: 16px */
-  font-style: italic;
+.level-tag.error {
+  color: var(--red-text);
 }
 
-.log-line {
-  display: flex;
-  flex-wrap: wrap;
-  padding: 0.25rem 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-}
-
-.log-line:hover {
-  background: rgba(255, 255, 255, 0.03);
-}
-
-.log-timestamp {
-  color: #6a9955;
-  margin-right: 0.75rem;
-  font-weight: 600;
-  flex-shrink: 0;
-  user-select: none;
-}
-
-.log-level {
-  margin-right: 0.75rem;
-  font-weight: 700;
-  flex-shrink: 0;
-  user-select: none;
-}
-
-.level-log {
-  color: #4ec9b0;
-}
-
-.level-warning {
-  color: #dcdcaa;
-}
-
-.level-error,
-.level-exception,
-.level-assert {
-  color: #f48771;
-}
-
-.log-text {
-  color: #d4d4d4;
-  flex: 1;
+.message {
+  white-space: pre-wrap;
   word-break: break-word;
 }
 
-.log-stacktrace {
-  width: 100%;
-  margin-top: 0.5rem;
-  padding: 0.75rem;
-  background: rgba(0, 0, 0, 0.3);
-  border-left: 3px solid #f48771;
-  color: #ce9178;
-  font-size: 0.75rem; /* Extra small: 12px */
-  line-height: 1.4;
-  overflow-x: auto;
-  border-radius: 4px;
+.line.Error .message,
+.line.Exception .message {
+  color: #f3a3b0;
 }
 
-@media (max-width: 768px) {
-  .logs-controls {
-    flex-direction: column;
-    align-items: stretch;
-  }
-  
-  .controls-left,
-  .controls-right {
-    justify-content: space-between;
-  }
-  
-  .logs-container {
-    max-height: 500px;
-    padding: 1rem;
-  }
+.stack {
+  grid-column: 3;
+  margin: 2px 0 6px;
+  color: var(--muted);
+  font-size: 11.5px;
+  white-space: pre-wrap;
 }
 </style>

@@ -438,11 +438,6 @@ namespace QuestX.WebServer
                 "ui/assets",
                 assetsDir
             );
-            await FileManager.ExtractAndroidFileAsync(
-                "newsreader-latin-wght-normal.woff2",
-                "ui/assets",
-                assetsDir
-            );
             await FileManager.ExtractAndroidFileAsync("bird-logo.svg", "ui", targetPath);
 
             QueuedLogger.Log("UI extraction complete");

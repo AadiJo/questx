@@ -1,6 +1,6 @@
 ﻿<template>
   <canvas ref="canvas" class="apriltag-preview" role="img" :aria-label="status" />
-  <span class="overlay-status">{{ status }}</span>
+  <span v-if="!hasFrame" class="overlay-status">{{ status }}</span>
 </template>
 
 <script setup lang="ts">
@@ -8,15 +8,24 @@ import { ref, watch, onMounted, onUnmounted } from 'vue'
 import { videoApi } from '../api/video'
 import type { AprilTagFrameMetadata } from '../types'
 
-const emit = defineEmits<{ dimensions: [size: { width: number; height: number }] }>()
+// stats feeds the parent's HUD: preview rate over the last frames, the frame's age, and
+// how many tags it shows. It is null while no frame is on screen.
+const emit = defineEmits<{
+  dimensions: [size: { width: number; height: number }]
+  stats: [stats: { fps: number; ageMs: number; tags: number } | null]
+}>()
 const canvas = ref<HTMLCanvasElement | null>(null)
 const visible = ref(!document.hidden)
 const status = ref('Waiting for synchronized camera frames…')
+const hasFrame = ref(false)
+const frameTimes: number[] = []
 let image: ImageBitmap | null = null
 let metadata: AprilTagFrameMetadata | null = null
 let resizeObserver: ResizeObserver | null = null
 
 function clearFrame() {
+  if (hasFrame.value) emit('stats', null)
+  hasFrame.value = false
   image?.close()
   image = null
   metadata = null
@@ -52,7 +61,7 @@ function drawFrame() {
       else context.lineTo(x, y)
     })
     context.closePath()
-    context.strokeStyle = '#4ade80'
+    context.strokeStyle = '#8a96ff'
     context.lineWidth = 2.5
     context.stroke()
     const x = left + tag.corners.reduce((sum, p) => sum + p.x, 0) / 4 * scale
@@ -98,7 +107,7 @@ watch(visible, (isVisible, _previous, onCleanup) => {
         clearDisplayedFrame()
         after = frame.frameId
         status.value = !frame.streamEnabled ? 'Camera stream disabled.'
-          : 'Enable detection in AprilTag settings, or turn off the overlay for live video.'
+          : 'AprilTag detector is off.'
         retryMs = 500
       } else if (!result.jpeg) {
         // A changed revision without an image invalidates the previous camera mode.
@@ -130,7 +139,17 @@ watch(visible, (isVisible, _previous, onCleanup) => {
           image = bitmap
           metadata = frame
           drawFrame()
+          hasFrame.value = true
           emit('dimensions', { width: frame.width, height: frame.height })
+          const arrived = performance.now()
+          frameTimes.push(arrived)
+          while (frameTimes.length > 10 || (frameTimes.length > 1 && arrived - frameTimes[0] > 3000)) frameTimes.shift()
+          const span = (arrived - frameTimes[0]) / 1000
+          emit('stats', {
+            fps: span > 0 ? (frameTimes.length - 1) / span : 0,
+            ageMs: frame.ageMs,
+            tags: frame.tags.length,
+          })
           const count = frame.tags.length
           status.value = `Synchronized · ${count} ${count === 1 ? 'tag' : 'tags'} detected`
           expiryTimer = setTimeout(() => {
@@ -186,14 +205,13 @@ onUnmounted(() => {
 
 .overlay-status {
   position: absolute;
-  left: 0.75rem;
-  bottom: 0.75rem;
-  max-width: calc(100% - 1.5rem);
-  padding: 0.35rem 0.6rem;
-  border-radius: 4px;
-  background: rgba(0, 0, 0, 0.75);
-  color: white;
-  font-size: 0.8rem;
+  top: 50%;
+  left: 50%;
+  max-width: calc(100% - 2rem);
+  transform: translate(-50%, -50%);
+  color: var(--text-2);
+  font-size: 13px;
+  text-align: center;
   pointer-events: none;
 }
 </style>

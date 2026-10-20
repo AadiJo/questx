@@ -384,7 +384,7 @@ Useful for triggering app restarts, pulling logs, or kicking a stuck headset fro
 
 ### "Why is my robot's position wrong while VIO looks smooth?"
 
-VIO is published in an arbitrary local tracking frame. Check the robot's VIO-to-field alignment, active tracking epoch, and estimator rejection logs. Also check the robot-to-Quest mount in the web interface's **3D** tab. Published poses already describe the robot origin, so do not apply a `ROBOT_TO_QUEST` transform in robot code; it would be applied twice.
+VIO is published in an arbitrary local tracking frame. Check the robot's VIO-to-field alignment, active tracking epoch, and estimator rejection logs. Also check the robot-to-Quest mount on the web interface's **3D view** page. Published poses already describe the robot origin, so do not apply a `ROBOT_TO_QUEST` transform in robot code; it would be applied twice.
 
 ### "Why does my Quest display 'USB Device Not Supported'?"
 

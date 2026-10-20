@@ -11,6 +11,19 @@ const consecutiveFailures = ref(0)
 const reconnectDelay = ref(3000) // Start with 3 seconds
 const nextRetryTime = ref<number>(0)
 
+// Clock for the retry countdown. Date.now() is not reactive, so this ticks only while
+// a retry is pending and stops once the connection is back.
+const now = ref(Date.now())
+let clock: ReturnType<typeof setInterval> | undefined
+function runClock(running: boolean) {
+  if (running && clock === undefined) {
+    clock = setInterval(() => { now.value = Date.now() }, 500)
+  } else if (!running && clock !== undefined) {
+    clearInterval(clock)
+    clock = undefined
+  }
+}
+
 // Exponential backoff configuration
 const MIN_DELAY = 3000      // 3 seconds
 const MAX_DELAY = 30000     // 30 seconds
@@ -24,7 +37,7 @@ export function useConnectionState() {
   
   const secondsUntilRetry = computed(() => {
     if (nextRetryTime.value === 0) return 0
-    const seconds = Math.ceil((nextRetryTime.value - Date.now()) / 1000)
+    const seconds = Math.ceil((nextRetryTime.value - now.value) / 1000)
     return Math.max(0, seconds)
   })
 
@@ -40,6 +53,8 @@ export function useConnectionState() {
         console.log('[ConnectionState] Connection restored')
       }
       connectionStatus.value = 'connected'
+      nextRetryTime.value = 0
+      runClock(false)
       return true
     } catch (error) {
       // Only increment failure counter for automatic retries, not manual
@@ -60,6 +75,8 @@ export function useConnectionState() {
       )
       
       nextRetryTime.value = Date.now() + reconnectDelay.value
+      now.value = Date.now()
+      runClock(true)
       
       if (isManualRetry) {
         console.log(`[ConnectionState] Manual retry failed. Next automatic retry in ${reconnectDelay.value / 1000}s`)
