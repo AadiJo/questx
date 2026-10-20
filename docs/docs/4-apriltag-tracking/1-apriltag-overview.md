@@ -39,7 +39,7 @@ Every AprilTag message includes:
 - contributing tag IDs and tag count;
 - accepted and candidate corner counts plus inlier ratio;
 - average tag distance;
-- suggested per-axis standard deviations;
+- per-axis standard deviations and, on `/QuestX/v4/apriltag`, the full pose covariance and component-wise projected planar covariance;
 - sequence and capture timestamps.
 
 No point clouds or raw SLAM camera inputs are sent over NetworkTables. The computationally heavy SLAM pipeline remains on the Quest.

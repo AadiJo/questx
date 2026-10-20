@@ -10,6 +10,9 @@ package gg.questx.questx;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import edu.wpi.first.math.Matrix;
+import edu.wpi.first.math.Nat;
+import edu.wpi.first.math.geometry.Pose2d;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
@@ -89,7 +92,11 @@ class MeasurementWireFormatTest {
     var frame = MeasurementWireFormat.aprilTagV3(fixture("measurement-v3", "apriltag"), 7_000_000);
     assertNotNull(frame);
     var v2 = MeasurementWireFormat.aprilTag(fixture("apriltag"), 7_000_000);
-    assertEquals(v2.fieldPose3d(), frame.fieldPose3d());
+    // The synthetic v3+ fixture uses a nonsingular planar heading; the v2 fixture stays frozen.
+    assertEquals(v2.fieldPose3d().getTranslation(), frame.fieldPose3d().getTranslation());
+    assertEquals(0.12, frame.fieldPose3d().getRotation().getX(), 1e-12);
+    assertEquals(0.3, frame.fieldPose3d().getRotation().getY(), 1e-12);
+    assertEquals(0.6, frame.fieldPose3d().getRotation().getZ(), 1e-12);
     assertEquals(v2.sequenceId(), frame.sequenceId());
     assertEquals(v2.captureTimestampMicros(), frame.captureTimestampMicros());
     assertEquals(v2.tagIds(), frame.tagIds());
@@ -157,6 +164,185 @@ class MeasurementWireFormatTest {
     var badId = valid.clone();
     badId[27] = 2.5;
     assertNull(MeasurementWireFormat.aprilTagV3(badId, 1));
+  }
+
+  @Test
+  void decodesCSharpAprilTagV4Covariance() throws IOException {
+    var data = fixture("measurement-v4", "apriltag");
+    var frame = MeasurementWireFormat.aprilTagV4(data, 7_000_000);
+    assertNotNull(frame);
+    var v3 = MeasurementWireFormat.aprilTagV3(fixture("measurement-v3", "apriltag"), 7_000_000);
+    assertEquals(v3.fieldPose3d(), frame.fieldPose3d());
+    assertEquals(v3.sequenceId(), frame.sequenceId());
+    assertEquals(v3.tagIds(), frame.tagIds());
+    assertEquals(v3.ambiguity(), frame.ambiguity());
+    assertEquals(v3.reprojectionErrorPixels(), frame.reprojectionErrorPixels());
+    assertEquals(v3.processingLatencyMilliseconds(), frame.processingLatencyMilliseconds());
+    assertEquals(v3.tagAmbiguities(), frame.tagAmbiguities());
+    assertFalse(v3.hasCovariance(), "v3 arrays do not carry a covariance");
+    assertTrue(Double.isNaN(v3.covariance().get(2, 3)));
+
+    assertTrue(frame.hasCovariance());
+    var covariance = frame.covariance();
+    assertEquals(0.01, covariance.get(0, 0), 1e-15);
+    assertEquals(0.005, covariance.get(0, 1));
+    assertEquals(0.005, covariance.get(1, 0), "symmetric");
+    assertEquals(-0.003, covariance.get(1, 5));
+    assertEquals(0.0009, covariance.get(5, 5), 1e-15);
+    covariance.set(0, 0, 99);
+    assertEquals(0.01, frame.covariance().get(0, 0), 1e-15, "covariance() returns a copy");
+
+    assertTrue(frame.hasPlanarCovariance());
+    assertFalse(v3.hasPlanarCovariance());
+    assertTrue(Double.isNaN(v3.planarCovariance().get(1, 2)));
+    var planar = frame.planarCovariance();
+    for (int row = 0, index = 47; row < 3; row++) {
+      for (int column = row; column < 3; column++, index++) {
+        assertEquals(data[index], planar.get(row, column));
+        assertEquals(data[index], planar.get(column, row));
+      }
+    }
+    planar.set(0, 0, 99);
+    assertEquals(data[47], frame.planarCovariance().get(0, 0));
+    data[47] = 99;
+    assertEquals(0.01, frame.planarCovariance().get(0, 0));
+
+    // The reported marginals use measured heading, derived from the separately projected block.
+    var heading = AprilTagFrame.pose2dInnovationJacobian(frame.fieldPose3d().toPose2d());
+    var local = heading.times(frame.planarCovariance()).times(heading.transpose());
+    var standard = frame.pose2dStdDevs();
+    for (int i = 0; i < 3; i++) {
+      assertEquals(Math.sqrt(local.get(i, i)), standard.get(i, 0), 1e-12);
+    }
+  }
+
+  @Test
+  void decodesEncoderSampleFramesWithCovariance() throws IOException {
+    for (var name : List.of("apriltag-single-tag", "apriltag-two-tags")) {
+      var frame = MeasurementWireFormat.aprilTagV4(fixture("measurement-v4", name), 1);
+      assertNotNull(frame, name);
+      var v3 = MeasurementWireFormat.aprilTagV3(fixture("measurement-v3", name), 1);
+      assertEquals(v3.fieldPose3d(), frame.fieldPose3d(), name);
+      assertEquals(v3.standardDeviations(), frame.standardDeviations(), name);
+
+      // Up, roll, and pitch are the covariance's, rotated into the robot's frame.
+      var rotation = frame.fieldPose3d().getRotation().toMatrix();
+      var basis = new Matrix<>(Nat.N6(), Nat.N6());
+      basis.assignBlock(0, 0, rotation.transpose());
+      basis.assignBlock(3, 3, rotation.transpose());
+      var local = basis.times(frame.covariance()).times(basis.transpose());
+      var s = frame.standardDeviations();
+      assertEquals(s.zMeters(), Math.sqrt(local.get(2, 2)), 1e-9 * s.zMeters(), name);
+      assertEquals(s.rollRadians(), Math.sqrt(local.get(3, 3)), 1e-9 * s.rollRadians(), name);
+      assertEquals(s.pitchRadians(), Math.sqrt(local.get(4, 4)), 1e-9 * s.pitchRadians(), name);
+
+      assertTrue(frame.hasPlanarCovariance(), name);
+      var heading = AprilTagFrame.pose2dInnovationJacobian(frame.fieldPose3d().toPose2d());
+      var planar = heading.times(frame.planarCovariance()).times(heading.transpose());
+      double[] reported = {s.xMeters(), s.yMeters(), s.yawRadians()};
+      for (int i = 0; i < 3; i++) {
+        assertEquals(Math.sqrt(planar.get(i, i)), reported[i], 1e-9 * reported[i], name);
+      }
+    }
+    var single =
+        MeasurementWireFormat.aprilTagV4(fixture("measurement-v4", "apriltag-single-tag"), 1);
+    var pair = MeasurementWireFormat.aprilTagV4(fixture("measurement-v4", "apriltag-two-tags"), 1);
+    assertTrue(
+        pair.standardDeviations().xMeters() < single.standardDeviations().xMeters(),
+        "two nearer tags constrain the pose better than one farther, ambiguous tag");
+    assertTrue(single.pose2dStdDevs().get(2, 0) > pair.pose2dStdDevs().get(2, 0));
+  }
+
+  @Test
+  void framesWithEqualValuesAreEqualAndHashAlike() throws IOException {
+    var data = fixture("measurement-v4", "apriltag");
+    var a = MeasurementWireFormat.aprilTagV4(data, 1);
+    var b = MeasurementWireFormat.aprilTagV4(data.clone(), 1);
+    assertEquals(a, b);
+    assertEquals(a.hashCode(), b.hashCode());
+    assertTrue(new java.util.HashSet<>(List.of(a)).contains(b));
+    var changed = data.clone();
+    changed[27] = 0.004;
+    assertNotEquals(a, MeasurementWireFormat.aprilTagV4(changed, 1), "covariance takes part");
+    changed = data.clone();
+    changed[48] *= 0.9;
+    var changedPlanar = MeasurementWireFormat.aprilTagV4(changed, 1);
+    assertNotNull(changedPlanar);
+    assertNotEquals(a, changedPlanar, "planar covariance takes part");
+    assertNotEquals(a.hashCode(), changedPlanar.hashCode());
+
+    // Frames without a covariance compare equal too, though theirs holds NaN.
+    var v3 = fixture("measurement-v3", "apriltag");
+    var c = MeasurementWireFormat.aprilTagV3(v3, 1);
+    var d = MeasurementWireFormat.aprilTagV3(v3.clone(), 1);
+    assertEquals(c, d);
+    assertEquals(c.hashCode(), d.hashCode());
+  }
+
+  @Test
+  void rejectsMalformedAprilTagV4() throws IOException {
+    var valid = fixture("measurement-v4", "apriltag");
+    assertNull(MeasurementWireFormat.aprilTagV4(fixture("measurement-v3", "apriltag"), 1));
+    assertNull(MeasurementWireFormat.aprilTagV4(Arrays.copyOf(valid, 52), 1));
+    assertNull(MeasurementWireFormat.aprilTagV4(Arrays.copyOf(valid, valid.length - 1), 1));
+    for (int i = 0; i < valid.length; i++) {
+      var invalid = valid.clone();
+      invalid[i] = Double.NaN;
+      assertNull(MeasurementWireFormat.aprilTagV4(invalid, 1), "NaN at " + i);
+    }
+    // Variances (the diagonal) must be positive.
+    for (int index : new int[] {26, 32, 37, 41, 44, 46, 47, 50, 52}) {
+      var invalid = valid.clone();
+      invalid[index] = 0;
+      assertNull(MeasurementWireFormat.aprilTagV4(invalid, 1), "variance at " + index);
+    }
+    // A correlation beyond 1: |cov(x, y)| > sqrt(var x * var y) = 0.02.
+    var invalid = valid.clone();
+    invalid[27] = -0.021;
+    assertNull(MeasurementWireFormat.aprilTagV4(invalid, 1));
+    // Every pairwise correlation is -0.9, yet the x, y, z block has a negative eigenvalue.
+    invalid = valid.clone();
+    invalid[27] = -0.018;
+    invalid[28] = -0.027;
+    invalid[33] = -0.054;
+    assertNull(MeasurementWireFormat.aprilTagV4(invalid, 1), "not positive definite");
+    var badId = valid.clone();
+    badId[54] = 2.5;
+    assertNull(MeasurementWireFormat.aprilTagV4(badId, 1));
+  }
+
+  @Test
+  void planarSentinelIsExactlyTheAllZeroBlock() throws IOException {
+    var data = fixture("measurement-v4", "apriltag");
+    Arrays.fill(data, 47, 53, 0);
+    var frame = MeasurementWireFormat.aprilTagV4(data, 1);
+    assertNotNull(frame);
+    assertTrue(frame.hasCovariance());
+    assertFalse(frame.hasPlanarCovariance());
+    for (double entry : frame.planarCovariance().getData()) assertTrue(Double.isNaN(entry));
+    assertThrows(IllegalStateException.class, () -> frame.pose2dStdDevs(new Pose2d()));
+    for (int index = 47; index < 53; index++) {
+      var incomplete = data.clone();
+      incomplete[index] = 0.01;
+      assertNull(MeasurementWireFormat.aprilTagV4(incomplete, 1), "partial block at " + index);
+    }
+  }
+
+  @Test
+  void rejectsIndefinitePlanarCovarianceAndOldV4Layout() throws IOException {
+    var data = fixture("measurement-v4", "apriltag");
+    // All pairwise correlations are valid, but the three-way block is indefinite.
+    double[] indefinite = {1, -0.9, -0.9, 1, -0.9, 1};
+    System.arraycopy(indefinite, 0, data, 47, 6);
+    assertNull(MeasurementWireFormat.aprilTagV4(data, 1));
+    data = fixture("measurement-v4", "apriltag");
+    data[48] = 2 * Math.sqrt(data[47] * data[50]);
+    assertNull(MeasurementWireFormat.aprilTagV4(data, 1));
+    data = fixture("measurement-v4", "apriltag");
+    var oldLayout = new double[data.length - 6];
+    System.arraycopy(data, 0, oldLayout, 0, 47);
+    System.arraycopy(data, 53, oldLayout, 47, data.length - 53);
+    assertNull(MeasurementWireFormat.aprilTagV4(oldLayout, 1));
   }
 
   @Test

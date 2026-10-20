@@ -98,21 +98,27 @@ for (AprilTagFrame frame : questX.getAllUnreadAprilTagFrames()) {
           && frame.inlierRatio() >= 0.50
           && frame.averageTagDistanceMeters() <= 6.0;
 
-  if (!qualityOk) {
+  double age = Timer.getFPGATimestamp() - frame.measurementTimestamp();
+  if (!qualityOk || age < 0 || age > 0.5 || !frame.hasPlanarCovariance()) {
     continue;
   }
 
+  var predicted = drivePoseEstimator.sampleAt(frame.measurementTimestamp());
+  if (predicted.isEmpty()) {
+    continue;
+  }
+  // Apply your field-bounds and innovation gates against predicted.get() here.
   // fieldPose3d() is already the robot pose; the headset applies the mount.
   drivePoseEstimator.addVisionMeasurement(
       frame.fieldPose3d().toPose2d(),
       frame.measurementTimestamp(),
-      frame.pose2dStdDevs());
+      frame.pose2dStdDevs(predicted.get()));
 }
 ```
 
 `measurementTimestamp()` is the queued NetworkTables server timestamp translated into the robot clock. Use it for latency compensation. The transmitted capture and app timestamps are diagnostic values.
 
-The bundled standard deviations are a starting model, not a mandatory acceptance decision. Tune them from logs and consider tag count, inlier ratio, distance, robot motion, and innovation from the current estimate.
+This example targets WPILib 2026.2.1 and requires v4 planar covariance. The helper uses the prediction at capture time and conservatively accounts for correlations WPILib cannot accept. The standard deviations come from each pose's covariance, computed on the Quest from the tags' geometry and widened when a planar target's mirror solution also fits; see [Robot-Side Fusion](../apriltag-tracking/kalman-filter). They are not an acceptance decision: keep rejecting on field bounds, ambiguity, and innovation from the current estimate.
 
 ### Field-Bounds Filtering
 

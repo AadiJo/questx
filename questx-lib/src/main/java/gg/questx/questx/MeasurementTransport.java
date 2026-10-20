@@ -11,8 +11,14 @@ package gg.questx.questx;
 /** Selects one measurement transport for the lifetime of a QuestX instance. */
 public enum MeasurementTransport {
   /**
-   * Atomic numeric arrays with AprilTag pose ambiguity: {@code /QuestX/v2/vio} and {@code
-   * /QuestX/v3/apriltag}. Requires a Quest app that publishes v3 AprilTag measurements.
+   * Atomic numeric arrays with AprilTag pose ambiguity, full covariance, and component-wise planar
+   * covariance: {@code /QuestX/v2/vio} and {@code /QuestX/v4/apriltag}. Requires a Quest app that
+   * publishes v4 AprilTag measurements.
+   */
+  V4,
+  /**
+   * Atomic numeric arrays with AprilTag pose ambiguity but no covariance: {@code /QuestX/v2/vio}
+   * and {@code /QuestX/v3/apriltag}. Requires a Quest app that publishes v3 AprilTag measurements.
    */
   V3,
   /**

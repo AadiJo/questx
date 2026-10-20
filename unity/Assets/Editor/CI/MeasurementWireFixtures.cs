@@ -69,12 +69,15 @@ namespace QuestX.Editor.CI
             );
             Directory.CreateDirectory(outputV3);
             var tagsV3 = new double[MeasurementWireFormat.AprilTagV3HeaderLength + 2 * 3];
-            WriteAprilTagV3Fixture(tagsV3, pose);
+            WriteAprilTagV3Fixture(
+                tagsV3,
+                new Pose3d(1.25, -2.5, 0.75, new Rotation3d(0.12, 0.3, 0.6))
+            );
             Write(outputV3, "apriltag", tagsV3);
             Debug.Log("Measurement v3 C# fixtures exported to " + outputV3);
         }
 
-        /// <summary>The v2 AprilTag fixture's values plus ambiguity, fit error, and latency.</summary>
+        /// <summary>Synthetic AprilTag quality fixture with a defined planar heading.</summary>
         public static void WriteAprilTagV3Fixture(double[] target, Pose3d pose)
         {
             MeasurementWireFormat.WriteAprilTagV3(

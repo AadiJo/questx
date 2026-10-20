@@ -218,21 +218,24 @@ WireChecks.Run(Check);
 VioQualityChecks.Run(Check);
 OrientationChecks.Run(Check);
 SceneChecks.Run(Check);
+CovarianceChecks.Run(Check);
 
-// 8. Sample v3 frames for robot-side decoder tests: real 2026 REBUILT tags on the blue hub face
-// (25 and 26 share the x = 4.022 m plane and face the blue wall), seen from headset height.
-// Ambiguity and fit error come from the production solver; the encoder is the production one.
-double[] SampleFrame(double[] eyePosition, int[] ids, double[][] centers, int seed, ulong sequence,
+// 8. Sample v3 and v4 frames for robot-side decoder tests: real 2026 REBUILT tags on the blue hub
+// face (25 and 26 share the x = 4.022 m plane and face the blue wall), seen from headset height.
+// The pose is the camera's; ambiguity, fit error, and covariance come from the production solver,
+// with the default 1 px corner noise, and the encoder is the production one.
+(double[] V3, double[] V4) SampleFrame(double[] eyePosition, int[] ids, double[][] centers, int seed, ulong sequence,
     long captureMicros, double appTimestamp, double latencyMs)
 {
     var corners = centers.SelectMany(c => TagCorners(c[0], c[1], c[2], Math.PI)).ToArray();
     var aim = new[] { centers.Average(c => c[0]), centers.Average(c => c[1]), centers.Average(c => c[2]) };
     var (r, t) = LookAt(eyePosition, aim);
-    var quality = Evaluate(corners, Project(corners, r, t, 0.3, seed).Points2d, ids.Length, r, t);
-    var headset = new QuestX.QuestX.Geometry.Pose3d(eyePosition[0], eyePosition[1], eyePosition[2],
-        new QuestX.QuestX.Geometry.Rotation3d(0, 0, Math.Atan2(aim[1] - eyePosition[1], aim[0] - eyePosition[0])));
+    var points = Project(corners, r, t, 0.3, seed).Points2d;
+    var quality = Evaluate(corners, points, ids.Length, r, t);
+    var camera = AprilTagCovariance.Estimate(points, Flatten(corners), ids.Length, intrinsics, MatrixToQuaternion(r), t,
+        AprilTagCovariance.DefaultCornerNoisePixels, 12);
     double distance = centers.Average(c => Norm(Sub(c, eyePosition)));
-    return WireChecks.EncodeSample(sequence, captureMicros, appTimestamp, headset, ids, distance, quality, latencyMs);
+    return WireChecks.EncodeSample(sequence, captureMicros, appTimestamp, camera, ids, distance, quality, latencyMs);
 }
 var tag25 = new[] { 4.022, 4.39, 1.124 };
 var tag26 = new[] { 4.022, 4.035, 1.124 };
@@ -240,9 +243,13 @@ var singleTag = SampleFrame(new[] { 1.0, 2.8, 0.55 }, new[] { 26 }, new[] { tag2
 var twoTags = SampleFrame(new[] { 2.0, 4.6, 0.55 }, new[] { 25, 26 }, new[] { tag25, tag26 }, 2468, 1042, 81_267_890, 812.283, 39.5);
 WireChecks.CheckSample(Check, singleTag, "single-tag sample");
 WireChecks.CheckSample(Check, twoTags, "two-tag sample");
-Check(singleTag[23] > 0.25 && singleTag[23] < 0.35, "Single-tag sample has ambiguity near 0.3");
-Console.WriteLine("Single-tag v3 sample: " + WireChecks.Format(singleTag));
-Console.WriteLine("Two-tag v3 sample: " + WireChecks.Format(twoTags));
+Check(singleTag.V3[23] > 0.25 && singleTag.V3[23] < 0.35, "Single-tag sample has ambiguity near 0.3");
+Check(twoTags.V4[17] < singleTag.V4[17] && twoTags.V4[18] < singleTag.V4[18],
+    "Two nearer tags are more certain than one farther tag");
+Console.WriteLine("Single-tag v4 sample: " + WireChecks.Format(singleTag.V4));
+Console.WriteLine("Two-tag v4 sample: " + WireChecks.Format(twoTags.V4));
+Console.WriteLine($"Sample std devs (forward, left, yaw): single tag {singleTag.V4[17]:F3} m, {singleTag.V4[18]:F3} m, "
+    + $"{singleTag.V4[22] * 180 / Math.PI:F1} deg; two tags {twoTags.V4[17]:F3} m, {twoTags.V4[18]:F3} m, {twoTags.V4[22] * 180 / Math.PI:F1} deg");
 
 if (args.Contains("--export-fixtures"))
 {

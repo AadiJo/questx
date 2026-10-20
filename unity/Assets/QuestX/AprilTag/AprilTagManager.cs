@@ -28,12 +28,6 @@ namespace QuestX.QuestX.AprilTag
         private const string CameraArbiterRequesterId = "AprilTagManager";
 
         /// <summary>
-        /// Baseline for the suggested translation uncertainty reported with each
-        /// measurement. Robot code may replace this model using the raw quality metrics.
-        /// </summary>
-        private const double MeasurementLinearStdDevBase = 0.05;
-
-        /// <summary>
         /// Main thread synchronization context for marshalling Unity API calls.
         /// </summary>
         private readonly SynchronizationContext mainThreadContext;
@@ -867,6 +861,27 @@ namespace QuestX.QuestX.AprilTag
                             yield return null;
                             continue;
                         }
+                        // Keep the native point counts above for the original robust-fit gate.
+                        // Every later tag-based check and published observation uses exactly the
+                        // complete tags that contributed quality and covariance at that pose.
+                        var accepted = new List<TagDetection>(
+                            poseLibResult.AcceptedTagIndices.Count
+                        );
+                        foreach (int index in poseLibResult.AcceptedTagIndices)
+                        {
+                            accepted.Add(kept[index]);
+                        }
+                        kept = accepted;
+                        if (kept.Count < Math.Max(1, minimumNumberOfTags))
+                        {
+                            RecordOutcome(
+                                "Measurement rejected locally",
+                                $"Only {kept.Count} complete tag(s) pass the solved pose's reprojection threshold; "
+                                    + $"require {Math.Max(1, minimumNumberOfTags)}"
+                            );
+                            yield return null;
+                            continue;
+                        }
                         bool facesCamera = true;
                         foreach (var detection in kept)
                         {
@@ -900,8 +915,21 @@ namespace QuestX.QuestX.AprilTag
                             yield return null;
                             continue;
                         }
+                        if (poseLibResult.Covariance == null)
+                        {
+                            RecordOutcome(
+                                "Measurement rejected locally",
+                                "Pose covariance is undefined for these tag corners"
+                            );
+                            yield return null;
+                            continue;
+                        }
                         var headsetPose = AprilTagPoseValidation.CameraToHeadset(
                             cameraPose,
+                            cameraAccess.Intrinsics.LensOffset
+                        );
+                        var headsetCovariance = AprilTagPoseValidation.CameraToHeadset(
+                            poseLibResult.Covariance,
                             cameraAccess.Intrinsics.LensOffset
                         );
 
@@ -911,16 +939,9 @@ namespace QuestX.QuestX.AprilTag
                                 ? poseLibResult.AcceptedPoints / poseLibResult.TotalPoints
                                 : 0.0;
 
-                        // FIX: previously avgTagDistance was ||camera_position||, i.e. the
-                        // camera's distance from the FIELD ORIGIN (blue alliance corner).
-                        // That value silently inflates the dynamic std dev whenever the camera
-                        // is far from the origin and made the user-facing maxDistance gate
-                        // behave incorrectly (a robot in the red corner with a tag 1 m away
-                        // would compute distance ~16 m). The pipeline appeared to work today
-                        // because (a) maxDistance was unenforced and (b) the dynamic std dev
-                        // only affects correction trust, not pass/fail. Switching to the true
-                        // mean camera-to-tag distance changes the std dev curve - if pose
-                        // behavior regresses after this change, suspect this block first.
+                        // avgTagDistance is the mean camera-to-tag distance, not the camera's
+                        // distance from the field origin, so the maxDistance gate means what
+                        // the web UI says.
                         var observations = BuildObservations(
                             kept,
                             quality.TagAmbiguities,
@@ -950,45 +971,27 @@ namespace QuestX.QuestX.AprilTag
                             continue;
                         }
 
-                        // Dynamic std devs: uncertainty scales with distance^2 and decreases with tag count.
-                        // Suggested uncertainty is derived only from observable geometry.
-                        // Robot code remains the sole owner of estimator trust/tuning.
-                        double stdDevFactor =
-                            (avgTagDistance * avgTagDistance) / Math.Max(1, tagCount);
-                        double linearStdDev = MeasurementLinearStdDevBase * stdDevFactor;
-                        // This is a suggested uncertainty model, not a covariance reported
-                        // by the Meta or AprilTag SDK. Raw quality metrics are published beside
-                        // it so robot code can replace the model without changing the Quest app.
-                        double angularStdDev =
-                            MeasurementLinearStdDevBase
-                            * avgTagDistance
-                            / Math.Sqrt(Math.Max(1, tagCount));
-                        // A single planar tag has a weaker/ambiguous heading solution. Do not
-                        // advertise unrealistically precise yaw to the robot's estimator.
-                        angularStdDev = Math.Max(tagCount == 1 ? 0.25 : 0.03, angularStdDev);
-                        linearStdDev = Math.Max(tagCount == 1 ? 0.08 : 0.02, linearStdDev);
-
                         var tagIds = new int[kept.Count];
                         for (int i = 0; i < kept.Count; i++)
                         {
                             tagIds[i] = kept[i].Id;
                         }
 
+                        // Uncertainty comes from Napa's covariance model: the corners' geometry
+                        // (distance, viewing angle, tag count and spread), widened where the
+                        // planar mirror solution also fits. See AprilTagCovariance.
                         var measurement = new AprilTagMeasurement(
                             captureTimestampMicros,
                             captureAppTimestamp,
                             headsetPose,
+                            headsetCovariance,
                             tagIds,
+                            // Native fit diagnostics retain all candidate corners. Tag IDs,
+                            // quality, distances and observations describe contributing tags.
                             (int)poseLibResult.AcceptedPoints,
                             poseLibResult.TotalPoints,
                             inlierRatio,
                             avgTagDistance,
-                            linearStdDev,
-                            linearStdDev,
-                            linearStdDev * 2.0,
-                            angularStdDev * 2.0,
-                            angularStdDev * 2.0,
-                            angularStdDev,
                             quality.Ambiguity,
                             quality.ReprojectionErrorPixels,
                             observations
@@ -1006,7 +1009,10 @@ namespace QuestX.QuestX.AprilTag
                                 lastCornerCount = measurement.CornerCount;
                                 lastInlierRatio = inlierRatio;
                                 lastAverageTagDistanceMeters = avgTagDistance;
-                                lastLinearStdDevMeters = linearStdDev;
+                                lastLinearStdDevMeters = Math.Max(
+                                    measurement.XStdDevMeters,
+                                    measurement.YStdDevMeters
+                                );
                                 lastAmbiguity = quality.Ambiguity;
                                 lastReprojectionErrorPixels = quality.ReprojectionErrorPixels;
                                 lastOutcome = "Measurement published";
@@ -1016,7 +1022,9 @@ namespace QuestX.QuestX.AprilTag
                             QueuedLogger.Log(
                                 $"AprilTag measurement published: Pos({frcPos.x:F3}, {frcPos.y:F3}, {frcPos.z:F3}) "
                                     + $"tags={tagCount} inliers={poseLibResult.AcceptedPoints}/{poseLibResult.TotalPoints} "
-                                    + $"ratio={inlierRatio:F2} dist={avgTagDistance:F2}m stdDev={linearStdDev:F4} "
+                                    + $"ratio={inlierRatio:F2} dist={avgTagDistance:F2}m "
+                                    + $"stdDev=({measurement.XStdDevMeters:F4}, {measurement.YStdDevMeters:F4})m "
+                                    + $"yaw={measurement.YawStdDevRadians:F4}rad "
                                     + $"ambiguity={quality.Ambiguity:F3} reprojection={quality.ReprojectionErrorPixels:F2}px"
                             );
                         }

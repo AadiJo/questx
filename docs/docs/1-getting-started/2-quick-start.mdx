@@ -100,6 +100,7 @@ Create a subsystem that calls `commandPeriodic()` and feeds pose data to your dr
 ```java
 import gg.questx.questx.QuestX;
 import gg.questx.questx.AprilTagFrame;
+import edu.wpi.first.wpilibj.Timer;
 
 public class QuestXSubsystem extends SubsystemBase {
     private final QuestX questX = new QuestX();
@@ -109,11 +110,21 @@ public class QuestXSubsystem extends SubsystemBase {
         questX.commandPeriodic();
 
         for (AprilTagFrame frame : questX.getAllUnreadAprilTagFrames()) {
+            double age = Timer.getFPGATimestamp() - frame.measurementTimestamp();
+            if (age < 0 || age > 0.5 || !frame.hasPlanarCovariance()) {
+                continue;
+            }
+            // Expose your drivetrain estimator's sampleAt() through the subsystem.
+            var predicted = driveSubsystem.sampleAt(frame.measurementTimestamp());
+            if (predicted.isEmpty()) {
+                continue;
+            }
+            // Apply your field-bounds, ambiguity, and innovation gates here.
             // fieldPose3d() is already the robot pose; the headset applies the mount.
             driveSubsystem.addVisionMeasurement(
                 frame.fieldPose3d().toPose2d(),
                 frame.measurementTimestamp(),
-                frame.pose2dStdDevs());
+                frame.pose2dStdDevs(predicted.get()));
         }
     }
 }

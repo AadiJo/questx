@@ -96,7 +96,7 @@ namespace QuestX.Network
         ulong VioPublishCount { get; }
 
         /// <summary>
-        /// Gets the number of AprilTag measurements successfully handed to NTCore.
+        /// Gets the number of v4 AprilTag measurements successfully handed to NTCore locally; not a receipt acknowledgement.
         /// </summary>
         ulong AprilTagPublishCount { get; }
 
@@ -197,6 +197,7 @@ namespace QuestX.Network
         private readonly DoubleArrayPublisher vioV2Publisher;
         private readonly DoubleArrayPublisher aprilTagV2Publisher;
         private readonly DoubleArrayPublisher aprilTagV3Publisher;
+        private readonly DoubleArrayPublisher aprilTagV4Publisher;
         private readonly MeasurementTelemetry vioTelemetry;
         private readonly MeasurementTelemetry aprilTagTelemetry;
         private readonly LimelightTelemetry limelightTelemetry;
@@ -206,6 +207,7 @@ namespace QuestX.Network
         private ulong nextVioQualitySequenceId;
         private double[] aprilTagV2 = new double[MeasurementWireFormat.AprilTagHeaderLength];
         private double[] aprilTagV3 = new double[MeasurementWireFormat.AprilTagV3HeaderLength];
+        private double[] aprilTagV4 = new double[MeasurementWireFormat.AprilTagV4HeaderLength];
         private long nextTelemetryMicros;
 
         /// <summary>
@@ -300,6 +302,10 @@ namespace QuestX.Network
             );
             aprilTagV3Publisher = ntInstance.GetDoubleArrayPublisher(
                 QuestXConstants.Topics.APRIL_TAG_DATA_V3,
+                QuestXConstants.Network.NtPublisherSettings
+            );
+            aprilTagV4Publisher = ntInstance.GetDoubleArrayPublisher(
+                QuestXConstants.Topics.APRIL_TAG_DATA_V4,
                 QuestXConstants.Network.NtPublisherSettings
             );
             vioQualityPublisher = ntInstance.GetDoubleArrayPublisher(
@@ -440,6 +446,9 @@ namespace QuestX.Network
 
         /// <inheritdoc />
         public ulong AprilTagPublishCount { get; private set; }
+
+        /// <summary>Local v4 writes rejected by NetworkTables; successful writes do not confirm receipt.</summary>
+        public ulong AprilTagV4PublishFailureCount { get; private set; }
 
         /// <inheritdoc />
         public bool? IsRedAlliance
@@ -690,10 +699,7 @@ namespace QuestX.Network
                 pitchStdDevRadians,
                 yawStdDevRadians
             );
-            if (aprilTagV2Publisher.Set(aprilTagV2, captureTimestampMicros))
-            {
-                AprilTagPublishCount++;
-            }
+            aprilTagV2Publisher.Set(aprilTagV2, captureTimestampMicros);
 
             int tagCount = tagIds?.Length ?? 0;
             var tagAmbiguities = new double[tagCount];
@@ -733,6 +739,42 @@ namespace QuestX.Network
                 tagAmbiguities
             );
             aprilTagV3Publisher.Set(aprilTagV3, captureTimestampMicros);
+            int v4Length = MeasurementWireFormat.AprilTagV4HeaderLength + 2 * tagCount;
+            if (aprilTagV4.Length != v4Length)
+                aprilTagV4 = new double[v4Length];
+            MeasurementWireFormat.WriteAprilTagV4(
+                aprilTagV4,
+                aprilTagData.SequenceId,
+                captureTimestampMicros,
+                appTimestamp,
+                pose,
+                measurement.Covariance,
+                tagIds,
+                inlierCount,
+                cornerCount,
+                inlierRatio,
+                averageTagDistanceMeters,
+                measurement.Ambiguity,
+                measurement.ReprojectionErrorPixels,
+                processingLatencyMilliseconds,
+                tagAmbiguities
+            );
+            if (aprilTagV4Publisher.Set(aprilTagV4, captureTimestampMicros))
+            {
+                AprilTagPublishCount++;
+            }
+            else
+            {
+                AprilTagV4PublishFailureCount++;
+                // Report the first failure and powers of two without flooding the capture loop.
+                ulong failures = AprilTagV4PublishFailureCount;
+                if ((failures & (failures - 1)) == 0)
+                {
+                    QueuedLogger.LogWarning(
+                        $"AprilTag v4 local publish failed ({failures} failures)"
+                    );
+                }
+            }
             aprilTagTelemetry.Update(aprilTagV3, pose);
             limelightTelemetry.Update(measurement, captureTimestampMicros, now);
             ntInstance.Flush();
