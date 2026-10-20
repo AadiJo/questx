@@ -114,6 +114,12 @@ namespace QuestX.Network
         void PublishDeviceData(int trackingLostCounter, int batteryPercent);
 
         /// <summary>
+        /// Publishes the web dashboard URL to NetworkTables when it changes.
+        /// </summary>
+        /// <param name="webUrl">Dashboard URL, or null/empty when the headset has no address</param>
+        void PublishWebUrl(string webUrl);
+
+        /// <summary>
         /// Returns a camera source with the given sub-topic
         /// </summary>
         /// <param name="name">The name of the camera source</param>
@@ -233,6 +239,16 @@ namespace QuestX.Network
         private StringArrayPublisher streamsPublisher;
 
         /// <summary>
+        /// Publisher for the web dashboard URL
+        /// </summary>
+        private readonly StringPublisher webUrlPublisher;
+
+        /// <summary>
+        /// Last published web dashboard URL, used to skip redundant publishes
+        /// </summary>
+        private string lastWebUrl;
+
+        /// <summary>
         /// Flag indicating if a team number has been set
         /// </summary>
         private bool teamNumberSet = false;
@@ -257,6 +273,7 @@ namespace QuestX.Network
         /// - /QuestX/aprilTagData: Field-relative AprilTag measurements
         /// - /QuestX/deviceData: Device status updates (3Hz)
         /// - /QuestX/response: Command execution results
+        /// - /QuestX/webUrl: Web dashboard URL
         ///
         /// Subscribers (Robot → Quest):
         /// - /QuestX/request: Commands from robot (pose resets, etc.)
@@ -353,6 +370,13 @@ namespace QuestX.Network
                 QuestXConstants.Topics.VIDEO_STREAMS,
                 QuestXConstants.Network.NtPublisherSettings
             );
+
+            // Web dashboard URL - lets users find the headset's address without wearing it
+            webUrlPublisher = ntInstance.GetStringPublisher(
+                QuestXConstants.Topics.WEB_URL,
+                QuestXConstants.Network.NtPublisherSettings
+            );
+            PublishWebUrl("");
 
             // Publish the QuestX application version
             ntInstance
@@ -742,6 +766,22 @@ namespace QuestX.Network
             // Publish data
             deviceDataPublisher.Set(deviceData);
             batteryPercentPublisher.Set(batteryPercent);
+        }
+
+        /// <summary>
+        /// Publishes the web dashboard URL to NetworkTables when it changes.
+        /// </summary>
+        /// <param name="webUrl">Dashboard URL, or null/empty when the headset has no address</param>
+        public void PublishWebUrl(string webUrl)
+        {
+            webUrl ??= "";
+            if (webUrl == lastWebUrl)
+                return;
+
+            if (webUrlPublisher.Set(webUrl))
+            {
+                lastWebUrl = webUrl;
+            }
         }
 
         /// <summary>

@@ -31,9 +31,14 @@ namespace QuestX.WebServer
         bool IsServerRunning { get; }
 
         /// <summary>
-        /// Gets the base URL of the server
+        /// Gets the base URL of the server, or null when the headset has no address
         /// </summary>
         string BaseUrl { get; }
+
+        /// <summary>
+        /// Gets the headset's local IPv4 address, or null when it has none
+        /// </summary>
+        string IpAddress { get; }
 
         /// <summary>
         /// Initializes the web server asynchronously.
@@ -150,10 +155,15 @@ namespace QuestX.WebServer
         public bool IsServerRunning => server?.IsRunning ?? false;
 
         /// <summary>
-        /// Gets the base public URL of the server
+        /// Gets the base public URL of the server, or null when the headset has no address
         /// Does not include a trailing slash
         /// </summary>
         public string BaseUrl { get; private set; }
+
+        /// <summary>
+        /// Gets the headset's local IPv4 address, or null when it has none
+        /// </summary>
+        public string IpAddress { get; private set; }
         #endregion
 
         #region Event Subscribers
@@ -272,7 +282,11 @@ namespace QuestX.WebServer
                 );
             }
 
-            BaseUrl = $"http://{ipAddress}:{QuestXConstants.WebServer.SERVER_PORT}";
+            bool hasAddress = ipAddress != "0.0.0.0";
+            IpAddress = hasAddress ? ipAddress : null;
+            BaseUrl = hasAddress
+                ? $"http://{ipAddress}:{QuestXConstants.WebServer.SERVER_PORT}"
+                : null;
         }
         #endregion
 

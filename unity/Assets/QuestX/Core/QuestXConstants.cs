@@ -119,6 +119,11 @@ namespace QuestX.Core
             /// QuestX version topic
             /// </summary>
             public const string VERSION = NT_BASE_PATH + "/version";
+
+            /// <summary>
+            /// Web dashboard URL topic, e.g. http://10.TE.AM.x:5801
+            /// </summary>
+            public const string WEB_URL = NT_BASE_PATH + "/webUrl";
         }
 
         /// <summary>

@@ -20,6 +20,7 @@ Every published pose is the **robot's** pose. The headset measures its own cente
 | `/QuestX/deviceData` | `proto:questx.protos.data.ProtobufQuestXDeviceData` | Nominally 3 Hz | Battery percentage and number of transitions from tracking to not-tracking during the current app process. |
 | `/QuestX/response` | `proto:questx.protos.commands.ProtobufQuestXCommandResponse` | Once per handled `/QuestX/request` command | Command ID, success/failure status, and an error message on failure. |
 | `/QuestX/version` | `string` | Set during NT initialization | Unity's `Application.version`; for this build, `afc6ee4-dev`. |
+| `/QuestX/webUrl` | `string` | Checked at 3 Hz; published only when it changes | Web dashboard URL, e.g. `http://10.TE.AM.x:5801`. Empty string while the headset has no IPv4 address. |
 
 ### `/QuestX/vioData` fields
 
@@ -100,7 +101,7 @@ These values exist for the single camera source named `Passthrough`.
 | NT topic | NT type | Value |
 | --- | --- | --- |
 | `/CameraPublisher/Passthrough/source` | `string` | Currently always `unknown:`; no later source assignment exists in this code. |
-| `/CameraPublisher/Passthrough/streams` | `string[]` | Empty until the web server has an address, then normally `["mjpg:http://<quest-ip>:5801/video"]`. |
+| `/CameraPublisher/Passthrough/streams` | `string[]` | Empty while the headset has no IPv4 address, otherwise `["mjpg:http://<quest-ip>:5801/video"]`. |
 | `/CameraPublisher/Passthrough/description` | `string` | `Quest Headset Camera` once passthrough streaming initializes. |
 | `/CameraPublisher/Passthrough/connected` | `boolean` | `true` while the passthrough frame source is initialized; `false` when it is disabled after having been initialized. |
 | `/CameraPublisher/Passthrough/mode` | `string` | Selected stream mode in the form `<width>x<height> MJPEG <fps> fps`, for example `640x360 MJPEG 24 fps`. |
@@ -140,6 +141,7 @@ The NT instance also registers protobuf schema metadata for decoding `data.proto
 | `getBatteryPercent()` | Latest `/QuestX/deviceData` battery value as `OptionalInt`. Because the subscriber has a non-null default protobuf, the present implementation normally returns `OptionalInt.of(0)` before the first packet rather than an empty optional. |
 | `getTrackingLostCounter()` | Latest device tracking-loss count as `OptionalInt`; for the same default-message reason, it normally returns `OptionalInt.of(0)` before the first packet. |
 | `getQuestXVersion()` | Latest `/QuestX/version` string, or subscriber default `unknown`. |
+| `getWebUrl()` | Latest `/QuestX/webUrl` as `Optional<String>`, or empty before a value arrives or while the headset has no address. |
 | `getAllUnreadPoseFrames()` / `getFrameCount()` | Legacy accessors. With this app no longer writing `/QuestX/frameData`, the unread array remains empty; `getFrameCount()` normally observes the subscriber's default protobuf value (`0`). |
 
 `AprilTagFrame.pose2dStdDevs()` returns a WPILib three-element vector containing `[xMeters, yMeters, yawRadians]` for use with a 2D pose estimator.

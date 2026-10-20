@@ -784,11 +784,12 @@ namespace QuestX.Core
         }
 
         /// <summary>
-        /// Updates the list of streams
+        /// Updates the list of streams and the published dashboard URL
         /// </summary>
         private void UpdateCameraServers()
         {
             passthroughFrameSource.BaseUrl = webServerManager.BaseUrl;
+            networkTableConnection.PublishWebUrl(webServerManager.BaseUrl);
         }
         #endregion
     }

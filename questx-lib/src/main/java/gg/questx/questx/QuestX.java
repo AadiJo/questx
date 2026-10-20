@@ -210,6 +210,10 @@ public class QuestX {
   private final StringSubscriber versionSubscriber =
       questXTable.getStringTopic("version").subscribe("unknown");
 
+  /** Subscriber for the QuestX web dashboard URL */
+  private final StringSubscriber webUrlSubscriber =
+      questXTable.getStringTopic("webUrl").subscribe("");
+
   /** Publisher for command requests */
   private final ProtobufPublisher<Commands.ProtobufQuestXCommand> requestPublisher =
       questXTable.getProtobufTopic("request", commandProto).publish();
@@ -965,5 +969,16 @@ public class QuestX {
    */
   public String getQuestXVersion() {
     return versionSubscriber.get();
+  }
+
+  /**
+   * Retrieves the URL of the QuestX web dashboard on the headset, e.g. {@code
+   * http://10.TE.AM.x:5801}.
+   *
+   * @return The dashboard URL, or empty if the headset has no network address or has not connected
+   */
+  public Optional<String> getWebUrl() {
+    String webUrl = webUrlSubscriber.get();
+    return webUrl.isEmpty() ? Optional.empty() : Optional.of(webUrl);
   }
 }
