@@ -16,6 +16,7 @@ Every published pose is the **robot's** pose. The headset measures its own cente
 | --- | --- | --- | --- |
 | `/QuestX/vioData` | `proto:questx.protos.data.ProtobufQuestXVioData` | Nominally 120 Hz after app initialization | Unfused VIO robot pose (center eye through the robot-to-Quest transform) in the Quest's local tracking frame, plus timing, sequence, and tracking-state metadata. The app explicitly uses `capture_timestamp_micros` as the NT value timestamp. |
 | `/QuestX/aprilTagData` | `proto:questx.protos.data.ProtobufQuestXAprilTagData` | Event-driven; only when the detector produces a locally accepted pose | Field-relative AprilTag pose plus contributing-tag, solve-quality, distance, and suggested-uncertainty metadata. The app explicitly uses `capture_timestamp_micros` as the NT value timestamp. |
+| `/QuestX/v4/apriltag` | `double[]` (53 + 2 × tag count values) | Event-driven, with every `aprilTagData` | The v3 AprilTag array plus the robot pose's 6×6 covariance (21 upper-triangle values) and projected field X/Y/heading covariance (6 upper-triangle values). See `protos/measurement-v4.md`. The app uses the capture timestamp as the NT value timestamp. |
 | `/QuestX/v2/vioQuality` | `double[]` (25 values) | Nominally 15 Hz after app initialization | VIO quality: the VIO displacement error measured from environment depth since a keyframe, its per-axis uncertainty, and head tracking state. Separate topic so `/QuestX/v2/vio` keeps its fixed 14-value length. The app uses the capture timestamp as the NT value timestamp. |
 | `/QuestX/deviceData` | `proto:questx.protos.data.ProtobufQuestXDeviceData` | Nominally 3 Hz | Battery percentage and number of transitions from tracking to not-tracking during the current app process. |
 | `/QuestX/response` | `proto:questx.protos.commands.ProtobufQuestXCommandResponse` | Once per handled `/QuestX/request` command | Command ID, success/failure status, and an error message on failure. |
@@ -41,21 +42,21 @@ Every published pose is the **robot's** pose. The headset measures its own cente
 | `sequence_id` | Unsigned counter starting at `0` for each app process and incrementing for every published AprilTag measurement. |
 | `capture_timestamp_micros` | NT clock time associated with the camera's hardware exposure, in microseconds; also used as the NT publication timestamp. QuestX subtracts the bounded exposure age reported by the Meta camera API from the current NT clock. |
 | `app_timestamp` | Quest app uptime at the camera's hardware exposure, in seconds. Diagnostic only; it is calculated by subtracting the same bounded exposure age from `Time.timeAsDouble`. |
-| `pose3d` | Field-relative 3D robot pose in WPILib coordinates: the solved passthrough camera, moved to the headset center eye through the Meta lens offset, then to the robot origin through the robot-to-Quest transform. It is an AprilTag solve and is **not fused with VIO**. Translation is meters; rotation is a quaternion. Standard deviations are passed through from the headset solve. |
-| `tag_ids` | IDs of the kept AprilTags used by the solve. |
+| `pose3d` | Field-relative 3D robot pose in WPILib coordinates: the solved passthrough camera, moved to the headset center eye through the Meta lens offset, then to the robot origin through the robot-to-Quest transform. It is an AprilTag solve and is **not fused with VIO**. Translation is meters; rotation is a quaternion. The covariance behind the standard deviations moves with the pose through both transforms. |
+| `tag_ids` | IDs of contributing AprilTags whose four corners fit the solved pose within 12 px; shared by covariance and quality. |
 | `tag_count` | Number of IDs in `tag_ids`. |
-| `inlier_count` | Number of corner points accepted by PoseLib. |
+| `inlier_count` | Native corner-inlier count over the original candidate set; may include corners from tags omitted by the complete-tag selection. |
 | `corner_count` | Total candidate corner-point count passed to PoseLib. |
 | `inlier_ratio` | `inlier_count / corner_count`, or `0.0` when `corner_count` is zero. |
 | `average_tag_distance_meters` | Mean 3D distance from the solved camera position to the kept tags. This is camera-to-tag distance, not distance from the field origin. |
-| `pose_std_devs.x_meters` | Suggested X uncertainty: `0.05 * distance^2 / max(1, tag_count)`. |
-| `pose_std_devs.y_meters` | Same suggested value as X. |
-| `pose_std_devs.z_meters` | Twice the suggested X/Y value. |
-| `pose_std_devs.yaw_radians` | `max(0.01, 0.05 * distance / sqrt(max(1, tag_count)))`. |
-| `pose_std_devs.roll_radians` | Twice the suggested yaw uncertainty. |
-| `pose_std_devs.pitch_radians` | Twice the suggested yaw uncertainty. |
+| `pose_std_devs.x_meters` | Standard deviation along the robot's forward axis. |
+| `pose_std_devs.y_meters` | Standard deviation along the robot's left axis. |
+| `pose_std_devs.z_meters` | Standard deviation along the robot's up axis. |
+| `pose_std_devs.roll_radians` | Standard deviation of a rotation about the robot's forward axis. |
+| `pose_std_devs.pitch_radians` | Standard deviation of a rotation about the robot's left axis. |
+| `pose_std_devs.yaw_radians` | Standard deviation of planar heading; differs from body-up rotation on a tilted robot. |
 
-The standard deviations are a Quest-side suggestion derived from observed geometry; they are not covariance supplied by Meta or the AprilTag SDK. Robot code remains responsible for rejection and estimator tuning.
+The standard deviations come from the pose's covariance, computed on the Quest with Napa's model from the corners' geometry (distance, viewing angle, tag count and spread) and widened where a planar target's mirror solution also fits. They are in the measured robot's frame: forward, left, and yaw belong to the pose projected onto the floor (`Pose3d.toPose2d()`), along its heading. `/QuestX/v4/apriltag` carries full 6D and planar covariance. WPILib 2026.2.1 applies its gain in the historical prediction's frame; use `pose2dStdDevs(predictedPoseAtCapture)` to rotate planar noise and conservatively bound its correlations. The no-argument helper is only a near-zero-innovation approximation; `protos/measurement-v4.md` describes the model. Robot code remains responsible for rejection. The headset publish counter follows successful local v4 writes, which do not confirm robot receipt; failed v4 writes are counted and logged at powers of two.
 
 ### `/QuestX/v2/vioQuality` values
 
@@ -144,7 +145,7 @@ The NT instance also registers protobuf schema metadata for decoding `data.proto
 | `getWebUrl()` | Latest `/QuestX/webUrl` as `Optional<String>`, or empty before a value arrives or while the headset has no address. |
 | `getAllUnreadPoseFrames()` / `getFrameCount()` | Legacy accessors. With this app no longer writing `/QuestX/frameData`, the unread array remains empty; `getFrameCount()` normally observes the subscriber's default protobuf value (`0`). |
 
-`AprilTagFrame.pose2dStdDevs()` returns a WPILib three-element vector containing `[xMeters, yMeters, yawRadians]` for use with a 2D pose estimator.
+`AprilTagFrame.pose2dStdDevs(predictedPoseAtCapture)` supplies conservative noise for WPILib 2026.2.1 using the v4 planar covariance. Gate on `hasPlanarCovariance()` first; false means the projection is absent or heading is undefined. `planarCovariance()` returns the full field X/Y/heading covariance, and `covariance()` returns the full 6×6 covariance for custom filters. Both return copies; unavailable matrices contain NaN. The no-argument helper retains measured-heading marginal values for compatibility.
 
 ## Source references
 

@@ -8,15 +8,19 @@
 */
 package gg.questx.questx;
 
+import edu.wpi.first.math.Matrix;
+import edu.wpi.first.math.Nat;
 import edu.wpi.first.math.geometry.Pose3d;
 import edu.wpi.first.math.geometry.Quaternion;
 import edu.wpi.first.math.geometry.Rotation3d;
+import edu.wpi.first.math.numbers.N3;
+import edu.wpi.first.math.numbers.N6;
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Decoder for the versioned atomic arrays documented in protos/measurement-v2.md and
- * protos/measurement-v3.md.
+ * Decoder for the versioned atomic arrays documented in protos/measurement-v2.md,
+ * protos/measurement-v3.md, and protos/measurement-v4.md.
  */
 final class MeasurementWireFormat {
   private MeasurementWireFormat() {}
@@ -47,7 +51,7 @@ final class MeasurementWireFormat {
       return null;
     }
     return aprilTagFrame(
-        data, serverTimeMicros, ids, Double.NaN, Double.NaN, List.of(), Double.NaN);
+        data, serverTimeMicros, ids, Double.NaN, Double.NaN, List.of(), Double.NaN, null, null);
   }
 
   /**
@@ -56,23 +60,96 @@ final class MeasurementWireFormat {
    * ambiguity per tag.
    */
   static AprilTagFrame aprilTagV3(double[] data, long serverTimeMicros) {
-    if (!validAprilTagHeader(data, serverTimeMicros, 26, 2)
+    return aprilTagWithQuality(data, serverTimeMicros, 26, null, null);
+  }
+
+  /**
+   * Decodes a v4 AprilTag array: the v3 fields at 0-25, the 21 upper-triangle entries of the pose's
+   * 6x6 covariance row by row (26-46), the six upper-triangle planar covariance entries (47-52),
+   * then the tag IDs followed by one ambiguity per tag. An all-zero planar block means unavailable.
+   */
+  static AprilTagFrame aprilTagV4(double[] data, long serverTimeMicros) {
+    if (data.length < 53) {
+      return null;
+    }
+    var covariance = new Matrix<>(Nat.N6(), Nat.N6());
+    for (int row = 0, i = 26; row < 6; row++) {
+      for (int column = row; column < 6; column++, i++) {
+        covariance.set(row, column, data[i]);
+        covariance.set(column, row, data[i]);
+      }
+    }
+    if (!positiveDefinite(covariance)) {
+      return null;
+    }
+    var planarCovariance = new Matrix<>(Nat.N3(), Nat.N3());
+    boolean unavailable = true;
+    for (int row = 0, i = 47; row < 3; row++) {
+      for (int column = row; column < 3; column++, i++) {
+        planarCovariance.set(row, column, data[i]);
+        planarCovariance.set(column, row, data[i]);
+        unavailable &= data[i] == 0;
+      }
+    }
+    if (!unavailable && !positiveDefinite(planarCovariance)) {
+      return null;
+    }
+    return aprilTagWithQuality(
+        data, serverTimeMicros, 53, covariance, unavailable ? null : planarCovariance);
+  }
+
+  /** Whether a symmetric matrix has a Cholesky factor: positive variances and a valid shape. */
+  private static boolean positiveDefinite(Matrix<?, ?> matrix) {
+    int size = matrix.getNumRows();
+    var factor = new double[size][size];
+    for (int i = 0; i < size; i++) {
+      for (int j = 0; j <= i; j++) {
+        double sum = matrix.get(i, j);
+        for (int k = 0; k < j; k++) sum -= factor[i][k] * factor[j][k];
+        if (i == j) {
+          if (!(sum > 0) || !Double.isFinite(sum)) return false;
+          factor[i][i] = Math.sqrt(sum);
+        } else {
+          factor[i][j] = sum / factor[j][j];
+        }
+      }
+    }
+    return true;
+  }
+
+  /** v3 and later: the v2 header, then ambiguity, fit error, and latency at 23-25. */
+  private static AprilTagFrame aprilTagWithQuality(
+      double[] data,
+      long serverTimeMicros,
+      int headerLength,
+      Matrix<N6, N6> covariance,
+      Matrix<N3, N3> planarCovariance) {
+    if (!validAprilTagHeader(data, serverTimeMicros, headerLength, 2)
         || !unitInterval(data[23])
         || data[24] < 0
         || data[25] < 0) {
       return null;
     }
     int count = (int) data[12];
-    var ids = tagIds(data, 26, count);
+    var ids = tagIds(data, headerLength, count);
     if (ids == null) {
       return null;
     }
     var ambiguities = new ArrayList<Double>(count);
-    for (int i = 26 + count; i < data.length; i++) {
+    for (int i = headerLength + count; i < data.length; i++) {
       if (!unitInterval(data[i])) return null;
       ambiguities.add(data[i]);
     }
-    return aprilTagFrame(data, serverTimeMicros, ids, data[23], data[24], ambiguities, data[25]);
+    return aprilTagFrame(
+        data,
+        serverTimeMicros,
+        ids,
+        data[23],
+        data[24],
+        ambiguities,
+        data[25],
+        covariance,
+        planarCovariance);
   }
 
   private static boolean validAprilTagHeader(
@@ -111,7 +188,9 @@ final class MeasurementWireFormat {
       double ambiguity,
       double reprojectionErrorPixels,
       List<Double> tagAmbiguities,
-      double processingLatencyMilliseconds) {
+      double processingLatencyMilliseconds,
+      Matrix<N6, N6> covariance,
+      Matrix<N3, N3> planarCovariance) {
     return new AprilTagFrame(
         pose(data),
         serverTimeMicros / 1_000_000.0,
@@ -128,7 +207,9 @@ final class MeasurementWireFormat {
         ambiguity,
         reprojectionErrorPixels,
         tagAmbiguities,
-        processingLatencyMilliseconds);
+        processingLatencyMilliseconds,
+        covariance,
+        planarCovariance);
   }
 
   private static boolean validCommon(double[] data, long serverTimeMicros) {

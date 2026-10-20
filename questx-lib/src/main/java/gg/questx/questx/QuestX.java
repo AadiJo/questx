@@ -77,8 +77,13 @@ import java.util.function.IntConsumer;
  *     // Update the robot-owned transform from the local VIO frame to the field frame.
  *   }
  *   for (AprilTagFrame frame : questX.getAllUnreadAprilTagFrames()) {
- *     // Apply robot-side rejection (for example frame.ambiguity() for single-tag frames),
- *     // then fuse frame.fieldPose3d(), frame.measurementTimestamp(), and frame.pose2dStdDevs().
+ *     if (!frame.hasPlanarCovariance()) continue;
+ *     var predicted = poseEstimator.sampleAt(frame.measurementTimestamp());
+ *     if (predicted.isEmpty()) continue;
+ *     // Apply robot-owned quality and innovation gates before fusion.
+ *     poseEstimator.addVisionMeasurement(
+ *         frame.fieldPose3d().toPose2d(), frame.measurementTimestamp(),
+ *         frame.pose2dStdDevs(predicted.get())); // WPILib 2026.2.1
  *   }
  * }
  * }</pre>
@@ -197,8 +202,8 @@ public class QuestX {
   private final DoubleArraySubscriber vioV2Subscriber;
   private final DoubleArraySubscriber aprilTagArraySubscriber;
 
-  /** True when {@link #aprilTagArraySubscriber} reads the v3 layout, which carries ambiguity. */
-  private final boolean aprilTagArrayIsV3;
+  /** Selects the decoder for {@link #aprilTagArraySubscriber}'s layout. */
+  private final MeasurementTransport transport;
 
   /** Subscriber for device data */
   private final ProtobufSubscriber<Data.ProtobufQuestXDeviceData> deviceDataSubscriber =
@@ -286,15 +291,15 @@ public class QuestX {
    *
    * <ul>
    *   <li>NetworkTables communication on the "QuestX" table
-   *   <li>Atomic numeric arrays for measurements ({@link MeasurementTransport#V3}), including
-   *       AprilTag pose ambiguity
+   *   <li>Atomic numeric arrays for measurements ({@link MeasurementTransport#V4}), including
+   *       AprilTag pose ambiguity and covariance
    *   <li>Cached objects to minimize garbage collection
    *   <li>Subscribers for VIO data, AprilTag data, device data, and command responses
    *   <li>Publisher for sending commands to the Quest
    * </ul>
    */
   public QuestX() {
-    this(MeasurementTransport.V3);
+    this(MeasurementTransport.V4);
   }
 
   /**
@@ -309,13 +314,17 @@ public class QuestX {
         new PubSubOption[] {
           PubSubOption.periodic(0.01), PubSubOption.sendAll(true), PubSubOption.pollStorage(20)
         };
-    aprilTagArrayIsV3 = transport == MeasurementTransport.V3;
-    if (transport == MeasurementTransport.V2 || transport == MeasurementTransport.V3) {
+    this.transport = transport;
+    if (transport != MeasurementTransport.LEGACY_PROTOBUF) {
       vioV2Subscriber = questXTable.getDoubleArrayTopic("v2/vio").subscribe(new double[0], options);
+      String aprilTagTopic =
+          switch (transport) {
+            case V4 -> "v4/apriltag";
+            case V3 -> "v3/apriltag";
+            default -> "v2/apriltag";
+          };
       aprilTagArraySubscriber =
-          questXTable
-              .getDoubleArrayTopic(aprilTagArrayIsV3 ? "v3/apriltag" : "v2/apriltag")
-              .subscribe(new double[0], options);
+          questXTable.getDoubleArrayTopic(aprilTagTopic).subscribe(new double[0], options);
       vioDataSubscriber = null;
       aprilTagDataSubscriber = null;
     } else {
@@ -839,9 +848,11 @@ public class QuestX {
   }
 
   private AprilTagFrame decodeAprilTagArray(double[] data, long serverTimeMicros) {
-    return aprilTagArrayIsV3
-        ? MeasurementWireFormat.aprilTagV3(data, serverTimeMicros)
-        : MeasurementWireFormat.aprilTag(data, serverTimeMicros);
+    return switch (transport) {
+      case V4 -> MeasurementWireFormat.aprilTagV4(data, serverTimeMicros);
+      case V3 -> MeasurementWireFormat.aprilTagV3(data, serverTimeMicros);
+      default -> MeasurementWireFormat.aprilTag(data, serverTimeMicros);
+    };
   }
 
   private VioFrame toVioFrame(Data.ProtobufQuestXVioData data, long serverTimeMicros) {

@@ -1,10 +1,13 @@
+using System;
+using QuestX.QuestX.AprilTag;
 using QuestX.QuestX.Geometry;
 using QuestX.VioQuality;
 
 namespace QuestX.Network
 {
     /// <summary>
-    /// Atomic double[] measurements. See protos/measurement-v2.md and protos/measurement-v3.md.
+    /// Atomic double[] measurements. See protos/measurement-v2.md, protos/measurement-v3.md, and
+    /// protos/measurement-v4.md.
     /// A topic's version fixes its layout; incompatible changes get a new topic version.
     /// </summary>
     public static class MeasurementWireFormat
@@ -19,6 +22,17 @@ namespace QuestX.Network
         /// follow, then one ambiguity per tag: 26 + 2 * tagCount doubles in total.
         /// </summary>
         public const int AprilTagV3HeaderLength = 26;
+
+        /// <summary>
+        /// v4 AprilTag arrays repeat the v3 fields at indices 0-25, then the 21 upper-triangle
+        /// entries of the published pose's 6x6 covariance, row by row (26-46), and the six
+        /// upper-triangle entries of its field x/y/heading covariance (47-52). An all-zero planar
+        /// block means heading is undefined. Tag IDs follow, then one ambiguity per tag.
+        /// </summary>
+        public const int AprilTagV4HeaderLength = 53;
+
+        /// <summary>Upper-triangle entries of a 6x6 covariance.</summary>
+        public const int CovarianceLength = 21;
 
         public static void WriteCommon(
             double[] target,
@@ -147,11 +161,93 @@ namespace QuestX.Network
             target[23] = ambiguity;
             target[24] = reprojectionErrorPixels;
             target[25] = processingLatencyMilliseconds;
+            WriteTags(target, AprilTagV3HeaderLength, tagIds, tagAmbiguities);
+        }
+
+        /// <summary>
+        /// Writes a v4 array: the v3 header with <paramref name="covariance"/>'s upper triangle at
+        /// 26-46 and its planar covariance at 47-52, then the tags. The standard deviations at
+        /// 17-22 come from it too.
+        /// </summary>
+        public static void WriteAprilTagV4(
+            double[] target,
+            ulong sequence,
+            long captureMicros,
+            double appTimestamp,
+            Pose3d pose,
+            PoseCovariance covariance,
+            int[] tagIds,
+            uint inliers,
+            uint corners,
+            double inlierRatio,
+            double averageDistance,
+            double ambiguity,
+            double reprojectionErrorPixels,
+            double processingLatencyMilliseconds,
+            double[] tagAmbiguities
+        )
+        {
+            double[] stdDevs = covariance.EstimatorStdDevs();
+            WriteAprilTagHeader(
+                target,
+                sequence,
+                captureMicros,
+                appTimestamp,
+                pose,
+                tagIds,
+                inliers,
+                corners,
+                inlierRatio,
+                averageDistance,
+                stdDevs[0],
+                stdDevs[1],
+                stdDevs[2],
+                stdDevs[3],
+                stdDevs[4],
+                stdDevs[5]
+            );
+            target[23] = ambiguity;
+            target[24] = reprojectionErrorPixels;
+            target[25] = processingLatencyMilliseconds;
+            Array.Copy(
+                covariance.UpperTriangle(),
+                0,
+                target,
+                AprilTagV3HeaderLength,
+                CovarianceLength
+            );
+            if (covariance.TryToPose2d(out _, out double[] planar))
+            {
+                int index = AprilTagV3HeaderLength + CovarianceLength;
+                for (int r = 0; r < 3; r++)
+                {
+                    for (int c = r; c < 3; c++)
+                    {
+                        target[index++] = planar[r * 3 + c];
+                    }
+                }
+            }
+            else
+            {
+                // The publisher reuses its array: clear any previous valid projection.
+                Array.Clear(target, AprilTagV3HeaderLength + CovarianceLength, 6);
+            }
+            WriteTags(target, AprilTagV4HeaderLength, tagIds, tagAmbiguities);
+        }
+
+        /// <summary>Tag IDs from <paramref name="offset"/>, then one ambiguity per tag.</summary>
+        private static void WriteTags(
+            double[] target,
+            int offset,
+            int[] tagIds,
+            double[] tagAmbiguities
+        )
+        {
             int count = tagIds?.Length ?? 0;
             for (int i = 0; i < count; i++)
             {
-                target[AprilTagV3HeaderLength + i] = tagIds[i];
-                target[AprilTagV3HeaderLength + count + i] = tagAmbiguities[i];
+                target[offset + i] = tagIds[i];
+                target[offset + count + i] = tagAmbiguities[i];
             }
         }
 

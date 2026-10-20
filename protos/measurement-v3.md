@@ -6,10 +6,11 @@ measurement. The app keeps
 publishing `/QuestX/v2/apriltag` (unchanged) and the `aprilTagData` protobuf so
 existing robot code keeps working. VIO stays at `/QuestX/v2/vio`.
 
-The Java library's default constructor selects `MeasurementTransport.V3`, which
-reads `/QuestX/v2/vio` and `/QuestX/v3/apriltag`. Select `V2` or
-`LEGACY_PROTOBUF` explicitly for older headset apps; those transports report
-ambiguity and processing latency as NaN and an empty per-tag list.
+`MeasurementTransport.V3` reads `/QuestX/v2/vio` and `/QuestX/v3/apriltag`. The
+Java library's default is now `V4` ([measurement-v4.md](measurement-v4.md)), which
+adds the pose's covariance. Select `V2` or `LEGACY_PROTOBUF` explicitly for older
+headset apps; those transports report ambiguity and processing latency as NaN and
+an empty per-tag list.
 
 ## Array layout
 
@@ -24,14 +25,14 @@ doubles:
 | 0–1 | Sequence ID, unsigned 64-bit: low uint32 word, high uint32 word |
 | 2–3 | Capture timestamp, signed 64-bit microseconds on the Quest NT clock: low word, high word |
 | 4 | App uptime, seconds (diagnostic only) |
-| 5–7 | Headset translation x, y, z, meters (field frame) |
-| 8–11 | Headset rotation quaternion w, x, y, z |
-| 12 | Tag count N, uint32 |
-| 13 | Inlier corner count, uint32 |
-| 14 | Total corner count, uint32 |
+| 5–7 | Robot translation x, y, z, meters (field frame) |
+| 8–11 | Robot rotation quaternion w, x, y, z |
+| 12 | Contributing tag count N, uint32 |
+| 13 | Native solve inlier corner count, uint32 |
+| 14 | Native solve candidate corner count, uint32 |
 | 15 | Inlier ratio, 0–1 |
 | 16 | Average camera-to-tag distance, meters |
-| 17–19 | Standard deviations x, y, z, meters |
+| 17–19 | Standard deviations forward, left, up, meters (robot frame) |
 | 20–22 | Standard deviations roll, pitch, yaw, radians |
 | 23 | Measurement ambiguity, 0–1 |
 | 24 | Reprojection error of the published pose, RMS pixels, nonnegative |
@@ -39,7 +40,8 @@ doubles:
 | 26 to 25 + N | Tag IDs, detector order |
 | 26 + N to 25 + 2N | Per-tag ambiguity, 0–1, same order as the IDs |
 
-Indices 0–22 match v2 exactly. N is the tag count at index 12. Every value must
+Indices 0–22 match v2 exactly. N is the tag count at index 12. The standard
+deviations come from the pose's covariance, along the measured robot's axes; these are marginal values, not an exact estimator noise matrix when prediction differs; see [measurement-v4.md](measurement-v4.md#standard-deviations-indices-1722). Every value must
 be finite. The decoder rejects arrays whose length or ranges do not match, in
 addition to the v2 checks.
 
@@ -130,7 +132,8 @@ the production C# encoder:
   in the Unity editor writes the same values.
 - `apriltag-single-tag.txt` and `apriltag-two-tags.txt`: realistic frames for
   robot-side decoder tests. They show REBUILT tags 26 and 25 + 26 (coplanar on the
-  blue hub face) seen from headset height, with ambiguity and fit error computed
-  by the production solver from projected corners with 0.3 px noise.
+  blue hub face) seen from headset height, with ambiguity, fit error, and
+  standard deviations computed by the production solver from projected corners
+  with 0.3 px noise.
 
 Then run `questx-lib/gradlew test` with JDK 17.

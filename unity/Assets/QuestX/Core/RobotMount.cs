@@ -31,6 +31,9 @@ namespace QuestX.Core
         /// <summary>The headset center-eye pose in the robot frame.</summary>
         public Transform3d RobotToHeadset => state.RobotToHeadset;
 
+        /// <summary>The robot origin's pose in the headset center-eye frame.</summary>
+        public Transform3d HeadsetToRobot => state.HeadsetToRobot;
+
         /// <summary>Replaces the transform. Angles are in degrees, translation in meters.</summary>
         /// <returns>True if the transform changed.</returns>
         public bool Set(

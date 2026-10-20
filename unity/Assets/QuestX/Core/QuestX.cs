@@ -758,9 +758,7 @@ namespace QuestX.Core
 
         private void OnAprilTagMeasurementAvailable(AprilTagMeasurement measurement)
         {
-            var robotMeasurement = measurement.ForRobot(
-                robotMount.HeadsetToRobotPose(measurement.HeadsetPose)
-            );
+            var robotMeasurement = measurement.ForRobot(robotMount.HeadsetToRobot);
             networkTableConnection.PublishAprilTagData(robotMeasurement);
             fieldAlignment.Align(robotMeasurement.AppTimestamp, robotMeasurement.Pose, out _);
             sceneProvider?.UpdateMeasurement(robotMeasurement);

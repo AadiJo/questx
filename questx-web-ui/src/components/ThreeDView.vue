@@ -76,7 +76,7 @@
           <dt>Distance</dt><dd>{{ measurement.averageTagDistanceMeters.toFixed(2) }} m</dd>
           <dt>Ambiguity</dt><dd>{{ measurement.ambiguity.toFixed(3) }}</dd>
           <dt>Reprojection</dt><dd>{{ measurement.reprojectionErrorPixels?.toFixed(2) ?? 'n/a' }} px</dd>
-          <dt>XY std dev</dt><dd>{{ measurement.stdDevs.xMeters.toFixed(3) }} m</dd>
+          <dt>Forward / left std dev</dt><dd>{{ measurement.stdDevs.xMeters.toFixed(3) }} / {{ measurement.stdDevs.yMeters.toFixed(3) }} m</dd>
           <dt>Yaw std dev</dt><dd>{{ degrees(measurement.stdDevs.yawRadians).toFixed(1) }}°</dd>
         </dl>
         <p v-else class="empty-line">None yet</p>

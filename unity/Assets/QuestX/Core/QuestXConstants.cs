@@ -97,6 +97,11 @@ namespace QuestX.Core
             /// v2 AprilTag fields plus pose ambiguity and reprojection error
             /// </summary>
             public const string APRIL_TAG_DATA_V3 = NT_BASE_PATH + "/v3/apriltag";
+
+            /// <summary>
+            /// v3 AprilTag fields plus the published pose's 6x6 covariance
+            /// </summary>
+            public const string APRIL_TAG_DATA_V4 = NT_BASE_PATH + "/v4/apriltag";
             public const string VIO_TELEMETRY = NT_BASE_PATH + "/telemetry/vio/";
             public const string APRIL_TAG_TELEMETRY = NT_BASE_PATH + "/telemetry/apriltag/";
 

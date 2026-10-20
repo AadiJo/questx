@@ -68,6 +68,8 @@ dependencies {
     // Test dependencies
     testImplementation 'org.junit.jupiter:junit-jupiter:5.10.1'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    // WPILib's Matrix needs EJML at runtime; robot projects get it through GradleRIO.
+    testRuntimeOnly 'org.ejml:ejml-simple:0.44.0'
 }
 
 test {

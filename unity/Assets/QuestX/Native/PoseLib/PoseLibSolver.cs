@@ -13,6 +13,13 @@ namespace QuestX.Native.PoseLib
 {
     public class PoseLibSolver
     {
+        /// <summary>
+        /// RANSAC reprojection-error threshold, tuned for the Quest 3 / 3S 1280-wide passthrough
+        /// frames. Quality, covariance, and published observations share a complete-tag selection
+        /// using this threshold at the native solved pose.
+        /// </summary>
+        private const double RansacThresholdPixels = 12;
+
         // Cached camera intrinsics. These MUST be refreshed via RefreshIntrinsics()
         // whenever the camera resolution changes (the Meta SDK exposes intrinsics
         // per-resolution: focal length, principal point, and sensor resolution all
@@ -109,10 +116,9 @@ namespace QuestX.Native.PoseLib
             double[] points2d = corners2d.ToArray();
             double[] points3d = corners3d.ToArray();
 
-            // 12 px RANSAC reprojection-error threshold was tuned for the Quest 3 / 3S
-            // 1280-wide passthrough frames. (An earlier attempt to scale this with
-            // colors.Length was based on a misread of the Meta SDK's GetColors over-
-            // allocation; see AprilTagManager comment in AprilTagFrameCaptureCoroutine.)
+            // An earlier attempt to scale the RANSAC threshold with colors.Length was based
+            // on a misread of the Meta SDK's GetColors over-allocation; see AprilTagManager
+            // comment in AprilTagFrameCaptureCoroutine.
             int status = PoseLibNatives.poselib_estimate_absolute_pose_simple(
                 points2d,
                 points3d,
@@ -122,34 +128,78 @@ namespace QuestX.Native.PoseLib
                 resolutionY,
                 intrinsicsArray,
                 4,
-                12,
+                RansacThresholdPixels,
                 out var resultPose,
                 out ulong resultInliers
             );
 
             if (status == 0)
             {
-                // PoseLib returns one pose. Re-solve each planar tag (and a coplanar group)
-                // with IPPE so robot code receives the ambiguity it uses for rejection.
-                AprilTagAmbiguity.Result quality;
+                double[] rotation;
+                double[] translation;
                 unsafe
                 {
-                    quality = AprilTagAmbiguity.Evaluate(
-                        points2d,
-                        points3d,
-                        count,
+                    rotation = new[]
+                    {
+                        resultPose.Q[0],
+                        resultPose.Q[1],
+                        resultPose.Q[2],
+                        resultPose.Q[3],
+                    };
+                    translation = new[] { resultPose.T[0], resultPose.T[1], resultPose.T[2] };
+                }
+                // Select once at the native pose. Rejected tags must not lower the aggregate
+                // ambiguity, shrink covariance, or appear among published observations.
+                var selection = AprilTagCovariance.SelectInliers(
+                    points2d,
+                    points3d,
+                    count,
+                    intrinsicsArray,
+                    rotation,
+                    translation,
+                    RansacThresholdPixels
+                );
+                var quality =
+                    selection.TagCount == 0
+                        ? new AprilTagAmbiguity.Result(
+                            1,
+                            double.PositiveInfinity,
+                            Array.Empty<double>()
+                        )
+                        : AprilTagAmbiguity.Evaluate(
+                            selection.Points2d,
+                            selection.Points3d,
+                            selection.TagCount,
+                            intrinsicsArray,
+                            rotation,
+                            translation
+                        );
+                PoseCovariance covariance;
+                try
+                {
+                    covariance = AprilTagCovariance.Estimate(
+                        selection,
                         intrinsicsArray,
-                        new[]
-                        {
-                            resultPose.Q[0],
-                            resultPose.Q[1],
-                            resultPose.Q[2],
-                            resultPose.Q[3],
-                        },
-                        new[] { resultPose.T[0], resultPose.T[1], resultPose.T[2] }
+                        rotation,
+                        translation,
+                        AprilTagCovariance.DefaultCornerNoisePixels
                     );
                 }
-                return new PoseLibResult(resultPose, resultInliers, count * 4, quality);
+                catch (ArgumentException ex)
+                {
+                    // Runs inside the capture coroutine, which an exception would stop. The
+                    // measurement is rejected instead.
+                    QueuedLogger.LogError($"AprilTag covariance failed: {ex.Message}");
+                    covariance = null;
+                }
+                return new PoseLibResult(
+                    resultPose,
+                    resultInliers,
+                    count * 4,
+                    quality,
+                    covariance,
+                    selection.SourceTagIndices
+                );
             }
 
             QueuedLogger.LogError($"PoseLib solve failed! Error code: {status}");

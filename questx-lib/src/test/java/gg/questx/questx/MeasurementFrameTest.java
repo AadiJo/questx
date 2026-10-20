@@ -9,9 +9,11 @@
 package gg.questx.questx;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import edu.wpi.first.math.geometry.Pose2d;
 import edu.wpi.first.math.geometry.Pose3d;
 import java.util.ArrayList;
 import java.util.List;
@@ -49,6 +51,9 @@ class MeasurementFrameTest {
     assertEquals(List.of(0.3, 0.4), frame.tagAmbiguities());
     assertThrows(UnsupportedOperationException.class, () -> frame.tagAmbiguities().add(0.5));
     assertTrue(frame.hasAmbiguity());
+    assertFalse(frame.hasCovariance());
+    assertFalse(frame.hasPlanarCovariance());
+    assertThrows(IllegalStateException.class, () -> frame.pose2dStdDevs(new Pose2d()));
   }
 
   @Test

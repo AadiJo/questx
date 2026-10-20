@@ -6,6 +6,12 @@
 as the default backend behind `ITagDetector`. To update, copy the three files from upstream, rebuild,
 and rerun the checks below.
 
+QuestX also ports Napa's pose covariance model (`covariance.py` and `solvers.py` at the same commit)
+to C# in `unity/Assets/QuestX/AprilTag/AprilTagCovariance.cs` and `PoseCovariance.cs`, and
+publishes its full 6D covariance and component-wise planar projection with every AprilTag measurement (`protos/measurement-v4.md`). It applies to the pose
+QuestX solves whichever detector found the corners. When upstream changes that model, port the
+change and rerun `tests/measurement-checks`.
+
 The core picks SIMD at compile time: NEON on the Quest, and SSE2 on x86-64 with SSSE3 chosen at
 runtime. Upstream tests its scalar and SIMD paths for identical output.
 

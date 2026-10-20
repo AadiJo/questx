@@ -62,7 +62,7 @@
         <dt>Corner inliers</dt><dd>{{ tag.inlierCount }}/{{ tag.cornerCount }}</dd>
         <dt>Inlier ratio</dt><dd>{{ (tag.inlierRatio * 100).toFixed(1) }}%</dd>
         <dt>Average distance</dt><dd>{{ tag.averageTagDistanceMeters.toFixed(2) }} m</dd>
-        <dt>Suggested XY std dev</dt><dd>{{ tag.linearStdDevMeters.toFixed(3) }} m</dd>
+        <dt>XY std dev (larger axis)</dt><dd>{{ tag.linearStdDevMeters.toFixed(3) }} m</dd>
         <dt>Published</dt><dd>{{ tag.publishCount.toLocaleString() }}</dd>
         <dt>Camera failures</dt>
         <dd :class="tag.cameraFailureCount ? 'bad' : 'good'">{{ tag.cameraFailureCount.toLocaleString() }}</dd>

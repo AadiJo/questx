@@ -1,3 +1,4 @@
+using System;
 using QuestX.QuestX.Geometry;
 
 namespace QuestX.QuestX.AprilTag
@@ -20,11 +21,25 @@ namespace QuestX.QuestX.AprilTag
 
         /// <summary>The solved field pose of the headset center eye.</summary>
         public Pose3d HeadsetPose { get; private set; }
+
+        /// <summary>
+        /// <see cref="Pose"/> with the covariance of its error, ordered [x, y, z, rx, ry, rz] along
+        /// the field axes. See <see cref="PoseCovariance"/>.
+        /// </summary>
+        public PoseCovariance Covariance { get; }
+
+        /// <summary><see cref="HeadsetPose"/> with its covariance.</summary>
+        public PoseCovariance HeadsetCovariance { get; private set; }
+
         public int[] TagIds { get; }
         public int InlierCount { get; }
         public int CornerCount { get; }
         public double InlierRatio { get; }
         public double AverageTagDistanceMeters { get; }
+
+        // Marginal standard deviations of the published pose from Covariance (see
+        // PoseCovariance.EstimatorStdDevs): forward, left, and yaw of the planar
+        // pose along its heading, then up, roll, and pitch along the pose's own axes.
         public double XStdDevMeters { get; }
         public double YStdDevMeters { get; }
         public double ZStdDevMeters { get; }
@@ -45,17 +60,12 @@ namespace QuestX.QuestX.AprilTag
             long captureTimestampMicros,
             double appTimestamp,
             Pose3d pose,
+            PoseCovariance covariance,
             int[] tagIds,
             int inlierCount,
             int cornerCount,
             double inlierRatio,
             double averageTagDistanceMeters,
-            double xStdDevMeters,
-            double yStdDevMeters,
-            double zStdDevMeters,
-            double rollStdDevRadians,
-            double pitchStdDevRadians,
-            double yawStdDevRadians,
             double ambiguity,
             double reprojectionErrorPixels,
             AprilTagObservation[] observations
@@ -64,49 +74,48 @@ namespace QuestX.QuestX.AprilTag
             CaptureTimestampMicros = captureTimestampMicros;
             AppTimestamp = appTimestamp;
             Pose = pose;
+            Covariance = covariance ?? throw new ArgumentNullException(nameof(covariance));
             TagIds = tagIds;
             InlierCount = inlierCount;
             CornerCount = cornerCount;
             InlierRatio = inlierRatio;
             AverageTagDistanceMeters = averageTagDistanceMeters;
-            XStdDevMeters = xStdDevMeters;
-            YStdDevMeters = yStdDevMeters;
-            ZStdDevMeters = zStdDevMeters;
-            RollStdDevRadians = rollStdDevRadians;
-            PitchStdDevRadians = pitchStdDevRadians;
-            YawStdDevRadians = yawStdDevRadians;
+            double[] stdDevs = covariance.EstimatorStdDevs();
+            XStdDevMeters = stdDevs[0];
+            YStdDevMeters = stdDevs[1];
+            ZStdDevMeters = stdDevs[2];
+            RollStdDevRadians = stdDevs[3];
+            PitchStdDevRadians = stdDevs[4];
+            YawStdDevRadians = stdDevs[5];
             Ambiguity = ambiguity;
             ReprojectionErrorPixels = reprojectionErrorPixels;
             Observations = observations;
             HeadsetPose = pose;
+            HeadsetCovariance = covariance;
         }
 
         /// <summary>
-        /// The same measurement published as <paramref name="robotPose"/>, keeping
-        /// <see cref="HeadsetPose"/>. Uncertainties are passed through unchanged.
+        /// The same measurement published as the robot's pose, keeping <see cref="HeadsetPose"/>.
+        /// The covariance moves with the pose; the mount itself is treated as exact.
         /// </summary>
-        public AprilTagMeasurement ForRobot(Pose3d robotPose) =>
+        public AprilTagMeasurement ForRobot(Transform3d headsetToRobot) =>
             new AprilTagMeasurement(
                 CaptureTimestampMicros,
                 AppTimestamp,
-                robotPose,
+                HeadsetPose.TransformBy(headsetToRobot),
+                HeadsetCovariance.TransformBy(headsetToRobot),
                 TagIds,
                 InlierCount,
                 CornerCount,
                 InlierRatio,
                 AverageTagDistanceMeters,
-                XStdDevMeters,
-                YStdDevMeters,
-                ZStdDevMeters,
-                RollStdDevRadians,
-                PitchStdDevRadians,
-                YawStdDevRadians,
                 Ambiguity,
                 ReprojectionErrorPixels,
                 Observations
             )
             {
                 HeadsetPose = HeadsetPose,
+                HeadsetCovariance = HeadsetCovariance,
             };
     }
 
@@ -170,6 +179,8 @@ namespace QuestX.QuestX.AprilTag
         public int LastCornerCount { get; }
         public double LastInlierRatio { get; }
         public double LastAverageTagDistanceMeters { get; }
+
+        /// <summary>Larger of the latest headset pose's forward and left standard deviations.</summary>
         public double LastLinearStdDevMeters { get; }
         public double LastAmbiguity { get; set; }
         public double LastReprojectionErrorPixels { get; set; }

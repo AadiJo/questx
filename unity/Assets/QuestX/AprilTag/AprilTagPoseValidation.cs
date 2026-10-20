@@ -13,14 +13,19 @@ namespace QuestX.QuestX.AprilTag
         /// calibrated headset-to-lens transform before combining these measurements.
         /// The robot's separate mounting transform is deliberately not applied here.
         /// </summary>
-        public static Pose3d CameraToHeadset(Pose3d fieldCamera, Pose lensOffset)
+        public static Pose3d CameraToHeadset(Pose3d fieldCamera, Pose lensOffset) =>
+            fieldCamera.TransformBy(CameraToHeadsetTransform(lensOffset));
+
+        /// <summary>The same conversion for a pose with covariance; the lens offset is exact.</summary>
+        public static PoseCovariance CameraToHeadset(PoseCovariance fieldCamera, Pose lensOffset) =>
+            fieldCamera.TransformBy(CameraToHeadsetTransform(lensOffset));
+
+        private static Transform3d CameraToHeadsetTransform(Pose lensOffset)
         {
             var headsetToCamera = new Pose3d(
                 Conversions.UnityToFrc3d(lensOffset.position, lensOffset.rotation)
             );
-            return fieldCamera.TransformBy(
-                new Transform3d(headsetToCamera.Translation, headsetToCamera.Rotation).Inverse()
-            );
+            return new Transform3d(headsetToCamera.Translation, headsetToCamera.Rotation).Inverse();
         }
 
         public static bool TryValidate(
