@@ -63,7 +63,7 @@ public void robotPeriodic() {
 
 ## Robot-to-Quest mount
 
-The robot-to-Quest transform is set on the headset, not in robot code. Open the web interface (`http://<Quest IP>:5801`), go to the **3D** tab, and choose the **Robot** view. Enter Forward (X), Left (Y), and Up (Z) in meters and Roll, Pitch, and Yaw in degrees, using WPILib robot axes (X forward, Y left, Z up). The transform runs from the robot origin to the headset's [Third-Eye Pose](./mounting#pose-origin) point. Edits preview live in 3D before you click **Save**. Each axis is limited to ±2 m and each angle to ±180°.
+The robot-to-Quest transform is set on the headset, not in robot code. Open the web interface (`http://<Quest IP>:5801`), open the **3D view** page, and choose the **Robot** view. Enter Forward (X), Left (Y), and Up (Z) in meters and Roll, Pitch, and Yaw in degrees, using WPILib robot axes (X forward, Y left, Z up). The transform runs from the robot origin to the headset's [Third-Eye Pose](./mounting#pose-origin) point. Edits preview live in 3D before you click **Save**. Each axis is limited to ±2 m and each angle to ±180°.
 
 The headset publishes the robot's pose, computed as `headsetPose.transformBy(robotToQuest.inverse())`. This applies to `/QuestX/vioData`, `/QuestX/aprilTagData`, and the Limelight-compatible `botpose_wpiblue`. Only `headsetpose_wpiblue` still reports the headset center eye.
 
@@ -77,15 +77,15 @@ Saving a new mount starts a new VIO tracking epoch. The published pose jumps, so
 
 Measure the headset position from the robot estimator's origin along X (forward), Y (left), and Z (up). Include a rotation if the headset is not level and forward-facing. For a headset that is otherwise level and facing forward, upside-down is roll 180°, top rolled to the left (seen from behind) is roll −90°, and top rolled to the right is roll +90°. A rigid mount matters: motion between the headset and chassis appears as sensor motion.
 
-The Camera tab's **Orientation** setting is display-only and does not change any pose. See [Mounting](./mounting#orientation).
+The **Orientation** setting on the Camera page's **Stream** tab is display-only and does not change any pose. See [Mounting](./mounting#orientation).
 
-### 3D tab
+### 3D view page
 
-The web interface's **3D** tab has three views, drawn in the style of Limelight's field visualizer. The robot has bumpers in its alliance color with the configured team number on them. The alliance comes from the Driver Station (`/FMSInfo/IsRedAlliance`), or you can pick red or blue in the Field view.
+The web interface's **3D view** page has three views, drawn in the style of Limelight's field visualizer. The robot has bumpers in its alliance color with the configured team number on them. The alliance comes from the Driver Station (`/FMSInfo/IsRedAlliance`), or you can pick red or blue in the Field view.
 
 - **Field** draws the full field from the loaded layout (carpet, guardrails, and alliance walls, plus simplified REBUILT or REEFSCAPE game elements placed on their own AprilTags) and the robot at a display-only field pose: VIO carried into the field by the most recent accepted AprilTag measurement. Robot code still does its own fusion. The view also shows the raw AprilTag solve as a robot with yellow bumpers that fades, lines from the camera to tags seen now, tag rims (green: used in the last solve; amber: seen now), a trail, and **VIO drift at last solve**, which is how far the VIO-aligned prediction was from each new tag solve.
 - **Headset** shows each detected tag solved on its own in the camera frame, so ignored, unknown, and rejected tags appear too. Tags are drawn level with gravity around the headset, with ID, status, distance, and ambiguity.
-- **Robot** is the mount editor described above. It warns when the Camera tab's Orientation and the mount's roll disagree, and offers a one-click fix.
+- **Robot** is the mount editor described above. It warns when the Stream tab's Orientation and the mount's roll disagree, and offers a one-click fix.
 
 ## AprilTag measurements
 

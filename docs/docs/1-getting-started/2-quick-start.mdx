@@ -119,7 +119,7 @@ public class QuestXSubsystem extends SubsystemBase {
 }
 ```
 
-Set where the headset sits on the robot in the web interface (`http://<Quest IP>:5801`), under **3D** > **Robot**. Do not apply a mount transform in robot code. See [Robot-to-Quest mount](./robot-code#robot-to-quest-mount).
+Set where the headset sits on the robot in the web interface (`http://<Quest IP>:5801`), under **3D view** > **Robot**. Do not apply a mount transform in robot code. See [Robot-to-Quest mount](./robot-code#robot-to-quest-mount).
 
 See [Robot Code Setup](./robot-code) for the full integration guide.
 
@@ -167,5 +167,5 @@ Print this checklist and verify each item before every match.
 ### If Something Goes Wrong
 - **QuestX/Connected = false**: Check the Ethernet cable and adapter. Verify the headset is powered on and QuestX is running.
 - **QuestX/Tracking = false**: Ensure the headset cameras have a clear view. Restart QuestX if tracking doesn't recover.
-- **Pose is in the wrong frame**: VIO is local. Verify the robot's VIO-to-field alignment, tracking epoch, and the robot-to-Quest mount in the web interface's 3D tab. Robot code should not apply its own mount transform.
+- **Pose is in the wrong frame**: VIO is local. Verify the robot's VIO-to-field alignment, tracking epoch, and the robot-to-Quest mount on the web interface's 3D view page. Robot code should not apply its own mount transform.
 - **Battery dropping fast**: Verify the USB battery bank is connected and outputting power. Check for a damaged cable.

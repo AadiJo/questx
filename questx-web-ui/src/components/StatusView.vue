@@ -1,501 +1,174 @@
 <template>
-  <div class="status-view">
-    <div v-if="loading" class="loading-container">
-      <div class="spinner"></div>
-      <p>Loading status...</p>
-    </div>
+  <div v-if="!status" class="empty-pane"><b>Waiting for status</b>The headset has not reported yet.</div>
+  <div v-else class="status-grid">
+    <section class="panel card">
+      <h3>Network</h3>
+      <dl class="readout">
+        <dt>Robot connection</dt>
+        <dd :class="['text', status.networkConnected ? 'good' : 'bad']">{{ status.networkConnected ? 'Connected' : 'Disconnected' }}</dd>
+        <dt>Robot IP</dt>
+        <dd>{{ status.robotIpAddress || 'n/a' }}<span v-if="debugIpActive" class="chip amber override">override</span></dd>
+        <dt>Headset IP</dt>
+        <dd>{{ status.ipAddress }}</dd>
+        <dt>Team number</dt>
+        <dd>{{ status.teamNumber }}</dd>
+        <dt>Web clients</dt>
+        <dd>{{ status.connectedClients }}</dd>
+      </dl>
+    </section>
 
-    <div v-else-if="status" class="status-grid">
-      <!-- Network Status -->
-      <div class="status-card card">
-        <h3><Wifi :size="18" :stroke-width="1.6" aria-hidden="true" /> Network</h3>
-        <div class="status-items">
-          <div class="status-item">
-            <span class="label">Robot Connection:</span>
-            <span :class="['value', status.networkConnected ? 'success' : 'error']">
-              {{ status.networkConnected ? 'Connected' : 'Disconnected' }}
-            </span>
-          </div>
-          <div class="status-item" :class="{ 'debug-override-active': isDebugIPActive }">
-            <span class="label">Robot IP Address:</span>
-            <div class="value-with-badge">
-              <span class="value mono">{{ status.robotIpAddress || 'N/A' }}</span>
-              <span v-if="isDebugIPActive" class="debug-override-badge">DEBUG OVERRIDE ENABLED</span>
-            </div>
-          </div>
-          <div class="status-item">
-            <span class="label">Headset IP Address:</span>
-            <span class="value mono">{{ status.ipAddress }}</span>
-          </div>
-          <div class="status-item">
-            <span class="label">Team Number:</span>
-            <span class="value">{{ status.teamNumber }}</span>
-          </div>
-        </div>
+    <section class="panel card">
+      <h3>Local VIO pose</h3>
+      <div class="big">
+        <b>{{ signed(status.position.x, 2) }}, {{ signed(status.position.y, 2) }}</b>
+        <span>x, y (m)</span>
       </div>
+      <!-- Labels match the previous dashboard: StatusProvider fills pitch from euler z
+           and yaw from euler y, and the old UI showed them swapped like this. -->
+      <dl class="readout">
+        <dt>z</dt><dd>{{ signed(status.position.z, 3) }} m</dd>
+        <dt>Yaw</dt><dd>{{ signed(status.eulerAngles.pitch, 1) }}°</dd>
+        <dt>Pitch</dt><dd>{{ signed(status.eulerAngles.yaw, 1) }}°</dd>
+        <dt>Roll</dt><dd>{{ signed(status.eulerAngles.roll, 1) }}°</dd>
+      </dl>
+    </section>
 
-      <!-- Position & Tracking -->
-      <div class="status-card card">
-        <h3><MapPin :size="18" :stroke-width="1.6" aria-hidden="true" /> Local VIO Position</h3>
-        <div class="status-items">
-          <div class="status-item">
-            <span class="label">X:</span>
-            <span class="value mono">{{ status.position.x.toFixed(3) }} m</span>
-          </div>
-          <div class="status-item">
-            <span class="label">Y:</span>
-            <span class="value mono">{{ status.position.y.toFixed(3) }} m</span>
-          </div>
-          <div class="status-item">
-            <span class="label">Z:</span>
-            <span class="value mono">{{ status.position.z.toFixed(3) }} m</span>
-          </div>
-          <div class="status-item">
-            <span class="label">Yaw:</span>
-            <span class="value mono">{{ status.eulerAngles.pitch.toFixed(1) }}°</span>
-          </div>
-          <div class="status-item">
-            <span class="label">Pitch:</span>
-            <span class="value mono">{{ status.eulerAngles.yaw.toFixed(1) }}°</span>
-          </div>
-          <div class="status-item">
-            <span class="label">Roll:</span>
-            <span class="value mono">{{ status.eulerAngles.roll.toFixed(1) }}°</span>
-          </div>
-        </div>
-      </div>
+    <section class="panel card">
+      <h3>Tracking</h3>
+      <dl class="readout">
+        <dt>Status</dt>
+        <dd :class="['text', status.isTracking ? 'good' : 'bad']">{{ status.isTracking ? 'Tracking' : 'Lost' }}</dd>
+        <dt>Tracking lost events</dt><dd>{{ status.trackingLostEvents }}</dd>
+        <dt>Tracking epoch</dt><dd>{{ status.trackingEpoch }}</dd>
+        <dt>VIO published</dt><dd>{{ status.vioPublishCount.toLocaleString() }}</dd>
+      </dl>
+    </section>
 
-      <!-- Tracking Status -->
-      <div class="status-card card">
-        <h3><Crosshair :size="18" :stroke-width="1.6" aria-hidden="true" /> Tracking</h3>
-        <div class="status-items">
-          <div class="status-item">
-            <span class="label">Status:</span>
-            <span :class="['value', status.isTracking ? 'success' : 'error']">
-              {{ status.isTracking ? 'Tracking' : 'Lost' }}
-            </span>
-          </div>
-          <div class="status-item">
-            <span class="label">Tracking Lost Events:</span>
-            <span class="value">{{ status.trackingLostEvents }}</span>
-          </div>
-          <div class="status-item">
-            <span class="label">Tracking Epoch:</span>
-            <span class="value">{{ status.trackingEpoch }}</span>
-          </div>
-          <div class="status-item">
-            <span class="label">VIO Measurements Published:</span>
-            <span class="value">{{ status.vioPublishCount.toLocaleString() }}</span>
-          </div>
-        </div>
-      </div>
+    <section class="panel card">
+      <h3>AprilTag measurements</h3>
+      <dl class="readout">
+        <dt>Detector</dt>
+        <dd :class="['text', tag.detectorActive ? 'good' : 'bad']">{{ tag.detectorActive ? 'Active' : 'Disabled' }}</dd>
+        <template v-if="tag.detector">
+          <dt>Detect time</dt>
+          <dd :title="`Last frame ${(tag.lastDetectMs ?? 0).toFixed(1)} ms`">{{ tag.detector }} · {{ (tag.averageDetectMs ?? 0).toFixed(1) }} ms avg</dd>
+        </template>
+        <dt>Last outcome</dt><dd class="text">{{ tag.lastOutcome || 'n/a' }}</dd>
+        <template v-if="tag.lastReason">
+          <dt>Reason</dt><dd class="text">{{ tag.lastReason }}</dd>
+        </template>
+        <dt>Measurement age</dt><dd>{{ tag.measurementAgeMs >= 0 ? `${tag.measurementAgeMs.toFixed(0)} ms` : 'n/a' }}</dd>
+        <dt>Tag IDs</dt><dd>{{ tag.tagIds.length ? tag.tagIds.join(', ') : 'none' }}</dd>
+        <dt>Corner inliers</dt><dd>{{ tag.inlierCount }}/{{ tag.cornerCount }}</dd>
+        <dt>Inlier ratio</dt><dd>{{ (tag.inlierRatio * 100).toFixed(1) }}%</dd>
+        <dt>Average distance</dt><dd>{{ tag.averageTagDistanceMeters.toFixed(2) }} m</dd>
+        <dt>Suggested XY std dev</dt><dd>{{ tag.linearStdDevMeters.toFixed(3) }} m</dd>
+        <dt>Published</dt><dd>{{ tag.publishCount.toLocaleString() }}</dd>
+        <dt>Camera failures</dt>
+        <dd :class="tag.cameraFailureCount ? 'bad' : 'good'">{{ tag.cameraFailureCount.toLocaleString() }}</dd>
+      </dl>
+    </section>
 
-      <!-- Latest field-relative measurement; robot-side fusion owns acceptance. -->
-      <div class="status-card card">
-        <h3><ScanLine :size="18" :stroke-width="1.6" aria-hidden="true" /> AprilTag Measurements</h3>
-        <div class="status-items">
-          <div class="status-item">
-            <span class="label">Detector:</span>
-            <span :class="['value', status.aprilTag.detectorActive ? 'success' : 'error']">
-              {{ status.aprilTag.detectorActive ? 'Active' : 'Disabled' }}
-            </span>
-          </div>
-          <div v-if="status.aprilTag.detector" class="status-item">
-            <span class="label">Detect Time:</span>
-            <span class="value mono">
-              {{ status.aprilTag.detector }} {{ (status.aprilTag.averageDetectMs ?? 0).toFixed(1) }} ms avg
-              ({{ (status.aprilTag.lastDetectMs ?? 0).toFixed(1) }} ms last)
-            </span>
-          </div>
-          <div class="status-item">
-            <span class="label">Last Outcome:</span>
-            <span class="value">{{ status.aprilTag.lastOutcome }}</span>
-          </div>
-          <div v-if="status.aprilTag.lastReason" class="status-item">
-            <span class="label">Reason:</span>
-            <span class="value">{{ status.aprilTag.lastReason }}</span>
-          </div>
-          <div class="status-item">
-            <span class="label">Last Measurement Age:</span>
-            <span class="value mono">
-              {{ status.aprilTag.measurementAgeMs >= 0 ? `${status.aprilTag.measurementAgeMs.toFixed(0)} ms` : 'N/A' }}
-            </span>
-          </div>
-          <div class="status-item">
-            <span class="label">Tag IDs:</span>
-            <span class="value mono">{{ status.aprilTag.tagIds.length ? status.aprilTag.tagIds.join(', ') : 'None' }}</span>
-          </div>
-          <div class="status-item">
-            <span class="label">Corner Inliers:</span>
-            <span class="value mono">{{ status.aprilTag.inlierCount }}/{{ status.aprilTag.cornerCount }}</span>
-          </div>
-          <div class="status-item">
-            <span class="label">Inlier Ratio:</span>
-            <span class="value mono">{{ (status.aprilTag.inlierRatio * 100).toFixed(1) }}%</span>
-          </div>
-          <div class="status-item">
-            <span class="label">Average Distance:</span>
-            <span class="value mono">{{ status.aprilTag.averageTagDistanceMeters.toFixed(2) }} m</span>
-          </div>
-          <div class="status-item">
-            <span class="label">Suggested XY Std Dev:</span>
-            <span class="value mono">{{ status.aprilTag.linearStdDevMeters.toFixed(3) }} m</span>
-          </div>
-          <div class="status-item">
-            <span class="label">Published:</span>
-            <span class="value">{{ status.aprilTag.publishCount.toLocaleString() }}</span>
-          </div>
-          <div class="status-item">
-            <span class="label">Camera Failures:</span>
-            <span :class="['value', status.aprilTag.cameraFailureCount ? 'error' : 'success']">
-              {{ status.aprilTag.cameraFailureCount.toLocaleString() }}
-            </span>
-          </div>
-        </div>
-      </div>
+    <section class="panel card">
+      <h3>Passthrough stream</h3>
+      <dl class="readout">
+        <dt>MJPEG clients</dt><dd>{{ stream.connectedClients }}</dd>
+        <dt>Last frame age</dt><dd>{{ stream.lastFrameAgeMs >= 0 ? `${stream.lastFrameAgeMs.toFixed(0)} ms` : 'No frame yet' }}</dd>
+        <dt>Capture failures</dt><dd>{{ stream.captureFailureCount.toLocaleString() }}</dd>
+        <dt>Consecutive failures</dt>
+        <dd :class="stream.consecutiveCaptureFailures ? 'bad' : 'good'">{{ stream.consecutiveCaptureFailures }}</dd>
+      </dl>
+    </section>
 
-      <!-- Remote stream health makes camera/transport dropouts distinguishable. -->
-      <div class="status-card card">
-        <h3><Radio :size="18" :stroke-width="1.6" aria-hidden="true" /> Passthrough Stream</h3>
-        <div class="status-items">
-          <div class="status-item">
-            <span class="label">MJPEG Clients:</span>
-            <span class="value">{{ status.passthroughStream.connectedClients }}</span>
-          </div>
-          <div class="status-item">
-            <span class="label">Last Frame Age:</span>
-            <span class="value mono">
-              {{ status.passthroughStream.lastFrameAgeMs >= 0 ? `${status.passthroughStream.lastFrameAgeMs.toFixed(0)} ms` : 'No frame yet' }}
-            </span>
-          </div>
-          <div class="status-item">
-            <span class="label">Capture Failures:</span>
-            <span class="value">{{ status.passthroughStream.captureFailureCount.toLocaleString() }}</span>
-          </div>
-          <div class="status-item">
-            <span class="label">Consecutive Failures:</span>
-            <span :class="['value', status.passthroughStream.consecutiveCaptureFailures ? 'error' : 'success']">
-              {{ status.passthroughStream.consecutiveCaptureFailures }}
-            </span>
-          </div>
-        </div>
+    <section class="panel card">
+      <h3>Headset</h3>
+      <div class="big">
+        <b>{{ status.batteryPercent }}%</b>
+        <span>battery, {{ status.batteryCharging ? 'charging' : status.batteryStatus.toLowerCase() || 'discharging' }}</span>
       </div>
-
-      <!-- Battery -->
-      <div class="status-card card">
-        <h3><BatteryMedium :size="18" :stroke-width="1.6" aria-hidden="true" /> Battery</h3>
-        <div class="status-items">
-          <div class="status-item">
-            <span class="label">Level:</span>
-            <div class="battery-bar">
-              <div 
-                class="battery-fill" 
-                :style="{ width: status.batteryPercent + '%' }"
-                :class="{ 
-                  'battery-low': status.batteryPercent < 20,
-                  'battery-charging': status.batteryCharging 
-                }"
-              >
-                {{ status.batteryPercent }}%
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Performance -->
-      <div class="status-card card">
-        <h3><Gauge :size="18" :stroke-width="1.6" aria-hidden="true" /> Performance</h3>
-        <div class="status-items">
-          <div class="status-item">
-            <span class="label">FPS:</span>
-            <span class="value">{{ status.fps }}</span>
-          </div>
-          <div class="status-item">
-            <span class="label">Frame Count:</span>
-            <span class="value mono">{{ status.frameCount.toLocaleString() }}</span>
-          </div>
-          <div class="status-item">
-            <span class="label">Connected Clients:</span>
-            <span class="value">{{ status.connectedClients }}</span>
-          </div>
-        </div>
-      </div>
-    </div>
+      <div :class="['bar', { low: status.batteryPercent < 20 }]"><i :style="{ width: `${status.batteryPercent}%` }" /></div>
+      <dl class="readout">
+        <dt>App FPS</dt><dd>{{ status.fps }}</dd>
+        <dt>Frame count</dt><dd>{{ status.frameCount.toLocaleString() }}</dd>
+      </dl>
+    </section>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
-import { configApi } from '../api/config'
+import { computed } from 'vue'
 import { useConfigStore } from '../stores/config'
-import { useConnectionState } from '../composables/useConnectionState'
-import type { HeadsetStatus } from '../types'
-import { BatteryMedium, Crosshair, Gauge, MapPin, Radio, ScanLine, Wifi } from '@lucide/vue'
+import { useHeadsetStatus } from '../composables/useHeadsetStatus'
 
 const configStore = useConfigStore()
-const { isConnected } = useConnectionState()
-const status = ref<HeadsetStatus | null>(null)
-const loading = ref(true)
-let intervalId: number | null = null
+const { status } = useHeadsetStatus()
 
-// Check if debug IP override is active
-const isDebugIPActive = computed(() => {
-  return Boolean(configStore.config?.debugIpOverride)
-})
+const debugIpActive = computed(() => Boolean(configStore.config?.debugIpOverride))
+const tag = computed(() => status.value!.aprilTag)
+const stream = computed(() => status.value!.passthroughStream)
 
-async function loadStatus() {
-  // Skip loading if disconnected
-  if (!isConnected.value) {
-    return
-  }
-  
-  try {
-    status.value = await configApi.getHeadsetStatus()
-    loading.value = false
-  } catch (err) {
-    // Silently fail - don't show error, keep old data visible
-    // Connection state overlay will handle showing disconnect status
-    loading.value = false
-  }
-}
-
-onMounted(async () => {
-  await loadStatus()
-  // Update every second, but only when connected
-  intervalId = setInterval(loadStatus, 1000) as unknown as number
-})
-
-onUnmounted(() => {
-  if (intervalId !== null) {
-    clearInterval(intervalId)
-  }
-})
-
-// Watch connection state and reload when reconnected
-watch(isConnected, async (connected, wasConnected) => {
-  if (connected && !wasConnected) {
-    console.log('[StatusView] Connection restored, reloading status')
-    await loadStatus()
-  }
-})
+const signed = (value: number, digits: number) => `${value >= 0 ? '+' : ''}${value.toFixed(digits)}`
 </script>
 
 <style scoped>
-.status-view {
-  width: 100%;
-  max-width: 1400px;
-  margin: 0 auto;
-}
-
-.loading-container {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 4rem 2rem;
-  gap: 1.5rem;
-}
-
-.loading-container p {
-  color: var(--primary-color);
-  font-size: 1rem; /* Base body text: 16px */
-  font-weight: 500;
-}
-
-.error-message {
-  padding: 2rem;
-  background: var(--card-bg);
-  border: 1px solid var(--danger-color);
-  border-radius: 4px;
-  color: var(--danger-color);
-  text-align: center;
-  font-weight: 600;
-  box-shadow: none;
-}
-
+/* Columns pack cards of different heights without gaps between rows. */
 .status-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-  gap: 1.5rem;
+  columns: 300px;
+  column-gap: 16px;
 }
 
-.status-card {
-  padding: 1.5rem;
-  background: var(--card-bg);
-  border: 1px solid var(--border-color);
-  border-radius: 4px;
-  transition: all 0.2s ease;
-  position: relative;
-  overflow: hidden;
+.card {
+  margin-bottom: 16px;
+  padding: 14px 18px 16px;
+  break-inside: avoid;
 }
 
-.status-card:hover {
-  border-color: var(--primary-color);
-  box-shadow: none;
-}
-
-.status-card h3 {
-  margin-bottom: 1rem;
-  color: var(--text-primary);
-  font-size: 1.3rem;
-  font-weight: 520;
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.status-items {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-}
-
-.status-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 0.75rem;
-  background: var(--bg-tertiary);
-  border-radius: 4px;
-  border-left: 1px solid transparent;
-  transition: all 0.2s ease;
-}
-
-.status-item:hover {
-  border-left-color: var(--primary-color);
-}
-
-.status-item .label {
-  font-weight: 500;
-  color: var(--text-secondary);
-  font-size: 0.875rem; /* Small text: 14px */
-}
-
-.status-item .value {
-  font-weight: 600;
-  color: var(--text-primary);
-  font-size: 0.875rem; /* Small text: 14px */
-}
-
-.status-item .value.mono {
-  font-size: 0.875rem; /* Small text: 14px */
+h3 {
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
   font-weight: 500;
 }
 
-.status-item .value.success {
-  color: var(--success-color);
-  text-shadow: none;
+.override {
+  margin-left: 8px;
+  font-family: var(--font-sans);
 }
 
-.status-item .value.error {
-  color: var(--danger-color);
-  text-shadow: none;
+.big {
+  padding: 4px 0 8px;
 }
 
-.status-item.debug-override-active {
-  background: var(--bg-tertiary);
-  border: 1px solid var(--warning-color);
-  border-left: 1px solid var(--warning-color);
-  box-shadow: none;
-}
-
-.status-item.debug-override-active:hover {
-  background: var(--bg-tertiary);
-  border-left-color: var(--warning-color);
-}
-
-.value-with-badge {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 0.5rem;
-}
-
-.debug-override-badge {
-  font-size: 0.75rem; /* Extra small: 12px */
-  padding: 0.25rem 0.65rem;
-  background: transparent;
-  color: var(--danger-color);
-  border-radius: 4px;
-  border: 1px solid var(--danger-color);
+.big b {
+  display: block;
+  font-size: 28px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  animation: none;
-  box-shadow: none;
-  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.03em;
 }
 
-@keyframes pulseGlow {
-  0%, 100% { 
-    opacity: 1;
-    box-shadow: 0 2px 6px rgba(220, 53, 69, 0.4);
-  }
-  50% { 
-    opacity: 0.8;
-    box-shadow: 0 4px 12px rgba(220, 53, 69, 0.6);
-  }
+.big span {
+  color: var(--text-2);
+  font-size: 12px;
 }
 
-
-.battery-bar {
-  flex: 1;
-  height: 28px;
-  background-color: var(--bg-tertiary);
-  border-radius: 4px;
+.bar {
   overflow: hidden;
-  margin-left: 1rem;
-  border: 1px solid var(--border-color);
+  height: 6px;
+  margin: 2px 0 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.07);
 }
 
-.battery-fill {
+.bar i {
+  display: block;
   height: 100%;
-  background: var(--teal);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: 700;
-  font-size: 0.875rem; /* Small text: 14px */
-  color: white;
-  text-shadow: none;
-  transition: width 0.5s ease;
-  position: relative;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #5e6ad2, #8b95f0);
 }
 
-.battery-fill.battery-low {
-  background: var(--danger-color);
-  animation: none;
-}
-
-.battery-fill.battery-charging {
-  background: var(--amber);
-  animation: none;
-}
-
-@keyframes batteryPulse {
-  0%, 100% { 
-    opacity: 1;
-    box-shadow: 0 0 0 rgba(220, 53, 69, 0);
-  }
-  50% { 
-    opacity: 0.8;
-    box-shadow: 0 0 20px rgba(220, 53, 69, 0.5);
-  }
-}
-
-@keyframes chargingShine {
-  0% {
-    background-position: -200% 0;
-  }
-  100% {
-    background-position: 200% 0;
-  }
-}
-
-@media (max-width: 768px) {
-  .status-grid {
-    grid-template-columns: 1fr;
-  }
+.bar.low i {
+  background: var(--red);
 }
 </style>

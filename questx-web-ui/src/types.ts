@@ -276,3 +276,14 @@ export interface HeadsetStatus {
 
   timestamp: number
 }
+
+// Pages in the icon rail, in rail order.
+export type PageId = 'camera' | '3d' | 'status' | 'field' | 'logs' | 'settings'
+
+// One entry in the Ctrl/Cmd+K command palette.
+export interface Command {
+  group: string
+  label: string
+  shortcut?: string
+  run: () => void
+}

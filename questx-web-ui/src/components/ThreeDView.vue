@@ -1,47 +1,39 @@
 <template>
   <div class="three-d-view">
-    <div class="view-toolbar">
-      <div class="segmented" role="tablist" aria-label="3D view">
-        <button
-          v-for="option in modeOptions"
-          :key="option.value"
-          :class="['segment', { active: mode === option.value }]"
-          role="tab"
-          :aria-selected="mode === option.value"
-          @click="mode = option.value"
-        >
-          <component :is="option.icon" :size="15" :stroke-width="1.75" aria-hidden="true" />
-          {{ option.label }}
-        </button>
+    <div class="viewport-col">
+      <div class="toolbar">
+        <div class="seg" role="tablist" aria-label="3D view">
+          <button
+            v-for="option in modeOptions"
+            :key="option.value"
+            :class="{ active: mode === option.value }"
+            role="tab"
+            :aria-selected="mode === option.value"
+            @click="mode = option.value"
+          >
+            {{ option.label }}
+          </button>
+        </div>
+        <div v-if="mode === 'field'" class="seg small" aria-label="Camera">
+          <button
+            v-for="preset in presetOptions"
+            :key="preset.value"
+            :class="{ active: fieldPreset === preset.value }"
+            @click="fieldPreset = preset.value"
+          >
+            {{ preset.label }}
+          </button>
+        </div>
+        <button class="btn" @click="viewer?.resetCamera()">Reset camera</button>
       </div>
-      <div v-if="mode === 'field'" class="segmented small" aria-label="Camera">
-        <button
-          v-for="preset in presetOptions"
-          :key="preset.value"
-          :class="['segment', { active: fieldPreset === preset.value }]"
-          @click="fieldPreset = preset.value"
-        >
-          {{ preset.label }}
-        </button>
-      </div>
-      <button class="secondary reset-camera" @click="viewer?.resetCamera()">
-        <RotateCcw :size="15" :stroke-width="1.75" aria-hidden="true" />
-        Reset Camera
-      </button>
-      <span :class="['live-status', liveStatus.tone]">
-        <span class="status-dot"></span>
-        {{ liveStatus.text }}
-      </span>
-    </div>
 
-    <div class="view-body">
       <div class="viewport-wrap">
         <div ref="viewport" class="viewport"></div>
         <div v-if="overlayMessage" class="viewport-message">{{ overlayMessage }}</div>
-        <div class="viewport-legend">
+        <div class="legend">
           <template v-if="mode === 'field'">
-            <span><i :class="['swatch', 'bumper', resolvedAlliance]"></i>VIO aligned to last tag solve</span>
-            <span><i class="swatch bumper solve"></i>Raw tag solve</span>
+            <span><i :class="['swatch', resolvedAlliance]"></i>VIO aligned to last tag solve</span>
+            <span><i class="swatch solve"></i>Raw tag solve</span>
             <span><i class="swatch used"></i>Used</span>
             <span><i class="swatch seen"></i>Seen now</span>
           </template>
@@ -51,155 +43,137 @@
             <span><i class="swatch unknown"></i>Not in layout</span>
           </template>
         </div>
-        <div class="viewport-credit">
+        <div class="credit">
           <a href="https://sketchfab.com/3d-models/quest-3s-with-controllers-448519e4ef0b40619592000db3729aaa" target="_blank" rel="noopener">Quest 3S model</a>
           by OG_MATTER,
           <a href="http://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC BY 4.0</a>
         </div>
       </div>
-
-      <aside class="side-panel">
-        <!-- Field view readouts -->
-        <template v-if="mode === 'field'">
-          <section class="panel-section">
-            <h4>Robot Field Pose</h4>
-            <p class="panel-note">VIO carried into the field by the last tag solve. Display only; robot code does its own fusion.</p>
-            <dl v-if="estimate" class="readout">
-              <dt>X</dt><dd class="mono">{{ estimate.x.toFixed(3) }} m</dd>
-              <dt>Y</dt><dd class="mono">{{ estimate.y.toFixed(3) }} m</dd>
-              <dt>Yaw</dt><dd class="mono">{{ degrees(yawOfPose(estimate)).toFixed(1) }}°</dd>
-            </dl>
-            <p v-else class="panel-empty">Waiting for a tag solve{{ scene?.vio && !scene.vio.tracking ? ' (VIO not tracking)' : '' }}</p>
-          </section>
-
-          <section class="panel-section">
-            <h4>VIO Drift at Last Solve</h4>
-            <dl v-if="correction" class="readout">
-              <dt>Position</dt><dd class="mono">{{ (correction.meters * 100).toFixed(1) }} cm</dd>
-              <dt>Yaw</dt><dd class="mono">{{ degrees(correction.yawRadians).toFixed(2) }}°</dd>
-              <dt>Over</dt><dd class="mono">{{ correction.intervalSeconds.toFixed(2) }} s</dd>
-            </dl>
-            <p v-else class="panel-empty">Needs two solves in the same tracking epoch</p>
-          </section>
-
-          <section class="panel-section">
-            <h4>Last Tag Solve</h4>
-            <dl v-if="measurement" class="readout">
-              <dt>Age</dt><dd class="mono">{{ formatAge(measurement.ageMs) }}</dd>
-              <dt>Tags</dt><dd class="mono">{{ measurement.tagIds.join(', ') }}</dd>
-              <dt>Distance</dt><dd class="mono">{{ measurement.averageTagDistanceMeters.toFixed(2) }} m</dd>
-              <dt>Ambiguity</dt><dd class="mono">{{ measurement.ambiguity.toFixed(3) }}</dd>
-              <dt>Reprojection</dt><dd class="mono">{{ measurement.reprojectionErrorPixels?.toFixed(2) ?? '—' }} px</dd>
-              <dt>XY Std Dev</dt><dd class="mono">{{ measurement.stdDevs.xMeters.toFixed(3) }} m</dd>
-              <dt>Yaw Std Dev</dt><dd class="mono">{{ degrees(measurement.stdDevs.yawRadians).toFixed(1) }}°</dd>
-            </dl>
-            <p v-else class="panel-empty">None yet</p>
-          </section>
-
-          <section class="panel-section">
-            <h4>Robot</h4>
-            <div class="size-inputs">
-              <label>Alliance
-                <select v-model="allianceSetting">
-                  <option value="auto">Driver Station</option>
-                  <option value="red">Red</option>
-                  <option value="blue">Blue</option>
-                </select>
-              </label>
-              <p v-if="allianceSetting === 'auto' && !scene?.alliance" class="panel-note">
-                No alliance from the Driver Station yet; showing blue.
-              </p>
-              <label>Length <input type="number" min="0.2" max="2" step="0.01" v-model.number="robotSize.length" /> m</label>
-              <label>Width <input type="number" min="0.2" max="2" step="0.01" v-model.number="robotSize.width" /> m</label>
-            </div>
-            <button class="secondary" @click="viewer?.clearTrail()">Clear Trail</button>
-          </section>
-        </template>
-
-        <!-- Headset view readouts -->
-        <template v-else-if="mode === 'headset'">
-          <section class="panel-section">
-            <h4>Detected Tags</h4>
-            <p class="panel-note">Each tag solved on its own in the camera frame, so ignored and rejected tags show too. Drawn level with gravity around the headset.</p>
-            <table v-if="detectedTags.length" class="tag-table">
-              <thead>
-                <tr><th>ID</th><th>Status</th><th>Dist</th><th>Amb</th></tr>
-              </thead>
-              <tbody>
-                <tr v-for="tag in detectedTags" :key="tag.id">
-                  <td class="mono">{{ tag.id }}</td>
-                  <td><span :class="['status-chip', tag.status]">{{ statusText[tag.status] }}</span></td>
-                  <td class="mono">{{ tag.cameraToTag ? distance(tag.cameraToTag).toFixed(2) : '—' }}</td>
-                  <td :class="['mono', { warn: tag.ambiguity > 0.2 }]">{{ tag.ambiguity.toFixed(2) }}</td>
-                </tr>
-              </tbody>
-            </table>
-            <p v-else class="panel-empty">No tags in view</p>
-          </section>
-          <section v-if="scene?.detector" class="panel-section">
-            <h4>Field Solve</h4>
-            <dl class="readout">
-              <dt>Outcome</dt><dd>{{ scene.detector.lastOutcome }}</dd>
-              <template v-if="scene.detector.lastReason">
-                <dt>Reason</dt><dd>{{ scene.detector.lastReason }}</dd>
-              </template>
-            </dl>
-          </section>
-        </template>
-
-        <!-- Robot view: robot-to-Quest editor -->
-        <template v-else>
-          <section class="panel-section">
-            <h4>Robot to Quest</h4>
-            <p class="panel-note">
-              Where the headset's center eye sits on the robot, in robot axes (X forward, Y left, Z up).
-              Every published pose is the robot's pose, so remove <code>ROBOT_TO_QUEST</code> from robot code.
-            </p>
-            <div class="mount-grid">
-              <label v-for="field in translationFields" :key="field.key">
-                {{ field.label }}
-                <span class="unit-input">
-                  <input type="number" step="0.005" min="-2" max="2" :value="pending[field.key]"
-                    @input="setPending(field.key, $event)" />
-                  <span>m</span>
-                </span>
-              </label>
-              <label v-for="field in angleFields" :key="field.key">
-                {{ field.label }}
-                <span class="unit-input">
-                  <input type="number" step="1" min="-180" max="180" :value="pending[field.key]"
-                    @input="setPending(field.key, $event)" />
-                  <span>°</span>
-                </span>
-              </label>
-            </div>
-            <div v-if="orientationHint" class="orientation-hint">
-              <TriangleAlert :size="16" :stroke-width="1.75" aria-hidden="true" />
-              <span>
-                Camera orientation is <strong>{{ orientationNames[cameraOrientation] }}</strong>, but this mount has the headset
-                {{ orientationHint.mounted === null ? 'facing up or down' : mountedDescriptions[orientationHint.mounted] }}.
-                Orientation only rotates the stream; poses use this roll.
-              </span>
-              <button class="secondary" @click="applySuggestedRoll">Set roll to {{ orientationHint.roll }}°</button>
-            </div>
-            <p v-if="!pendingValid" class="error-text">Translations must be within ±2 m and angles within ±180°.</p>
-            <div class="mount-actions">
-              <button :disabled="!dirty || !pendingValid || saving" @click="saveMount">
-                {{ saving ? 'Saving…' : 'Save' }}
-              </button>
-              <button class="secondary" :disabled="!dirty || saving" @click="revertMount">Revert</button>
-              <span v-if="dirty" class="unsaved">Previewing unsaved values</span>
-            </div>
-          </section>
-        </template>
-      </aside>
     </div>
+
+    <aside class="panel side">
+      <template v-if="mode === 'field'">
+        <div class="sect">Robot field pose</div>
+        <dl v-if="estimate" class="readout">
+          <dt>X</dt><dd>{{ estimate.x.toFixed(3) }} m</dd>
+          <dt>Y</dt><dd>{{ estimate.y.toFixed(3) }} m</dd>
+          <dt>Yaw</dt><dd>{{ degrees(yawOfPose(estimate)).toFixed(1) }}°</dd>
+        </dl>
+        <p v-else class="empty-line">Waiting for a tag solve{{ scene?.vio && !scene.vio.tracking ? ' (VIO not tracking)' : '' }}</p>
+
+        <div class="sect">VIO drift at last solve</div>
+        <dl v-if="correction" class="readout">
+          <dt>Position</dt><dd>{{ (correction.meters * 100).toFixed(1) }} cm</dd>
+          <dt>Yaw</dt><dd>{{ degrees(correction.yawRadians).toFixed(2) }}°</dd>
+          <dt>Over</dt><dd>{{ correction.intervalSeconds.toFixed(2) }} s</dd>
+        </dl>
+        <p v-else class="empty-line">Needs two solves in the same tracking epoch</p>
+
+        <div class="sect">Last tag solve</div>
+        <dl v-if="measurement" class="readout">
+          <dt>Age</dt><dd>{{ formatAge(measurement.ageMs) }}</dd>
+          <dt>Tags</dt><dd>{{ measurement.tagIds.join(', ') }}</dd>
+          <dt>Distance</dt><dd>{{ measurement.averageTagDistanceMeters.toFixed(2) }} m</dd>
+          <dt>Ambiguity</dt><dd>{{ measurement.ambiguity.toFixed(3) }}</dd>
+          <dt>Reprojection</dt><dd>{{ measurement.reprojectionErrorPixels?.toFixed(2) ?? 'n/a' }} px</dd>
+          <dt>XY std dev</dt><dd>{{ measurement.stdDevs.xMeters.toFixed(3) }} m</dd>
+          <dt>Yaw std dev</dt><dd>{{ degrees(measurement.stdDevs.yawRadians).toFixed(1) }}°</dd>
+        </dl>
+        <p v-else class="empty-line">None yet</p>
+
+        <div class="sect">Robot</div>
+        <div class="row">
+          <label for="robot-alliance">Alliance</label>
+          <div class="control">
+            <select id="robot-alliance" v-model="allianceSetting">
+              <option value="auto">Driver Station</option>
+              <option value="red">Red</option>
+              <option value="blue">Blue</option>
+            </select>
+          </div>
+        </div>
+        <div class="row">
+          <label for="robot-length">Length</label>
+          <div class="control"><input id="robot-length" v-model.number="robotSize.length" type="number" min="0.2" max="2" step="0.01" /><span class="muted">m</span></div>
+        </div>
+        <div class="row">
+          <label for="robot-width">Width</label>
+          <div class="control"><input id="robot-width" v-model.number="robotSize.width" type="number" min="0.2" max="2" step="0.01" /><span class="muted">m</span></div>
+        </div>
+        <button class="btn block clear-trail" @click="viewer?.clearTrail()">Clear trail</button>
+      </template>
+
+      <template v-else-if="mode === 'headset'">
+        <div class="sect">Detected tags</div>
+        <table v-if="detectedTags.length" class="tags">
+          <thead>
+            <tr><th>ID</th><th>Status</th><th>Dist</th><th>Amb</th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="tag in detectedTags" :key="tag.id">
+              <td class="mono">{{ tag.id }}</td>
+              <td><span :class="['chip', STATUS_CHIP[tag.status]]">{{ statusText[tag.status] }}</span></td>
+              <td class="mono">{{ tag.cameraToTag ? distance(tag.cameraToTag).toFixed(2) : 'n/a' }}</td>
+              <td :class="['mono', { 'high-ambiguity': tag.ambiguity > 0.2 }]">{{ tag.ambiguity.toFixed(2) }}</td>
+            </tr>
+          </tbody>
+        </table>
+        <p v-else class="empty-line">No tags in view</p>
+
+        <template v-if="scene?.detector">
+          <div class="sect">Field solve</div>
+          <dl class="readout">
+            <dt>Outcome</dt><dd class="text">{{ scene.detector.lastOutcome || 'n/a' }}</dd>
+            <template v-if="scene.detector.lastReason">
+              <dt>Reason</dt><dd class="text">{{ scene.detector.lastReason }}</dd>
+            </template>
+          </dl>
+        </template>
+      </template>
+
+      <template v-else>
+        <div class="sect">Robot to Quest</div>
+        <div class="mount-grid">
+          <label v-for="field in translationFields" :key="field.key">
+            {{ field.label }}
+            <span class="unit">
+              <input type="number" step="0.005" min="-2" max="2" :class="{ edited: pending[field.key] !== savedMount[field.key] }"
+                :value="pending[field.key]" @input="setPending(field.key, $event)" />
+              <span>m</span>
+            </span>
+          </label>
+          <label v-for="field in angleFields" :key="field.key">
+            {{ field.label }}
+            <span class="unit">
+              <input type="number" step="1" min="-180" max="180" :class="{ edited: pending[field.key] !== savedMount[field.key] }"
+                :value="pending[field.key]" @input="setPending(field.key, $event)" />
+              <span>°</span>
+            </span>
+          </label>
+        </div>
+        <div v-if="orientationHint" class="callout-warn mount-warn">
+          <TriangleAlert :size="15" :stroke-width="1.8" aria-hidden="true" />
+          <div>
+            Camera orientation is <b>{{ orientationNames[cameraOrientation] }}</b>, but this mount has the headset
+            {{ orientationHint.mounted === null ? 'facing up or down' : mountedDescriptions[orientationHint.mounted] }}.
+            Orientation only rotates the stream. Poses use this roll.
+            <button class="btn" @click="applySuggestedRoll">Set roll to {{ orientationHint.roll }}°</button>
+          </div>
+        </div>
+        <p v-if="!pendingValid" class="error-text">Translations must be within ±2 m and angles within ±180°.</p>
+        <div class="mount-actions">
+          <button class="btn" :disabled="!dirty || saving" @click="revertMount">Revert</button>
+          <button class="btn primary" :disabled="!dirty || !pendingValid || saving" @click="saveMount">{{ saving ? 'Saving…' : 'Save' }}</button>
+        </div>
+        <p v-if="dirty" class="empty-line unsaved">Previewing unsaved values</p>
+      </template>
+    </aside>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref, shallowRef, watch } from 'vue'
-import { Crosshair, Map as MapIcon, RotateCcw, ScanEye, TriangleAlert } from '@lucide/vue'
+import { TriangleAlert } from '@lucide/vue'
 import { useConfigStore } from '../stores/config'
 import { sceneApi } from '../api/scene'
 import { CameraOrientation, type PoseJson, type RobotToQuest, type SceneLayout, type SceneResponse, type SceneTagStatus } from '../types'
@@ -214,14 +188,13 @@ const viewport = ref<HTMLElement | null>(null)
 const viewer = shallowRef<SceneViewer | null>(null)
 const scene = shallowRef<SceneResponse | null>(null)
 const layout = shallowRef<SceneLayout | null>(null)
-const connected = ref(true)
 
 const mode = ref<ViewMode>('field')
 const fieldPreset = ref<FieldCameraPreset>('perspective')
 const modeOptions = [
-  { value: 'field' as const, label: 'Field', icon: MapIcon },
-  { value: 'headset' as const, label: 'Headset', icon: ScanEye },
-  { value: 'robot' as const, label: 'Robot', icon: Crosshair },
+  { value: 'field' as const, label: 'Field' },
+  { value: 'headset' as const, label: 'Headset' },
+  { value: 'robot' as const, label: 'Robot' },
 ]
 const presetOptions = [
   { value: 'perspective' as const, label: 'Perspective' },
@@ -325,14 +298,9 @@ const estimate = computed(() => scene.value?.field.estimate ?? null)
 const correction = computed(() => scene.value?.field.lastCorrection ?? null)
 const measurement = computed(() => scene.value?.field.measurement ?? null)
 const detectedTags = computed(() => [...(scene.value?.detections?.tags ?? [])].sort((a, b) => a.id - b.id))
-const statusText: Record<SceneTagStatus, string> = { used: 'Used', ignored: 'Ignored', unknown: 'Unknown' }
+const statusText: Record<SceneTagStatus, string> = { used: 'Used', ignored: 'Ignored', unknown: 'Not in layout' }
+const STATUS_CHIP: Record<SceneTagStatus, string> = { used: 'blue', ignored: 'grey', unknown: 'amber' }
 
-const liveStatus = computed(() => {
-  if (!connected.value) return { text: 'Disconnected', tone: 'error' }
-  if (scene.value?.detector && !scene.value.detector.active) return { text: 'Detector Off', tone: 'warning' }
-  if (!scene.value?.vio?.tracking) return { text: 'Not Tracking', tone: 'warning' }
-  return { text: 'Live', tone: 'success' }
-})
 
 const overlayMessage = computed(() => {
   if (!scene.value) return 'Connecting to headset…'
@@ -391,11 +359,10 @@ async function poll() {
   if (!polling) return
   try {
     scene.value = await sceneApi.getScene()
-    connected.value = true
     if (!layout.value) layout.value = await sceneApi.getLayout()
     redraw()
   } catch {
-    connected.value = false
+    // The connection banner reports outages; keep drawing the last scene.
   }
   if (polling) pollTimer = window.setTimeout(poll, 66)
 }
@@ -429,105 +396,30 @@ onUnmounted(() => {
   viewer.value = null
 })
 </script>
-
 <style scoped>
 .three-d-view {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-}
-
-.view-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  flex-wrap: wrap;
-}
-
-.segmented {
-  display: inline-flex;
-  border: 1px solid var(--border-strong);
-  border-radius: 4px;
-  overflow: hidden;
-}
-
-.segment {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  padding: 0.5rem 0.9rem;
-  background: transparent;
-  border: none;
-  border-right: 1px solid var(--border-color);
-  border-radius: 0;
-  color: var(--text-secondary);
-  font-size: 0.8125rem;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.segment:last-child {
-  border-right: none;
-}
-
-.segment:hover {
-  background: var(--bg-tertiary);
-  color: var(--text-primary);
-}
-
-.segment.active {
-  background: var(--primary-color);
-  color: var(--bg-color);
-}
-
-.segmented.small .segment {
-  padding: 0.4rem 0.7rem;
-  font-size: 0.75rem;
-}
-
-.reset-camera {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-}
-
-.live-status {
-  margin-left: auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.45rem;
-  font-size: 0.75rem;
-  font-weight: 650;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-secondary);
-}
-
-.status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: currentColor;
-}
-
-.live-status.success { color: var(--success-color); }
-.live-status.warning { color: var(--warning-color); }
-.live-status.error { color: var(--danger-color); }
-
-.view-body {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 320px;
-  gap: 1rem;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 20px;
   align-items: start;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
 }
 
 .viewport-wrap {
   position: relative;
-  height: clamp(460px, 64vh, 680px);
-  border: 1px solid var(--border-color);
-  border-radius: 4px;
   overflow: hidden;
-  background: #1b1b1b;
+  height: calc(100vh - 160px);
+  min-height: 440px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: #0c0d0f;
 }
 
 .viewport {
@@ -535,6 +427,7 @@ onUnmounted(() => {
   inset: 0;
 }
 
+/* SceneViewer sizes the drawing buffer only; CSS stretches the canvas to the viewport. */
 .viewport :deep(canvas) {
   display: block;
   width: 100%;
@@ -544,255 +437,159 @@ onUnmounted(() => {
 
 .viewport-message {
   position: absolute;
-  top: 1rem;
+  top: 50%;
   left: 50%;
-  transform: translateX(-50%);
-  padding: 0.5rem 0.9rem;
-  background: rgba(18, 18, 18, 0.88);
-  border: 1px solid #3a3a3a;
-  border-radius: 4px;
-  font-size: 0.8125rem;
-  color: #d6d6d6;
+  transform: translate(-50%, -50%);
+  padding: 8px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(8, 9, 10, 0.7);
+  color: var(--text-2);
   pointer-events: none;
 }
 
-.viewport-legend {
+.legend {
   position: absolute;
-  left: 0.75rem;
-  bottom: 0.75rem;
+  bottom: 10px;
+  left: 10px;
   display: flex;
   flex-wrap: wrap;
-  gap: 0.35rem 0.9rem;
-  padding: 0.4rem 0.7rem;
-  background: rgba(18, 18, 18, 0.88);
-  border: 1px solid #3a3a3a;
-  border-radius: 4px;
-  font-size: 0.75rem;
-  color: #d6d6d6;
-  pointer-events: none;
-}
-
-.viewport-credit {
-  position: absolute;
-  right: 0.75rem;
-  bottom: 0.75rem;
-  font-size: 0.6875rem;
-  color: #8a8a8a;
-}
-
-.viewport-credit a {
-  color: inherit;
-}
-
-.viewport-legend span {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
+  gap: 14px;
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: rgba(8, 9, 10, 0.6);
+  backdrop-filter: blur(8px);
+  color: var(--text-2);
+  font-size: 12px;
 }
 
 .swatch {
   display: inline-block;
-  width: 10px;
-  height: 10px;
-  border-radius: 2px;
+  width: 11px;
+  height: 11px;
+  margin-right: 6px;
+  border-radius: 3px;
+  vertical-align: -1px;
 }
 
-.swatch.bumper.red { background: #d21414; }
-.swatch.bumper.blue { background: #1438d2; }
-.swatch.bumper.solve { background: #f2c200; }
-.swatch.used { background: #3fae6b; }
+/* Same colors as SceneViewer's palette and robotModel's BUMPER_COLORS. */
+.swatch.red { background: #d21414; }
+.swatch.blue { background: #1438d2; }
+.swatch.solve { background: #f2c200; }
+.swatch.used { background: #6371f0; }
 .swatch.seen { background: #e3a33b; }
 .swatch.ignored { background: #8a8a8a; }
 .swatch.unknown { background: #d0453f; }
 
-.side-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
+.credit {
+  position: absolute;
+  right: 10px;
+  bottom: 8px;
+  color: var(--muted);
+  font-size: 10.5px;
 }
 
-.panel-section {
-  padding: 1rem 1.1rem;
-  background: var(--card-bg);
-  border: 1px solid var(--border-color);
-  border-radius: 4px;
+.credit a {
+  color: inherit;
 }
 
-.panel-section h4 {
-  font-size: 1.05rem;
-  margin-bottom: 0.5rem;
+.side {
+  padding: 12px 18px 16px;
 }
 
-.panel-note {
-  font-size: 0.78rem;
-  color: var(--text-secondary);
-  margin-bottom: 0.75rem;
+.side .row {
+  grid-template-columns: 90px minmax(0, 1fr);
 }
 
-.panel-empty {
-  font-size: 0.8125rem;
-  color: var(--text-muted);
+.clear-trail {
+  margin-top: 8px;
 }
 
-.readout {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 0.35rem 1rem;
-  font-size: 0.8125rem;
-}
-
-.readout dt {
-  color: var(--text-secondary);
-}
-
-.readout dd {
-  text-align: right;
-  font-weight: 550;
-  overflow-wrap: anywhere;
-}
-
-.size-inputs {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  margin-bottom: 0.75rem;
-  font-size: 0.8125rem;
-}
-
-.size-inputs label {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.size-inputs input,
-.size-inputs select {
-  width: 8.5rem;
-  margin-left: auto;
-  padding: 0.35rem 0.5rem;
-}
-
-.tag-table {
+.tags {
   width: 100%;
   border-collapse: collapse;
-  font-size: 0.8125rem;
+  font-size: 12.5px;
 }
 
-.tag-table th {
+.tags th {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--line-strong);
+  color: var(--text-2);
+  font-weight: 500;
   text-align: left;
-  font-weight: 600;
-  color: var(--text-secondary);
-  padding: 0.3rem 0.25rem;
-  border-bottom: 1px solid var(--border-color);
 }
 
-.tag-table td {
-  padding: 0.35rem 0.25rem;
-  border-bottom: 1px solid var(--border-color);
+.tags td {
+  padding: 5px 6px;
+  border-bottom: 1px solid var(--line);
 }
 
-.tag-table td.warn {
-  color: var(--warning-color);
+.tags td.high-ambiguity {
+  color: var(--amber);
 }
-
-.status-chip {
-  font-size: 0.7rem;
-  font-weight: 650;
-  padding: 0.1rem 0.4rem;
-  border-radius: 3px;
-  border: 1px solid currentColor;
-}
-
-.status-chip.used { color: #3fae6b; }
-.status-chip.ignored { color: #8a8a8a; }
-.status-chip.unknown { color: #d0453f; }
 
 .mount-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0.6rem 0.75rem;
-  font-size: 0.78rem;
-  color: var(--text-secondary);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 10px;
 }
 
 .mount-grid label {
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
+  gap: 4px;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 500;
 }
 
-.unit-input {
+.unit {
   display: flex;
   align-items: center;
-  gap: 0.35rem;
+  gap: 5px;
 }
 
-.unit-input input {
-  padding: 0.4rem 0.5rem;
+.unit span {
+  color: var(--muted);
 }
 
-.unit-input span {
-  min-width: 1rem;
-  color: var(--text-muted);
+.unit input.edited {
+  border-color: rgba(94, 106, 210, 0.8);
 }
 
-.orientation-hint {
+.mount-warn {
+  margin-left: 0;
+}
+
+.mount-warn .btn {
   display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  gap: 0.5rem;
-  margin-top: 0.9rem;
-  padding: 0.7rem;
-  border: 1px solid var(--warning-color);
-  border-radius: 4px;
-  font-size: 0.78rem;
-  color: var(--text-primary);
-}
-
-.orientation-hint > svg {
-  color: var(--warning-color);
-  flex-shrink: 0;
-  margin-top: 0.1rem;
-}
-
-.orientation-hint span {
-  flex: 1;
-  min-width: 12rem;
-}
-
-.error-text {
-  margin-top: 0.75rem;
-  font-size: 0.78rem;
-  color: var(--danger-color);
+  margin-top: 8px;
+  height: 26px;
+  font-size: 12px;
 }
 
 .mount-actions {
   display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  margin-top: 1rem;
-  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.mount-actions .btn {
+  flex: 1;
 }
 
 .unsaved {
-  font-size: 0.75rem;
-  color: var(--warning-color);
+  margin-top: 8px;
 }
 
-code {
-  font-size: 0.85em;
-  padding: 0.05rem 0.25rem;
-  background: var(--code-bg);
-  border-radius: 3px;
-}
-
-@media (max-width: 960px) {
-  .view-body {
-    grid-template-columns: 1fr;
+@media (max-width: 1100px) {
+  .three-d-view {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .viewport-wrap {
-    height: 420px;
+    height: 60vh;
   }
 }
 </style>

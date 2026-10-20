@@ -1,718 +1,538 @@
 <template>
-  <div id="app">
-    <!-- Disconnected Overlay -->
-    <transition name="fade">
-      <div v-if="isDisconnected" class="disconnect-overlay">
-        <div class="disconnect-card card">
-          <RadioOff class="disconnect-icon" :size="42" :stroke-width="1.5" aria-hidden="true" />
-          <h2>Connection Lost</h2>
-          <p>Lost connection to QuestX</p>
-          <div class="reconnect-info">
-            <div v-if="secondsUntilRetry > 0" class="retry-countdown">
-              <span class="spinner-small"></span>
-              Retrying in {{ secondsUntilRetry }} second{{ secondsUntilRetry !== 1 ? 's' : '' }}...
-            </div>
-            <div v-else class="retry-countdown">
-              <span class="spinner-small"></span>
-              Reconnecting...
-            </div>
-          </div>
-          <button @click="manualRetry" class="retry-button">
-            Retry Now
-          </button>
-        </div>
-      </div>
-    </transition>
+  <div :class="['app', { offline: !isConnected }]">
+    <nav class="rail" aria-label="Pages">
+      <div class="rail-logo"><img src="/bird-logo.svg" alt="QuestX" /></div>
+      <button
+        v-for="(page, index) in PAGES"
+        :key="page.id"
+        :class="['rail-btn', { active: activePage === page.id }]"
+        :aria-label="page.label"
+        :aria-current="activePage === page.id ? 'page' : undefined"
+        @click="activePage = page.id"
+      >
+        <component :is="page.icon" :size="17" :stroke-width="1.8" aria-hidden="true" />
+        <span class="tip">{{ page.label }}<kbd>{{ index + 1 }}</kbd></span>
+      </button>
+    </nav>
 
-    <!-- Main Application -->
-    <div class="app-container">
-      <!-- Header -->
-      <header class="app-header">
-        <div class="header-content">
-          <div class="header-left">
-            <div class="logo-container">
-              <img src="/bird-logo.svg" alt="Bird logo" class="logo" />
-            </div>
-            <div class="header-info">
-              <span v-if="configStore.lastUpdated" class="last-updated">
-                <Clock3 class="info-icon" :size="14" :stroke-width="1.75" aria-hidden="true" />
-                Updated {{ formatTime(configStore.lastUpdated) }}
-              </span>
-              <span :class="['connection-status', connectionStatus]">
-                <span class="status-dot"></span>
-                {{ connectionStatusText }}
-              </span>
-            </div>
-          </div>
-          
-          <div class="header-right">
-            <button class="secondary icon-button" @click="refreshData" title="Refresh">
-              <RefreshCw class="button-icon" :size="16" :stroke-width="1.75" aria-hidden="true" />
-              <span class="button-text">Refresh</span>
-            </button>
-            <button class="secondary icon-button" @click="showInfo" title="Server Info">
-              <Info class="button-icon" :size="16" :stroke-width="1.75" aria-hidden="true" />
-              <span class="button-text">Info</span>
-            </button>
-            <button class="danger icon-button" @click="handleRestart" title="Restart App">
-              <Power class="button-icon" :size="16" :stroke-width="1.75" aria-hidden="true" />
-              <span class="button-text">Restart App</span>
-            </button>
-            <button class="icon-button theme-toggle" @click="toggleTheme" :title="isDarkMode ? 'Switch to Light Mode' : 'Switch to Dark Mode'">
-              <Sun v-if="!isDarkMode" class="theme-icon" :size="19" :stroke-width="1.75" aria-hidden="true" />
-              <Moon v-else class="theme-icon" :size="19" :stroke-width="1.75" aria-hidden="true" />
-            </button>
-          </div>
-        </div>
+    <div class="main">
+      <header class="topbar">
+        <span v-if="status" class="pill" :title="status.batteryCharging ? 'Charging' : 'Battery'">
+          <BatteryCharging v-if="status.batteryCharging" :size="16" :stroke-width="1.8" aria-hidden="true" />
+          <Battery v-else :size="16" :stroke-width="1.8" aria-hidden="true" />
+          {{ status.batteryPercent }}%
+        </span>
+        <ConfirmButton class="icon-btn" confirm-text="Restart?" title="Restart QuestX" aria-label="Restart QuestX" @confirm="restartQuestX">
+          <Power :size="15" :stroke-width="2" aria-hidden="true" />
+        </ConfirmButton>
       </header>
 
-      <!-- Content -->
-      <main class="app-content">
-        <ConfigForm />
-      </main>
-
-    </div>
-
-    <!-- Info Modal -->
-    <div v-if="showInfoModal" class="modal-overlay" @click="showInfoModal = false">
-      <div class="modal-content card" @click.stop>
-        <h2>Server Information</h2>
-        
-        <div v-if="serverInfo" class="info-grid">
-          <h3>Application</h3>
-          <div class="info-item">
-            <span class="info-label">App Name:</span>
-            <span class="info-value">{{ serverInfo.appName }}</span>
-          </div>
-          <div class="info-item">
-            <span class="info-label">Version:</span>
-            <span class="info-value">{{ serverInfo.version }}</span>
-          </div>
-          <div class="info-item">
-            <span class="info-label">Build Date:</span>
-            <span class="info-value">{{ serverInfo.buildDate }}</span>
-          </div>
-          <div class="info-item">
-            <span class="info-label">Unity Version:</span>
-            <span class="info-value">{{ serverInfo.unityVersion }}</span>
-          </div>
-          
-          <h3>Device</h3>
-          <div class="info-item">
-            <span class="info-label">Device Model:</span>
-            <span class="info-value">{{ serverInfo.deviceModel }}</span>
-          </div>
-          <div class="info-item">
-            <span class="info-label">Operating System:</span>
-            <span class="info-value">{{ serverInfo.operatingSystem }}</span>
-          </div>
-          
-          <h3>Server</h3>
-          <div class="info-item">
-            <span class="info-label">Port:</span>
-            <span class="info-value">{{ serverInfo.serverPort }}</span>
-          </div>
+      <div v-if="banners.length" class="banners">
+        <div v-for="banner in banners" :key="banner.id" :class="['banner', banner.tone]" role="status">
+          <span>{{ banner.text }}</span>
+          <button v-if="banner.action" class="btn" @click="banner.action.run">{{ banner.action.label }}</button>
         </div>
-        
-        <button @click="showInfoModal = false" class="mt-2">Close</button>
       </div>
+
+      <main class="pages">
+        <div v-if="!configStore.config" class="empty-pane">
+          <b>{{ configStore.error ? 'Could not load the configuration' : 'Connecting to QuestX' }}</b>
+          {{ configStore.error ?? 'Waiting for the headset to answer.' }}
+        </div>
+        <!-- Pages stay mounted so they keep their state; v-show sits on a wrapper because
+             a component's own root can change (StatusView swaps its placeholder). -->
+        <template v-else>
+          <section v-show="activePage === 'camera'"><CameraPage :active="activePage === 'camera'" @navigate="activePage = $event" /></section>
+          <section v-show="activePage === '3d'"><ThreeDView :active="activePage === '3d'" /></section>
+          <section v-show="activePage === 'status'"><StatusView /></section>
+          <section v-show="activePage === 'field'"><FieldLayoutsPage /></section>
+          <section v-show="activePage === 'logs'"><LogsView /></section>
+          <section v-show="activePage === 'settings'"><SettingsPage /></section>
+        </template>
+      </main>
     </div>
+
+    <div class="toasts" aria-live="polite">
+      <div v-for="t in toasts" :key="t.id" :class="['toast', t.tone]">{{ t.text }}</div>
+    </div>
+
+    <CommandPalette v-model:open="paletteOpen" :commands="commands" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { Activity, Battery, BatteryCharging, Box, Map as MapIcon, Power, ScrollText, Settings, Video } from '@lucide/vue'
 import { useConfigStore } from './stores/config'
-import { useConnectionState } from './composables/useConnectionState'
 import { configApi } from './api/config'
-import ConfigForm from './components/ConfigForm.vue'
-import type { ServerInfo } from './types'
-import { Clock3, Info, Moon, Power, RadioOff, RefreshCw, Sun } from '@lucide/vue'
+import { useConnectionState } from './composables/useConnectionState'
+import { refreshHeadsetStatus, useHeadsetStatus } from './composables/useHeadsetStatus'
+import { refreshRunningLayout, useRunningLayout } from './composables/useRunningLayout'
+import { useFieldLayouts } from './composables/useFieldLayouts'
+import { restartQuestX } from './composables/useRestart'
+import { errorText, toast, useToasts } from './composables/useToast'
+import CameraPage from './components/CameraPage.vue'
+import ThreeDView from './components/ThreeDView.vue'
+import StatusView from './components/StatusView.vue'
+import FieldLayoutsPage from './components/FieldLayoutsPage.vue'
+import LogsView from './components/LogsView.vue'
+import SettingsPage from './components/SettingsPage.vue'
+import ConfirmButton from './components/ConfirmButton.vue'
+import CommandPalette from './components/CommandPalette.vue'
+import type { Command, PageId } from './types'
+
+const PAGES: { id: PageId; label: string; icon: typeof Video }[] = [
+  { id: 'camera', label: 'Camera & AprilTag', icon: Video },
+  { id: '3d', label: '3D view', icon: Box },
+  { id: 'status', label: 'Status', icon: Activity },
+  { id: 'field', label: 'Field layouts', icon: MapIcon },
+  { id: 'logs', label: 'Logs', icon: ScrollText },
+  { id: 'settings', label: 'Settings', icon: Settings },
+]
 
 const configStore = useConfigStore()
-const { 
-  connectionStatus, 
-  isDisconnected, 
-  secondsUntilRetry,
-  checkConnection, 
-  getReconnectDelay 
-} = useConnectionState()
+const { status } = useHeadsetStatus()
+const { runningLayoutFile } = useRunningLayout()
+const { layouts } = useFieldLayouts()
+const { toasts } = useToasts()
+const { isConnected, isDisconnected, secondsUntilRetry, checkConnection, getReconnectDelay } = useConnectionState()
 
-const showInfoModal = ref(false)
-const serverInfo = ref<ServerInfo | null>(null)
-const isDarkMode = ref(false)
+const activePage = ref<PageId>('camera')
+const paletteOpen = ref(false)
 
-// Initialize theme from localStorage or system preference
-onMounted(async () => {
-  // Check localStorage first
-  const savedTheme = localStorage.getItem('questx-theme')
-  if (savedTheme) {
-    isDarkMode.value = savedTheme === 'dark'
-  } else {
-    // The dashboard's editorial theme is dark-first; the toggle still provides a light option.
-    isDarkMode.value = true
+// ---- Banners: persistent state that needs attention, most urgent first ----
+
+interface Banner {
+  id: string
+  tone: 'red' | 'blue' | 'amber'
+  text: string
+  action?: { label: string; run: () => void }
+}
+
+const banners = computed<Banner[]>(() => {
+  const list: Banner[] = []
+  if (isDisconnected.value) {
+    list.push({
+      id: 'offline',
+      tone: 'red',
+      text: secondsUntilRetry.value > 0
+        ? `Lost connection to QuestX. Retrying in ${secondsUntilRetry.value} s`
+        : 'Lost connection to QuestX. Reconnecting…',
+      action: { label: 'Retry now', run: manualRetry },
+    })
+    return list
   }
-  applyTheme()
-  
-  // Initial check
-  await scheduleNextCheck()
+  const config = configStore.config
+  if (status.value && !status.value.isTracking) {
+    list.push({ id: 'tracking', tone: 'red', text: 'VIO tracking lost' })
+  }
+  const savedLayout = config?.aprilTagDetectorMode.fieldLayoutFile
+  if (savedLayout && runningLayoutFile.value && savedLayout !== runningLayoutFile.value) {
+    list.push({
+      id: 'layout',
+      tone: 'blue',
+      text: `Field layout saved: ${layouts.value.find(l => l.fileName === savedLayout)?.displayName ?? savedLayout}. Restart to load it`,
+      action: { label: 'Restart QuestX', run: restartQuestX },
+    })
+  }
+  if (config?.debugIpOverride) {
+    list.push({
+      id: 'debug-ip',
+      tone: 'amber',
+      text: `Debug IP override active. Robot at ${config.debugIpOverride}, team number ignored`,
+      action: { label: 'Clear override', run: clearDebugIp },
+    })
+  }
+  return list
 })
 
-function applyTheme() {
-  if (isDarkMode.value) {
-    document.documentElement.setAttribute('data-theme', 'dark')
-  } else {
-    document.documentElement.removeAttribute('data-theme')
+async function clearDebugIp() {
+  if (await configStore.updateDebugIpOverride('')) toast('Debug IP override cleared')
+}
+
+// ---- Command palette and shortcuts ----
+
+const commands = computed<Command[]>(() => {
+  const config = configStore.config
+  const pages: Command[] = PAGES.map((page, index) => ({
+    group: 'Go to',
+    label: page.label,
+    shortcut: String(index + 1),
+    run: () => { activePage.value = page.id },
+  }))
+  if (!config) return pages
+  return [
+    ...pages,
+    {
+      group: 'Actions',
+      label: config.enableAprilTagDetector ? 'Turn AprilTag detector off' : 'Turn AprilTag detector on',
+      run: () => configStore.updateEnableAprilTagDetector(!config.enableAprilTagDetector),
+    },
+    {
+      group: 'Actions',
+      label: config.enablePassthroughStream ? 'Turn passthrough stream off' : 'Turn passthrough stream on',
+      run: () => configStore.updateEnablePassthroughStream(!config.enablePassthroughStream),
+    },
+    {
+      group: 'Actions',
+      label: config.enableHighQualityStream ? 'Turn high quality stream off' : 'Turn high quality stream on',
+      run: () => configStore.updateEnableHighQualityStream(!config.enableHighQualityStream),
+    },
+    { group: 'Actions', label: 'Restart QuestX', run: restartQuestX },
+    {
+      group: 'Actions',
+      label: 'Download config.db',
+      run: () => configApi.downloadDatabase().catch(error => toast(errorText('Download failed', error), 'error')),
+    },
+  ]
+})
+
+function onKeydown(event: KeyboardEvent) {
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+    event.preventDefault()
+    paletteOpen.value = !paletteOpen.value
+    return
   }
+  const target = event.target as HTMLElement
+  const typing = target.isContentEditable || ['INPUT', 'SELECT', 'TEXTAREA'].includes(target.tagName)
+  if (typing || paletteOpen.value || event.metaKey || event.ctrlKey || event.altKey) return
+  const page = PAGES[Number(event.key) - 1]
+  if (page) activePage.value = page.id
 }
 
-function toggleTheme() {
-  isDarkMode.value = !isDarkMode.value
-  localStorage.setItem('questx-theme', isDarkMode.value ? 'dark' : 'light')
-  applyTheme()
+// ---- Polling ----
+
+// Connection check with backoff; config refresh rides on the same loop.
+let connectionTimer: ReturnType<typeof setTimeout> | undefined
+let statusTimer: ReturnType<typeof setInterval> | undefined
+
+async function scheduleNextCheck(manual = false) {
+  clearTimeout(connectionTimer)
+  const connected = await checkConnection(manual)
+  if (connected) await configStore.loadConfig(false)
+  connectionTimer = setTimeout(scheduleNextCheck, connected ? 3000 : getReconnectDelay())
 }
 
-const connectionStatusText = computed(() => {
-  switch (connectionStatus.value) {
-    case 'connected': return 'Connected'
-    case 'disconnected': return 'Disconnected'
-    case 'connecting': return 'Connecting...'
+function manualRetry() {
+  scheduleNextCheck(true)
+}
+
+watch(isConnected, connected => {
+  if (connected) {
+    refreshHeadsetStatus()
+    refreshRunningLayout()
   }
 })
 
-function formatTime(timestamp: number): string {
-  const date = new Date(timestamp)
-  return date.toLocaleTimeString()
-}
-
-// Monitor connection status with exponential backoff
-let statusCheckInterval: number | null = null
-
-async function scheduleNextCheck() {
-  const connected = await checkConnection(false) // Automatic retry
-  
-  // Schedule next check based on connection state
-  const delay = connected ? 3000 : getReconnectDelay()
-  
-  if (statusCheckInterval !== null) {
-    clearTimeout(statusCheckInterval)
-  }
-  
-  statusCheckInterval = setTimeout(scheduleNextCheck, delay) as unknown as number
-}
-
-async function manualRetry() {
-  // Cancel the scheduled automatic retry
-  if (statusCheckInterval !== null) {
-    clearTimeout(statusCheckInterval)
-  }
-  
-  // Try to connect immediately with manual flag (doesn't increment backoff)
-  const connected = await checkConnection(true) // Manual retry
-  
-  // Schedule next automatic check based on result
-  const delay = connected ? 3000 : getReconnectDelay()
-  statusCheckInterval = setTimeout(scheduleNextCheck, delay) as unknown as number
-}
-
-onMounted(async () => {
-  // Initial check
-  await scheduleNextCheck()
+onMounted(() => {
+  scheduleNextCheck()
+  statusTimer = setInterval(() => {
+    if (isConnected.value) refreshHeadsetStatus()
+  }, 1000)
+  window.addEventListener('keydown', onKeydown)
 })
 
 onUnmounted(() => {
-  if (statusCheckInterval !== null) {
-    clearTimeout(statusCheckInterval)
-  }
+  clearTimeout(connectionTimer)
+  clearInterval(statusTimer)
+  window.removeEventListener('keydown', onKeydown)
 })
-
-async function refreshData() {
-  await configStore.loadConfig()
-}
-
-async function showInfo() {
-  try {
-    serverInfo.value = await configApi.getServerInfo()
-    showInfoModal.value = true
-  } catch (error) {
-    console.error('Failed to load server info:', error)
-  }
-}
-
-async function handleRestart() {
-  if (!confirm('Are you sure you want to restart the QuestX application? This will disconnect and restart the app on the Quest headset.')) {
-    return
-  }
-  
-  try {
-    await configApi.restartApp()
-    // Show message that restart was triggered
-    alert('Restart command sent. The app will restart shortly.')
-  } catch (error) {
-    console.error('Failed to restart app:', error)
-    alert('Failed to send restart command: ' + (error instanceof Error ? error.message : 'Unknown error'))
-  }
-}
 </script>
 
 <style scoped>
-/* Disconnect Overlay */
-.disconnect-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(10, 10, 10, 0.72);
-  backdrop-filter: blur(6px);
+.app {
   display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 9999;
-  padding: 2rem;
-}
-
-.disconnect-card {
-  max-width: 500px;
-  padding: 3rem;
-  text-align: center;
-  background: var(--card-bg);
-  border: 1px solid var(--danger-color);
-  box-shadow: none;
-}
-
-.disconnect-icon {
-  color: var(--danger-color);
-  margin-bottom: 1.5rem;
-  animation: disconnectPulse 2s ease-in-out infinite;
-}
-
-@keyframes disconnectPulse {
-  0%, 100% {
-    opacity: 1;
-    transform: scale(1);
-  }
-  50% {
-    opacity: 0.6;
-    transform: scale(1.1);
-  }
-}
-
-.disconnect-card h2 {
-  color: var(--text-primary);
-  font-size: 2rem;
-  margin-bottom: 1rem;
-  font-weight: 520;
-}
-
-.disconnect-card > p {
-  color: var(--text-secondary);
-  font-size: 1rem;
-  margin-bottom: 2rem;
-}
-
-.reconnect-info {
-  margin: 2rem 0;
-  padding: 1.5rem;
-  background: var(--bg-tertiary);
-  border-radius: 4px;
-  border: 1px solid var(--border-color);
-}
-
-.retry-countdown {
-  font-size: 1rem; /* Base body text: 16px */
-  color: var(--text-primary);
-  font-weight: 600;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.75rem;
-}
-
-.spinner-small {
-  width: 16px;
-  height: 16px;
-  border: 1px solid var(--border-strong);
-  border-top-color: transparent;
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
-
-.retry-button {
-  padding: 0.75rem 1.5rem;
-  background: transparent;
-  color: var(--danger-color);
-  border: 1px solid var(--danger-color);
-  border-radius: 4px;
-  font-weight: 650;
-  font-size: 0.78rem;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  box-shadow: none;
-  margin-top: 1rem;
-}
-
-.retry-button:hover {
-  background: var(--danger-color);
-  border-color: var(--danger-color);
-  color: #fff;
-  transform: none;
-  box-shadow: none;
-}
-
-.retry-button:active {
-  transform: translateY(0);
-}
-
-.fade-enter-active, .fade-leave-active {
-  transition: opacity 0.3s ease;
-}
-
-.fade-enter-from, .fade-leave-to {
-  opacity: 0;
-}
-
-.app-container {
   min-height: 100vh;
-  display: flex;
-  flex-direction: column;
-  background: var(--bg-color);
 }
 
-.app-header {
-  background: var(--header-bg);
-  border-bottom: 1px solid var(--border-color);
-  padding: 1rem 2rem;
+.rail {
   position: sticky;
   top: 0;
-  z-index: 100;
-  box-shadow: none;
-  backdrop-filter: blur(16px);
-}
-
-.header-content {
-  max-width: 1400px;
-  margin: 0 auto;
+  z-index: 20;
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 1.5rem;
-}
-
-.header-left {
-  display: flex;
-  align-items: center;
-  gap: 2rem;
-}
-
-.logo-container {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-}
-
-.logo {
-  height: 64px;
-  width: auto;
-  filter: none;
-}
-
-.header-info {
-  display: flex;
+  flex: 0 0 56px;
   flex-direction: column;
-  gap: 0.35rem;
-}
-
-.last-updated {
-  font-size: 0.7rem;
-  color: var(--text-secondary);
-  display: flex;
   align-items: center;
-  gap: 0.4rem;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  width: 56px;
+  height: 100vh;
+  padding-bottom: 10px;
+  border-right: 1px solid var(--line);
+  background: var(--rail);
 }
 
-.info-icon {
-  font-size: 0.875rem; /* Small text: 14px */
-}
-
-.connection-status {
-  font-size: 0.72rem;
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-weight: 600;
-  padding: 0.25rem 0.75rem;
-  border-radius: 4px;
-  background: transparent;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-}
-
-.connection-status .status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  display: inline-block;
-}
-
-.connection-status.connected {
-  color: var(--success-color);
-  background: transparent;
-  border: 0;
-  box-shadow: none;
-}
-
-.connection-status.connected .status-dot {
-  background-color: var(--success-color);
-}
-
-.connection-status.disconnected {
-  color: var(--danger-color);
-  background: transparent;
-  border: 1px solid var(--danger-color);
-  box-shadow: none;
-}
-
-.connection-status.disconnected .status-dot {
-  background-color: var(--danger-color);
-}
-
-.connection-status.connecting {
-  color: var(--warning-color);
-  background: transparent;
-  border: 1px solid var(--warning-color);
-  box-shadow: none;
-}
-
-.connection-status.connecting .status-dot {
-  background-color: var(--warning-color);
-  animation: pulse 2s ease-in-out infinite;
-}
-
-@keyframes pulse {
-  0%, 100% { 
-    opacity: 1;
-    transform: scale(1);
-  }
-  50% { 
-    opacity: 0.3;
-    transform: scale(0.8);
-  }
-}
-
-.header-right {
-  display: flex;
-  gap: 0.75rem;
-}
-
-.icon-button {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.6rem 1.2rem;
-  font-size: 0.875rem; /* Small text: 14px */
-}
-
-.icon-button.theme-toggle {
-  padding: 0.6rem;
-  min-width: auto;
-  background: transparent;
-  border: 1px solid var(--border-strong);
-  color: var(--text-primary);
-}
-
-.icon-button.theme-toggle:hover {
-  background: var(--bg-tertiary);
-  border-color: var(--primary-color);
-  color: var(--primary-color);
-}
-
-.theme-icon {
-  width: 20px;
-  height: 20px;
-  stroke: currentColor;
-}
-
-.button-icon {
-  font-size: 1rem; /* Base icon size: 16px */
-}
-
-.app-content {
-  flex: 1;
-  padding: 2rem;
-  max-width: 1400px;
-  width: 100%;
-  margin: 0 auto;
-}
-
-.modal-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-color: rgba(0, 0, 0, 0.78);
+.rail-logo {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 1000;
-  padding: 1rem;
-  backdrop-filter: blur(4px);
-  animation: fadeIn 0.2s ease;
+  height: 56px;
+  margin-bottom: 4px;
 }
 
-@keyframes fadeIn {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
+.rail-logo img {
+  display: block;
+  width: 42px;
+  padding: 6px 4px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #15161a;
 }
 
-.modal-content {
-  max-width: 700px;
-  width: 100%;
-  max-height: 90vh;
-  overflow-y: auto;
-  animation: slideUp 0.3s ease;
-}
-
-@keyframes slideUp {
-  from {
-    transform: translateY(30px);
-    opacity: 0;
-  }
-  to {
-    transform: translateY(0);
-    opacity: 1;
-  }
-}
-
-.modal-content h2 {
-  color: var(--text-primary);
-  margin-bottom: 1rem;
-  font-size: 1.5rem; /* Consistent h2 size: 24px */
-}
-
-.info-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-  margin-top: 1.5rem;
-}
-
-.info-grid h3 {
-  margin-top: 1.5rem;
-  margin-bottom: 0.75rem;
-  color: var(--text-primary);
-  font-size: 1.125rem; /* Consistent h3 size: 18px */
-  border-bottom: 1px solid var(--border-color);
-  padding-bottom: 0.5rem;
+.rail-btn {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  margin: 2px 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-2);
 }
 
-.info-grid h3::before {
-  content: '';
-  width: 1.25rem;
-  height: 1px;
-  background: var(--primary-color);
+.rail-btn:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text);
 }
 
-.info-grid h3:first-of-type {
-  margin-top: 0;
+.rail-btn.active {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--blue-soft);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
 }
 
-.info-item {
-  display: grid;
-  grid-template-columns: 160px 1fr;
-  gap: 1rem;
-  padding: 0.75rem;
-  background: var(--bg-tertiary);
+.tip {
+  position: absolute;
+  top: 50%;
+  left: 46px;
+  display: none;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px 4px 9px;
+  transform: translateY(-50%);
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  background: #1a1b1f;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.rail-btn:hover .tip {
+  display: inline-flex;
+}
+
+.tip kbd {
+  padding: 0 5px;
+  border: 1px solid var(--line-strong);
   border-radius: 4px;
-  border-left: 1px solid var(--primary-color);
-  transition: all 0.2s ease;
+  color: var(--muted);
+  font-family: var(--font-sans);
+  font-size: 10.5px;
+  line-height: 16px;
 }
 
-.info-item:hover {
-  background: var(--bg-secondary);
+.main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
 }
 
-.info-label {
-  font-weight: 600;
-  color: var(--text-secondary);
-  font-size: 0.875rem; /* Small text: 14px */
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  height: 48px;
+  padding: 0 28px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(8, 9, 10, 0.8);
+  backdrop-filter: blur(12px);
 }
 
-.info-value {
-  color: var(--text-primary);
-  word-break: break-all;
-  font-size: 0.875rem; /* Small text: 14px */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--text-2);
+  font-size: 12.5px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
 }
 
-@media (max-width: 1024px) {
-  .header-content {
-    max-width: 100%;
-  }
-  
-  .app-content {
-    max-width: 100%;
-  }
-  
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 30px;
+  height: 30px;
+  padding: 0 7px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 12.5px;
+  font-weight: 500;
 }
 
-@media (max-width: 768px) {
-  .header-content {
+.icon-btn:hover {
+  border-color: var(--red-border);
+  background: rgba(229, 72, 77, 0.12);
+  color: var(--red-text);
+}
+
+.icon-btn.confirming {
+  border-color: var(--red);
+  background: var(--red);
+  color: #fff;
+}
+
+.banners {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px 28px 0;
+}
+
+.banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 40px;
+  padding: 6px 8px 6px 14px;
+  border: 1px solid;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.banner::before {
+  content: '';
+  flex: 0 0 7px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.banner .btn {
+  margin-left: auto;
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.banner.red {
+  border-color: rgba(229, 72, 77, 0.28);
+  background: var(--red-tint);
+  color: #ff9b9e;
+}
+
+.banner.blue {
+  border-color: var(--blue-border);
+  background: rgba(94, 106, 210, 0.09);
+  color: #c3c9ff;
+}
+
+.banner.amber {
+  border-color: var(--amber-border);
+  background: rgba(227, 184, 101, 0.07);
+  color: #f0cf8e;
+}
+
+.pages {
+  flex: 1;
+  padding: 22px 28px 32px;
+}
+
+.offline .pages {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.toasts {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 70;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.toast {
+  position: relative;
+  max-width: 420px;
+  padding: 9px 14px 9px 30px;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  background: #1a1b1f;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  font-weight: 500;
+}
+
+.toast::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 13px;
+  width: 7px;
+  height: 7px;
+  margin-top: -3.5px;
+  border-radius: 50%;
+  background: var(--blue-soft);
+}
+
+.toast.error::before {
+  background: var(--red);
+}
+
+@media (max-width: 640px) {
+  .app {
     flex-direction: column;
-    align-items: stretch;
   }
-  
-  .header-left {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 1rem;
-  }
-  
-  .logo-container {
+
+  .rail {
+    flex: 0 0 52px;
+    flex-direction: row;
+    justify-content: space-around;
     width: 100%;
+    height: 52px;
+    padding: 0 6px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
   }
-  
-  .header-right {
-    justify-content: space-between;
-    flex-wrap: wrap;
+
+  .rail-logo {
+    height: 52px;
+    margin: 0;
   }
-  
-  .icon-button .button-text {
-    display: none;
+
+  .tip {
+    display: none !important;
   }
-  
-  .icon-button {
-    padding: 0.6rem;
-    flex: 1;
-    justify-content: center;
+
+  .topbar {
+    top: 52px;
+    padding: 0 14px;
   }
-  
-  .icon-button.theme-toggle {
-    flex: 0;
-    min-width: 44px;
-  }
-  
-  .app-content {
-    padding: 1rem;
-  }
-  
-  .info-item {
-    grid-template-columns: 1fr;
-    gap: 0.5rem;
+
+  .pages,
+  .banners {
+    padding-right: 12px;
+    padding-left: 12px;
   }
 }
 </style>

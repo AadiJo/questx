@@ -155,6 +155,11 @@ Generate C# files from proto definitions:
   ```bash
   npm run build
   ```
+- To work on the dashboard without a headset, start the mock server in one terminal and the dev server in another. The mock serves fake status, a synthetic camera frame with tags 25 and 26, and keeps setting changes in memory.
+  ```bash
+  npm run mock
+  VITE_API_TARGET=http://127.0.0.1:5899 npm run dev
+  ```
 
 ### Step 9: Import the Project into Unity
 
