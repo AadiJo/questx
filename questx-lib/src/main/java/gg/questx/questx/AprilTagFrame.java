@@ -94,6 +94,11 @@ public record AprilTagFrame(
   /**
    * Creates an AprilTag frame and defensively copies its lists and covariance matrices.
    *
+   * <p>Manually supplied covariance matrices must be finite, symmetric, and positive definite; use
+   * null for unavailable covariance. This constructor copies matrices without validating those
+   * preconditions. Network measurements are validated by the wire decoder before this constructor
+   * is called.
+   *
    * @param fieldPose3d field-relative pose of the robot (the solved headset pose through the
    *     robot-to-Quest transform set in the QuestX web interface)
    * @param measurementTimestamp NetworkTables server timestamp in seconds
@@ -329,7 +334,8 @@ public record AprilTagFrame(
   }
 
   /**
-   * Returns whether the Quest reported this measurement's full covariance.
+   * Returns whether this measurement has a reported full covariance. For manually constructed
+   * frames this tests availability only; see the constructor's matrix validity preconditions.
    *
    * @return true when {@link #covariance()} holds numbers
    */
@@ -352,7 +358,8 @@ public record AprilTagFrame(
   }
 
   /**
-   * Returns whether the Quest reported a usable component-wise planar covariance.
+   * Returns whether this measurement has a reported component-wise planar covariance. For manually
+   * constructed frames this tests availability only; see the constructor's validity preconditions.
    *
    * @return true when {@link #planarCovariance()} holds numbers
    */
