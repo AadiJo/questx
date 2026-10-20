@@ -108,6 +108,15 @@ namespace QuestX.Native.NTCore
             return NtCoreNatives.NT_IsConnected(handle) != 0;
         }
 
+        /// <summary>
+        /// Sends updated values to the server now instead of at the next periodic send.
+        /// ntcore rate-limits flushes to protect the network.
+        /// </summary>
+        public void Flush()
+        {
+            NtCoreNatives.NT_Flush(handle);
+        }
+
         public BooleanPublisher GetBooleanPublisher(string name, PubSubOptions options)
         {
             var pubHandle = Publish(

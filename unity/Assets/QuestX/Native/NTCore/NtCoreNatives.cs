@@ -291,6 +291,9 @@ namespace QuestX.Native.NTCore
         public static extern int NT_IsConnected(uint inst);
 
         [DllImport("ntcore")]
+        public static extern void NT_Flush(uint inst);
+
+        [DllImport("ntcore")]
         public static extern uint NT_GetTopic(uint inst, WpiString* name);
 
         [DllImport("ntcore")]
