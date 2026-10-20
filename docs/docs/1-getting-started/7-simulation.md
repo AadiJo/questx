@@ -6,12 +6,15 @@ title: Testing & Simulation
 
 The [QuestX Robot Sim Example](https://github.com/juchong/QuestX-Robot-Sim-Example) is a complete WPILib project that runs in the desktop simulator out of the box. It demonstrates the full integration pattern covered throughout these docs:
 
-- `ROBOT_TO_QUEST` mounting transform
 - Pose fusion with `DifferentialDrivePoseEstimator` via `addVisionMeasurement`
 - All lifecycle callbacks (connection, tracking, low-battery, command responses)
 - Field-bounds rejection of bad pose readings
 - Pose seeding on `autonomousInit`
 - AdvantageScope-friendly NetworkTables telemetry
+
+:::note
+The robot-to-Quest mount is now set on the headset, in the web interface's **3D** tab. If your copy of the example applies a `ROBOT_TO_QUEST` transform to QuestX poses, remove it, or the mount is applied twice. See [Robot-to-Quest mount](./robot-code#robot-to-quest-mount).
+:::
 
 :::tip
 Clone the example and run `./gradlew simulateJava` for a known-good baseline before integrating QuestX into your own robot project. It's also a useful comparison point when troubleshooting your own integration.

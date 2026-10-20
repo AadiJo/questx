@@ -101,6 +101,12 @@ namespace QuestX.Network
         ulong AprilTagPublishCount { get; }
 
         /// <summary>
+        /// The robot's alliance from the Driver Station (/FMSInfo/IsRedAlliance): true for red,
+        /// false for blue, or null while disconnected or before the robot publishes it.
+        /// </summary>
+        bool? IsRedAlliance { get; }
+
+        /// <summary>
         /// Publishes device data to NetworkTables.
         /// </summary>
         /// <param name="trackingLostCounter">Number of tracking lost events this session</param>
@@ -215,6 +221,11 @@ namespace QuestX.Network
         /// Subscriber for command requests (robot to Quest)
         /// </summary>
         private readonly ProtobufSubscriber<ProtobufQuestXCommand> commandRequestSubscriber;
+
+        /// <summary>
+        /// Subscriber for the Driver Station's alliance, which WPILib robots publish under FMSInfo.
+        /// </summary>
+        private readonly BooleanSubscriber redAllianceSubscriber;
 
         /// <summary>
         /// Publisher for video streams
@@ -355,6 +366,11 @@ namespace QuestX.Network
              * SUBSCRIBER SETUP - Quest receives data FROM robot
              * Robot can send commands like pose resets, calibration requests, etc.
              */
+            redAllianceSubscriber = ntInstance.GetBooleanSubscriber(
+                "/FMSInfo/IsRedAlliance",
+                PubSubOptions.AllDefault
+            );
+
             commandRequestSubscriber = ntInstance.GetProtobufSubscriber<ProtobufQuestXCommand>(
                 QuestXConstants.Topics.COMMAND_REQUEST,
                 "questx.protos.commands.ProtobufQuestXCommand",
@@ -400,6 +416,23 @@ namespace QuestX.Network
 
         /// <inheritdoc />
         public ulong AprilTagPublishCount { get; private set; }
+
+        /// <inheritdoc />
+        public bool? IsRedAlliance
+        {
+            get
+            {
+                if (!IsConnected)
+                {
+                    return null;
+                }
+                // The subscriber returns the default only when no value exists, so two reads
+                // with opposite defaults disagree exactly when nothing has been published.
+                bool readFalse = redAllianceSubscriber.Get(false);
+                bool readTrue = redAllianceSubscriber.Get(true);
+                return readFalse == readTrue ? readFalse : null;
+            }
+        }
         #endregion
 
         #region Event Publishers

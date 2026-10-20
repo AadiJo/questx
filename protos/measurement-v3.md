@@ -82,17 +82,18 @@ above about 0.2).
 seven-value raw fiducial per tag after the 11 header values, and
 `/QuestX/limelight/rawfiducials` carries the same records: ID, `txnc` and `tync`
 in degrees from the principal point, area as a percentage of the image, distance
-to the camera, distance to the headset (the botpose robot center), and
-ambiguity. `LimelightHelpers.getBotPoseEstimate_wpiBlue` fills `rawFiducials`
+to the camera, distance to the headset center eye, and ambiguity. `botpose_wpiblue`
+is the robot origin (the headset pose through the robot-to-Quest transform set in
+the web interface); `headsetpose_wpiblue` is the headset center eye. `LimelightHelpers.getBotPoseEstimate_wpiBlue` fills `rawFiducials`
 only when the length is exactly `11 + 7 × tagCount`, which these arrays satisfy.
 Index 10 is now the mean tag area; tag span (index 8) is still unsupported and 0.
 
-Like Limelight's orientation setting, `txnc` and `tync` are measured in the
-upright image for the configured camera orientation (web interface, Camera tab):
-upside-down negates both, and Left or Right swaps them, so right and up stay
-positive. Headset poses (VIO, AprilTag, and `botpose`) are reported as an upright
-headset at the same point: the mount roll is undone about the headset's forward axis,
-which leaves position and yaw unchanged.
+`txnc` and `tync` are measured in the upright image for the configured camera
+orientation (web interface, Camera tab): upside-down negates both, and Left or Right
+swaps them, so right and up stay positive. Current Limelight OS leaves its targeting
+angles in the sensor frame for every stream orientation, so this differs from a
+rotated Limelight. Poses ignore the orientation entirely, as Limelight's do: a rolled
+headset's roll belongs in the robot-to-Quest transform.
 
 ## Telemetry
 

@@ -23,6 +23,94 @@ export enum CameraOrientation {
   Right = 3,
 }
 
+// Headset center-eye pose in the robot frame (WPILib axes): meters and degrees.
+// Published poses are the robot's pose, so robot code must not apply this again.
+export interface RobotToQuest {
+  x: number
+  y: number
+  z: number
+  roll: number
+  pitch: number
+  yaw: number
+}
+
+// WPILib pose: meters, unit quaternion (w, x, y, z).
+export interface PoseJson {
+  x: number
+  y: number
+  z: number
+  qw: number
+  qx: number
+  qy: number
+  qz: number
+}
+
+export type SceneTagStatus = 'used' | 'ignored' | 'unknown'
+
+export interface SceneTag {
+  id: number
+  status: SceneTagStatus
+  // Single-tag pose in the camera frame (X forward, Y left, Z up); null if it did not solve.
+  cameraToTag: PoseJson | null
+  ambiguity: number
+  reprojectionErrorPixels: number | null
+}
+
+// GET /api/scene: everything the 3D views draw.
+export interface SceneResponse {
+  // Driver Station alliance from /FMSInfo/IsRedAlliance, or null while unknown.
+  alliance: 'red' | 'blue' | null
+  robotToQuest: PoseJson
+  vio: {
+    tracking: boolean
+    epoch: number
+    ageMs: number
+    // Local VIO frame, not field-aligned.
+    robotPose: PoseJson
+    headsetPose: PoseJson
+  } | null
+  field: {
+    // Display only: VIO carried into the field frame by the last tag solve.
+    estimate: PoseJson | null
+    lastCorrection: { meters: number; yawRadians: number; intervalSeconds: number } | null
+    measurement: {
+      ageMs: number
+      robotPose: PoseJson
+      headsetPose: PoseJson
+      tagIds: number[]
+      ambiguity: number
+      reprojectionErrorPixels: number | null
+      averageTagDistanceMeters: number
+      stdDevs: {
+        xMeters: number
+        yMeters: number
+        zMeters: number
+        rollRadians: number
+        pitchRadians: number
+        yawRadians: number
+      }
+    } | null
+  }
+  detections: {
+    ageMs: number
+    width: number
+    height: number
+    intrinsics: { fx: number; fy: number; cx: number; cy: number }
+    headsetToCamera: PoseJson
+    tags: SceneTag[]
+  } | null
+  detector: { active: boolean; lastOutcome: string; lastReason: string } | null
+}
+
+// GET /api/scene/layout: the field layout loaded at startup.
+export interface SceneLayout {
+  file: string
+  loaded: boolean
+  tagSize: number
+  field: { length: number; width: number } | null
+  tags: { id: number; pose: PoseJson }[]
+}
+
 export interface AprilTagFrameMetadata {
   version: 1
   enabled: boolean
@@ -76,6 +164,7 @@ export interface ConfigResponse {
   enablePassthroughStream: boolean
   enableHighQualityStream: boolean
   cameraOrientation: CameraOrientation
+  robotToQuest: RobotToQuest
   enableDebugLogging: boolean
   streamMode: StreamModeModel
   enableAprilTagDetector: boolean
@@ -91,6 +180,7 @@ export interface ConfigUpdateRequest {
   enablePassthroughStream?: boolean
   enableHighQualityStream?: boolean
   cameraOrientation?: CameraOrientation
+  robotToQuest?: RobotToQuest
   enableDebugLogging?: boolean
   streamMode?: StreamModeModel
   enableAprilTagDetector?: boolean

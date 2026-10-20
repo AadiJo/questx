@@ -58,6 +58,7 @@ namespace QuestX.WebServer.Server
 
         private readonly VideoStreamProvider streamProvider;
         private readonly AprilTagOverlayDomain aprilTagOverlay;
+        private readonly SceneProvider sceneProvider;
 
         /// <summary>
         /// Meta SDK passthrough camera reference. Used to enumerate supported resolutions
@@ -103,7 +104,8 @@ namespace QuestX.WebServer.Server
             LogCollector logCollector,
             VideoStreamProvider streamProvider,
             PassthroughCameraAccess cameraAccess,
-            AprilTagOverlayDomain aprilTagOverlay
+            AprilTagOverlayDomain aprilTagOverlay,
+            SceneProvider sceneProvider
         )
         {
             this.configManager = configManager;
@@ -116,6 +118,7 @@ namespace QuestX.WebServer.Server
             this.streamProvider = streamProvider;
             this.cameraAccess = cameraAccess;
             this.aprilTagOverlay = aprilTagOverlay;
+            this.sceneProvider = sceneProvider;
 
             cachedDatabasePath = Path.Combine(Application.persistentDataPath, "config.db");
 
@@ -374,6 +377,15 @@ namespace QuestX.WebServer.Server
                 {
                     await HandleAprilTagFrame(context);
                 }
+                else if (path == "/api/scene" && context.Request.HttpVerb == HttpVerbs.Get)
+                {
+                    context.Response.Headers.Add("Cache-Control", "no-store");
+                    await SendJsonResponse(context, sceneProvider.GetScene());
+                }
+                else if (path == "/api/scene/layout" && context.Request.HttpVerb == HttpVerbs.Get)
+                {
+                    await SendJsonResponse(context, sceneProvider.GetLayout());
+                }
                 else if (
                     path == "/api/apriltag-field-layouts"
                     && context.Request.HttpVerb == HttpVerbs.Get
@@ -445,6 +457,17 @@ namespace QuestX.WebServer.Server
             }
         }
 
+        private static RobotToQuestModel ToModel(RobotToQuest value) =>
+            new RobotToQuestModel
+            {
+                x = value.XMeters,
+                y = value.YMeters,
+                z = value.ZMeters,
+                roll = value.RollDegrees,
+                pitch = value.PitchDegrees,
+                yaw = value.YawDegrees,
+            };
+
         private async Task HandleGetConfig(IHttpContext context)
         {
             var streamMode = await configManager.GetPassthroughStreamModeAsync();
@@ -459,6 +482,7 @@ namespace QuestX.WebServer.Server
                 enablePassthroughStream = await configManager.GetEnablePassthroughStreamAsync(),
                 enableHighQualityStream = await configManager.GetEnableHighQualityStreamsAsync(),
                 cameraOrientation = (int)await configManager.GetCameraOrientationAsync(),
+                robotToQuest = ToModel(await configManager.GetRobotToQuestAsync()),
                 streamMode = new StreamModeModel
                 {
                     width = streamMode.Width,
@@ -567,6 +591,21 @@ namespace QuestX.WebServer.Server
                     await configManager.SetCameraOrientationAsync(
                         (CameraOrientation)request.CameraOrientation.Value
                     );
+                }
+                if (request.RobotToQuest != null)
+                {
+                    var m = request.RobotToQuest;
+                    var robotToQuest = new RobotToQuest(m.x, m.y, m.z, m.roll, m.pitch, m.yaw);
+                    if (!robotToQuest.IsValid(out string reason))
+                    {
+                        context.Response.StatusCode = 400;
+                        await SendJsonResponse(
+                            context,
+                            new SimpleResponse { success = false, message = reason }
+                        );
+                        return;
+                    }
+                    await configManager.SetRobotToQuestAsync(robotToQuest);
                 }
                 if (request.StreamMode != null)
                 {
@@ -1791,6 +1830,13 @@ namespace QuestX.WebServer.Server
                 parts.Add($"enableHighQualityStream={request.EnableHighQualityStream.Value}");
             if (request.CameraOrientation.HasValue)
                 parts.Add($"cameraOrientation={request.CameraOrientation.Value}");
+            if (request.RobotToQuest != null)
+            {
+                var m = request.RobotToQuest;
+                parts.Add(
+                    $"robotToQuest=({m.x:F3},{m.y:F3},{m.z:F3} m; {m.roll:F1},{m.pitch:F1},{m.yaw:F1} deg)"
+                );
+            }
             if (request.StreamMode != null)
             {
                 var s = request.StreamMode;

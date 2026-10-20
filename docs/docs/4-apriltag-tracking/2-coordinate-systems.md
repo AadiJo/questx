@@ -14,17 +14,17 @@ QuestX crosses three coordinate systems:
 
 ## Local VIO
 
-`/QuestX/vioData` contains the center-eye anchor pose relative to the Oculus tracking space. The app converts its axes into WPILib conventions, but it does not turn the arbitrary tracking-space origin into a field origin.
+`/QuestX/vioData` contains the robot origin pose relative to the Oculus tracking space. The headset tracks its center-eye anchor and converts it to the robot origin with `headsetPose.transformBy(robotToQuest.inverse())`, using the robot-to-Quest mount set in the web interface's **3D** tab. The app converts its axes into WPILib conventions, but it does not turn the arbitrary tracking-space origin into a field origin.
 
 The pose intentionally excludes the Unity camera-rig root. Legacy display-space pose resets therefore do not alter the measurement stream.
 
-An Oculus recenter can redefine tracking space. The `trackingEpoch` field identifies each continuous local frame.
+An Oculus recenter can redefine tracking space. Changing the robot-to-Quest mount also starts a new epoch. The `trackingEpoch` field identifies each continuous local frame.
 
 ## Field-relative AprilTag pose
 
 The field layout stores known tag poses in WPILib field coordinates. PoseLib solves the passthrough camera pose in computer-vision coordinates, after which `CvToFrc` converts the result to a field-relative `Pose3d`.
 
-That result describes the Quest camera, not the robot center. Robot code must apply the measured `ROBOT_TO_QUEST` mounting transform before using it as a robot vision pose.
+The headset converts that result to the robot origin through the robot-to-Quest mount before publishing it. `/QuestX/aprilTagData` and the Limelight-compatible `botpose_wpiblue` therefore describe the robot, and robot code uses them directly as robot vision poses. Do not apply the mount again in robot code. `headsetpose_wpiblue` still reports the headset center eye.
 
 ## Frame alignment
 

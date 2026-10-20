@@ -13,7 +13,7 @@ Robot code should:
 1. drain every unread VIO and AprilTag sample;
 2. reject VIO samples when tracking is invalid or their epoch is unknown;
 3. maintain a local-VIO-to-field transform for each tracking epoch;
-4. convert the Quest camera pose to the robot-center pose using the mount transform;
+4. use the published poses directly as robot poses, since the headset already applies the robot-to-Quest mount;
 5. reject AprilTag measurements using field bounds, innovation, tag geometry, age, and quality;
 6. pass accepted poses, NetworkTables measurement timestamps, and standard deviations to the drivetrain estimator;
 7. log both accepted and rejected measurements with a reason.
@@ -33,9 +33,9 @@ for (AprilTagFrame frame : questX.getAllUnreadAprilTagFrames()) {
     continue;
   }
 
-  Pose3d robotPose = frame.fieldPose3d().transformBy(ROBOT_TO_QUEST.inverse());
+  // fieldPose3d() is already the robot pose; the headset applies the mount.
   drivePoseEstimator.addVisionMeasurement(
-      robotPose.toPose2d(),
+      frame.fieldPose3d().toPose2d(),
       frame.measurementTimestamp(),
       frame.pose2dStdDevs());
 }
@@ -59,4 +59,4 @@ A planar tag usually admits two camera poses that explain its corners. `ambiguit
 
 ## Compatibility
 
-The legacy fused `frameData` and `PoseFrame` APIs remain temporarily available but are deprecated. New integrations should use the separate streams. `setPose()` re-bases VIO position and yaw and starts a new tracking epoch; it does not fuse AprilTag data on the Quest.
+The legacy fused `frameData` and `PoseFrame` APIs remain temporarily available but are deprecated. New integrations should use the separate streams. `setPose()` takes a robot pose, re-bases VIO position and yaw, and starts a new tracking epoch; it does not fuse AprilTag data on the Quest.

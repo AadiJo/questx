@@ -8,11 +8,13 @@ It does **not** describe the older `gg.QuestNav.QuestNavExperimental` APK that r
 
 The app connects as an NT4 client on port `5810`. Application data uses the `/QuestX` table; CameraServer-compatible metadata uses `/CameraPublisher/Passthrough`.
 
+Every published pose is the **robot's** pose. The headset measures its own center-eye pose and converts it with the robot-to-Quest transform set in the web interface (3D tab, Robot view): `robotPose = headsetPose.transformBy(robotToQuest.inverse())`. Robot code must not apply a `ROBOT_TO_QUEST` offset of its own. Changing the transform starts a new VIO tracking epoch. The camera orientation setting (Camera tab) never changes a pose; it only rotates images and image angles.
+
 ## Active Quest-to-robot publications
 
 | NT topic | NT type | Update behavior | Value |
 | --- | --- | --- | --- |
-| `/QuestX/vioData` | `proto:questx.protos.data.ProtobufQuestXVioData` | Nominally 120 Hz after app initialization | Unfused center-eye VIO pose in the Quest's local tracking frame, plus timing, sequence, and tracking-state metadata. The app explicitly uses `capture_timestamp_micros` as the NT value timestamp. |
+| `/QuestX/vioData` | `proto:questx.protos.data.ProtobufQuestXVioData` | Nominally 120 Hz after app initialization | Unfused VIO robot pose (center eye through the robot-to-Quest transform) in the Quest's local tracking frame, plus timing, sequence, and tracking-state metadata. The app explicitly uses `capture_timestamp_micros` as the NT value timestamp. |
 | `/QuestX/aprilTagData` | `proto:questx.protos.data.ProtobufQuestXAprilTagData` | Event-driven; only when the detector produces a locally accepted pose | Field-relative AprilTag pose plus contributing-tag, solve-quality, distance, and suggested-uncertainty metadata. The app explicitly uses `capture_timestamp_micros` as the NT value timestamp. |
 | `/QuestX/v2/vioQuality` | `double[]` (25 values) | Nominally 15 Hz after app initialization | VIO quality: the VIO displacement error measured from environment depth since a keyframe, its per-axis uncertainty, and head tracking state. Separate topic so `/QuestX/v2/vio` keeps its fixed 14-value length. The app uses the capture timestamp as the NT value timestamp. |
 | `/QuestX/deviceData` | `proto:questx.protos.data.ProtobufQuestXDeviceData` | Nominally 3 Hz | Battery percentage and number of transitions from tracking to not-tracking during the current app process. |
@@ -26,10 +28,10 @@ The app connects as an NT4 client on port `5810`. Application data uses the `/Qu
 | `sequence_id` | Unsigned counter starting at `0` for each app process and incrementing for every VIO publication. |
 | `capture_timestamp_micros` | NT clock time, in microseconds, sampled beside the pose. The same value is supplied as the NT publication timestamp. |
 | `app_timestamp` | Unity `Time.timeAsDouble`, in seconds since app startup. This is diagnostic time, not the robot-estimator timestamp. |
-| `pose3d.translation.{x,y,z}` | Center-eye position in meters, relative to the current Quest tracking origin. Axes are converted to WPILib convention: FRC X = Unity Z, FRC Y = -Unity X, FRC Z = Unity Y. This pose is **not field-aligned** and is not fused with AprilTags. |
-| `pose3d.rotation.q.{w,x,y,z}` | Center-eye orientation as a unit quaternion in WPILib/FRC axes. The conversion is FRC X = -Unity Z, FRC Y = Unity X, FRC Z = -Unity Y, FRC W = Unity W. |
+| `pose3d.translation.{x,y,z}` | Robot-origin position in meters (the center eye through the robot-to-Quest transform), relative to the current Quest tracking origin. Axes are converted to WPILib convention: FRC X = Unity Z, FRC Y = -Unity X, FRC Z = Unity Y. This pose is **not field-aligned** and is not fused with AprilTags. |
+| `pose3d.rotation.q.{w,x,y,z}` | Robot orientation as a unit quaternion in WPILib/FRC axes, derived from the center-eye orientation. The conversion is FRC X = -Unity Z, FRC Y = Unity X, FRC Z = -Unity Y, FRC W = Unity W. |
 | `is_tracking` | `true` when `OVRManager.tracker.isPositionTracked` was true for this sample; otherwise `false`. |
-| `tracking_epoch` | Unsigned local-frame generation counter. It starts at `0` and increments when Oculus reports a recenter/tracking-origin change. Robot code should re-establish its local-to-field transform when this changes. |
+| `tracking_epoch` | Unsigned local-frame generation counter. It starts at `0` and increments when Oculus reports a recenter/tracking-origin change, on a pose reset, and when the robot-to-Quest transform changes. Robot code should re-establish its local-to-field transform when this changes. |
 
 ### `/QuestX/aprilTagData` fields
 
@@ -38,7 +40,7 @@ The app connects as an NT4 client on port `5810`. Application data uses the `/Qu
 | `sequence_id` | Unsigned counter starting at `0` for each app process and incrementing for every published AprilTag measurement. |
 | `capture_timestamp_micros` | NT clock time associated with the camera's hardware exposure, in microseconds; also used as the NT publication timestamp. QuestX subtracts the bounded exposure age reported by the Meta camera API from the current NT clock. |
 | `app_timestamp` | Quest app uptime at the camera's hardware exposure, in seconds. Diagnostic only; it is calculated by subtracting the same bounded exposure age from `Time.timeAsDouble`. |
-| `pose3d` | Field-relative 3D pose of the passthrough camera in WPILib coordinates. It is an AprilTag solve and is **not fused with VIO**; robot code can apply the camera-to-robot/headset extrinsic. Translation is meters; rotation is a quaternion. |
+| `pose3d` | Field-relative 3D robot pose in WPILib coordinates: the solved passthrough camera, moved to the headset center eye through the Meta lens offset, then to the robot origin through the robot-to-Quest transform. It is an AprilTag solve and is **not fused with VIO**. Translation is meters; rotation is a quaternion. Standard deviations are passed through from the headset solve. |
 | `tag_ids` | IDs of the kept AprilTags used by the solve. |
 | `tag_count` | Number of IDs in `tag_ids`. |
 | `inlier_count` | Number of corner points accepted by PoseLib. |
@@ -114,6 +116,8 @@ Some camera values are change-triggered. For example, the initial in-memory `con
 | --- | --- |
 | `/QuestX/frameData` | A legacy protobuf publisher and deprecated `PublishFrameData()` method remain for binary compatibility, but the app does not call that method. The current custom app therefore emits no legacy fused frame values. |
 | `/QuestX/streams` | A `string[]` publisher is constructed, but there is no `Set()` call. Use `/CameraPublisher/Passthrough/streams` instead. |
+
+The Quest also reads `/FMSInfo/IsRedAlliance`, which WPILib robots publish from the Driver Station, only to color the robot's bumpers in the web interface's 3D tab.
 
 `/QuestX/request` is not a Quest publication. It is a robot-to-Quest protobuf command input. The current command is the deprecated `POSE_RESET`; the split architecture expects field alignment and VIO/AprilTag fusion to happen on the robot.
 

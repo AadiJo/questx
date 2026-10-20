@@ -217,27 +217,17 @@ namespace QuestX.QuestX.AprilTag
                     continue;
 
                 var tagPose = tag.Pose;
-                double halfSize = TagSize / 2.0;
 
-                // Corners ordered to match the passthrough camera's clockwise detection order.
-                // The Meta Quest passthrough camera produces a mirrored image, so the
-                // AprilTag detector returns corners in CW order (BR, BL, UL, UR) rather
-                // than the standard CCW convention.
-                var cornerTransforms = new Transform3d[]
+                // Corners ordered to match the passthrough camera's clockwise detection order
+                // (BR, BL, UL, UR); the single-tag camera-frame solve shares this order.
+                var localCorners = AprilTagCameraPose.TagLocalCorners(TagSize);
+                var fieldTransforms = new Translation3d[localCorners.Length];
+                for (int i = 0; i < localCorners.Length; i++)
                 {
-                    new Transform3d(new Translation3d(0, -halfSize, -halfSize), new Rotation3d()), // p[0]: Bottom-right
-                    new Transform3d(new Translation3d(0, halfSize, -halfSize), new Rotation3d()), // p[1]: Bottom-left
-                    new Transform3d(new Translation3d(0, halfSize, halfSize), new Rotation3d()), // p[2]: Upper-left
-                    new Transform3d(new Translation3d(0, -halfSize, halfSize), new Rotation3d()), // p[3]: Upper-right
-                };
-
-                var fieldTransforms = new[]
-                {
-                    tagPose.Plus(cornerTransforms[0]).Translation,
-                    tagPose.Plus(cornerTransforms[1]).Translation,
-                    tagPose.Plus(cornerTransforms[2]).Translation,
-                    tagPose.Plus(cornerTransforms[3]).Translation,
-                };
+                    fieldTransforms[i] = tagPose
+                        .Plus(new Transform3d(localCorners[i], new Rotation3d()))
+                        .Translation;
+                }
 
                 return fieldTransforms;
             }

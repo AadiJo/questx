@@ -16,6 +16,20 @@ namespace QuestX.WebServer
     }
 
     /// <summary>
+    /// Headset center-eye pose in the robot frame: meters and degrees, WPILib axes.
+    /// </summary>
+    [Serializable]
+    public class RobotToQuestModel
+    {
+        public double x;
+        public double y;
+        public double z;
+        public double roll;
+        public double pitch;
+        public double yaw;
+    }
+
+    /// <summary>
     /// Available video mode option for the current stream source
     /// </summary>
     [Serializable]
@@ -131,8 +145,12 @@ namespace QuestX.WebServer
         public bool enablePassthroughStream;
         public bool enableHighQualityStream;
 
-        /// <summary>Headset roll on its mount; see <see cref="Camera.CameraOrientation"/>.</summary>
+        /// <summary>
+        /// How the camera stream and preview are rotated; see <see cref="Camera.CameraOrientation"/>.
+        /// Display only: it never changes reported poses.
+        /// </summary>
         public int cameraOrientation;
+        public RobotToQuestModel robotToQuest;
         public StreamModeModel streamMode;
         public bool enableAprilTagDetector;
         public AprilTagDetectorModeModel aprilTagDetectorMode;
@@ -153,6 +171,7 @@ namespace QuestX.WebServer
         public bool? EnablePassthroughStream;
         public bool? EnableHighQualityStream;
         public int? CameraOrientation;
+        public RobotToQuestModel RobotToQuest;
         public StreamModeModel StreamMode;
         public bool? EnableAprilTagDetector;
         public AprilTagDetectorModeModel AprilTagDetectorMode;

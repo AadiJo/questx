@@ -62,7 +62,7 @@ namespace QuestX.QuestX.AprilTag
         private double nextOverlayFrameAt;
 
         /// <summary>
-        /// How the headset is rolled. The preview, tag angles, and headset pose are reported upright.
+        /// How the stream is rotated. The preview and tag angles follow it; poses never do.
         /// </summary>
         private CameraOrientation orientation;
 
@@ -126,6 +126,9 @@ namespace QuestX.QuestX.AprilTag
 
         public AprilTagOverlay Overlay { get; } = new AprilTagOverlay();
 
+        /// <summary>Latest detections with single-tag poses, for the web UI's 3D views.</summary>
+        public AprilTagScene Scene { get; } = new AprilTagScene();
+
         public AprilTagManager(
             IConfigManager configManager,
             PassthroughCameraAccess cameraAccess,
@@ -173,6 +176,7 @@ namespace QuestX.QuestX.AprilTag
         private void OnCameraArbiterResolutionChanged(Vector2Int? newResolution)
         {
             Overlay.Clear();
+            Scene.Clear();
             if (!newResolution.HasValue)
             {
                 return;
@@ -277,6 +281,7 @@ namespace QuestX.QuestX.AprilTag
                 // next iteration without touching the detector or family.
                 detectorActive = false;
                 Overlay.SetEnabled(false);
+                Scene.Clear();
                 overlayCompressor?.Dispose();
                 overlayCompressor = null;
 
@@ -394,6 +399,7 @@ namespace QuestX.QuestX.AprilTag
         private void OnAprilTagDetectorModeChanged(Config.Config.AprilTagDetectorMode configuration)
         {
             Overlay.Clear();
+            Scene.Clear();
             if (
                 configuration.Mode
                 == Config.Config.AprilTagDetectorMode.DetectionMode.ANCHOR_ENHANCED
@@ -704,6 +710,9 @@ namespace QuestX.QuestX.AprilTag
                 int ignoredCount = 0;
                 int unknownIdCount = 0;
                 var rawIds = new List<int>();
+                var sceneTags = Scene.IsRequested
+                    ? new List<AprilTagSceneTag>(detections.Count)
+                    : null;
                 foreach (var detection in detections)
                 {
                     rawIds.Add(detection.Id);
@@ -721,12 +730,17 @@ namespace QuestX.QuestX.AprilTag
                             ToOverlayPoint(detection.CornerUpperRight3, actualW, actualH)
                         );
                     }
-                    if (ignoredIdSet.Contains(detection.Id))
+                    var status =
+                        ignoredIdSet.Contains(detection.Id) ? AprilTagSceneTagStatus.Ignored
+                        : aprilTagFieldLayout.ContainsId(detection.Id) ? AprilTagSceneTagStatus.Used
+                        : AprilTagSceneTagStatus.Unknown;
+                    sceneTags?.Add(BuildSceneTag(detection, status));
+                    if (status == AprilTagSceneTagStatus.Ignored)
                     {
                         ignoredCount++;
                         continue;
                     }
-                    if (!aprilTagFieldLayout.ContainsId(detection.Id))
+                    if (status == AprilTagSceneTagStatus.Unknown)
                     {
                         unknownIdCount++;
                         continue;
@@ -736,6 +750,29 @@ namespace QuestX.QuestX.AprilTag
 
                 lock (diagnosticsLock)
                     detectedIds = rawIds.ToArray();
+
+                if (sceneTags != null)
+                {
+                    var lensOffset = cameraAccess.Intrinsics.LensOffset;
+                    Scene.Publish(
+                        new AprilTagSceneFrame(
+                            overlayCaptureTime - exposureAgeSeconds * 1000.0,
+                            actualW,
+                            actualH,
+                            new[]
+                            {
+                                poseLibSolver.Intrinsics[0],
+                                poseLibSolver.Intrinsics[1],
+                                poseLibSolver.Intrinsics[2],
+                                poseLibSolver.Intrinsics[3],
+                            },
+                            new Pose3d(
+                                Conversions.UnityToFrc3d(lensOffset.position, lensOffset.rotation)
+                            ),
+                            sceneTags.ToArray()
+                        )
+                    );
+                }
 
                 if (overlayTags != null)
                 {
@@ -826,12 +863,9 @@ namespace QuestX.QuestX.AprilTag
                             yield return new WaitForSeconds(frameDelaySeconds);
                             continue;
                         }
-                        var headsetPose = CameraOrientationMath.UprightPose(
-                            orientation,
-                            AprilTagPoseValidation.CameraToHeadset(
-                                cameraPose,
-                                cameraAccess.Intrinsics.LensOffset
-                            )
+                        var headsetPose = AprilTagPoseValidation.CameraToHeadset(
+                            cameraPose,
+                            cameraAccess.Intrinsics.LensOffset
                         );
 
                         int tagCount = kept.Count;
@@ -987,6 +1021,46 @@ namespace QuestX.QuestX.AprilTag
                 out double y
             );
             return new AprilTagOverlayPoint(x, y);
+        }
+
+        /// <summary>
+        /// Solves one detection on its own, in the camera frame. Corners use the same order
+        /// the field solve gives PoseLib.
+        /// </summary>
+        private AprilTagSceneTag BuildSceneTag(
+            TagDetection detection,
+            AprilTagSceneTagStatus status
+        )
+        {
+            var corners = new[]
+            {
+                detection.CornerBottomRight0.x,
+                detection.CornerBottomRight0.y,
+                detection.CornerBottomLeft1.x,
+                detection.CornerBottomLeft1.y,
+                detection.CornerUpperLeft2.x,
+                detection.CornerUpperLeft2.y,
+                detection.CornerUpperRight3.x,
+                detection.CornerUpperRight3.y,
+            };
+            if (
+                AprilTagCameraPose.TrySolve(
+                    corners,
+                    aprilTagFieldLayout.TagSize,
+                    poseLibSolver.Intrinsics,
+                    out var solved
+                )
+            )
+            {
+                return new AprilTagSceneTag(
+                    detection.Id,
+                    status,
+                    solved.CameraToTag,
+                    solved.Ambiguity,
+                    solved.ReprojectionErrorPixels
+                );
+            }
+            return new AprilTagSceneTag(detection.Id, status, null, 1.0, double.NaN);
         }
 
         /// <summary>

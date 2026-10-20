@@ -1,8 +1,9 @@
 using System;
 using QuestX.Camera;
+using QuestX.Core;
 using QuestX.QuestX.Geometry;
 
-/// <summary>Checks that rotated images, overlay points, tag angles, and poses agree for every orientation.</summary>
+/// <summary>Checks that rotated images, overlay points, and tag angles agree for every orientation, and that the matching mount roll recovers the robot pose.</summary>
 static class OrientationChecks
 {
     static readonly CameraOrientation[] All =
@@ -62,18 +63,23 @@ static class OrientationChecks
             new Rotation3d(CameraOrientationMath.MountRollRadians(CameraOrientation.LEFT), 0, 0));
         check(Math.Abs(top.Y - 1) < 1e-12, "Left: the headset top points to the robot's left");
 
-        // A headset rolled on a robot on a ramp: the upright pose is the robot's own attitude at the
-        // headset's position, and image angles match what an upright headset would see.
+        // A headset rolled on a robot on a ramp. Poses ignore the orientation setting; the roll
+        // goes in the robot-to-Quest transform, which recovers the robot's attitude. Image angles
+        // still match what an upright headset at the same point would see.
         var robot = new Rotation3d(0, 0.2, 2.5);
         var position = new Translation3d(3, 4, 0.5);
         var target = new Pose3d(new Translation3d(5, 6, 1.5), new Rotation3d());
         foreach (var orientation in All)
         {
-            var mount = new Rotation3d(CameraOrientationMath.MountRollRadians(orientation), 0, 0);
-            var mounted = new Pose3d(position, mount.RotateBy(robot));
-            var upright = CameraOrientationMath.UprightPose(orientation, mounted);
-            check(upright.Translation.GetDistance(position) < 1e-12, $"{orientation}: upright pose keeps position");
-            check(SameRotation(upright.Rotation, robot), $"{orientation}: upright pose has the robot's attitude");
+            double roll = CameraOrientationMath.MountRollRadians(orientation);
+            var mounted = new Pose3d(position, new Rotation3d(roll, 0, 0).RotateBy(robot));
+            var upright = new Pose3d(position, robot);
+
+            var mount = new RobotMount();
+            mount.Set(0, 0, 0, roll * 180 / Math.PI, 0, 0);
+            var robotPose = mount.HeadsetToRobotPose(mounted);
+            check(robotPose.Translation.GetDistance(position) < 1e-12, $"{orientation}: mount roll keeps position");
+            check(SameRotation(robotPose.Rotation, robot), $"{orientation}: mount roll recovers the robot's attitude");
 
             var (rawTx, rawTy) = Angles(target.RelativeTo(mounted).Translation);
             var (uprightTx, uprightTy) = Angles(target.RelativeTo(upright).Translation);

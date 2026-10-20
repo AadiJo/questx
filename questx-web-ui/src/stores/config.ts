@@ -2,7 +2,7 @@
 
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import type { ConfigResponse, StreamModeModel, AprilTagDetectorMode, CameraOrientation } from '../types'
+import type { ConfigResponse, StreamModeModel, AprilTagDetectorMode, CameraOrientation, RobotToQuest } from '../types'
 import { configApi } from '../api/config'
 
 export const useConfigStore = defineStore('config', () => {
@@ -141,6 +141,19 @@ export const useConfigStore = defineStore('config', () => {
     }
   }
 
+  async function updateRobotToQuest(value: RobotToQuest) {
+    try {
+      const response = await configApi.updateConfig({ robotToQuest: value })
+      if (response.success) {
+        await loadConfig(false)
+      }
+      return response.success
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : 'Failed to update'
+      return false
+    }
+  }
+
   async function updateStreamMode(value: StreamModeModel) {
     try {
       const response = await configApi.updateConfig({ streamMode: value })
@@ -210,6 +223,7 @@ export const useConfigStore = defineStore('config', () => {
     updateEnableHighQualityStream,
     updateCameraOrientation,
     updateEnableDebugLogging,
+    updateRobotToQuest,
     updateStreamMode,
     updateEnableAprilTagDetector,
     updateAprilTagDetectorMode,

@@ -3,7 +3,7 @@ using QuestX.QuestX.Geometry;
 namespace QuestX.QuestX.AprilTag
 {
     /// <summary>
-    /// A field-relative AprilTag headset-center pose measurement produced on the Quest.
+    /// A field-relative AprilTag pose measurement produced on the Quest.
     /// This is an unfused sensor measurement; the robot is responsible for deciding
     /// whether and how to apply it to its field-pose estimator.
     /// </summary>
@@ -11,7 +11,15 @@ namespace QuestX.QuestX.AprilTag
     {
         public long CaptureTimestampMicros { get; }
         public double AppTimestamp { get; }
+
+        /// <summary>
+        /// The published pose: the robot's field pose once <see cref="ForRobot"/> has applied
+        /// the mount, otherwise the same as <see cref="HeadsetPose"/>.
+        /// </summary>
         public Pose3d Pose { get; }
+
+        /// <summary>The solved field pose of the headset center eye.</summary>
+        public Pose3d HeadsetPose { get; private set; }
         public int[] TagIds { get; }
         public int InlierCount { get; }
         public int CornerCount { get; }
@@ -70,7 +78,36 @@ namespace QuestX.QuestX.AprilTag
             Ambiguity = ambiguity;
             ReprojectionErrorPixels = reprojectionErrorPixels;
             Observations = observations;
+            HeadsetPose = pose;
         }
+
+        /// <summary>
+        /// The same measurement published as <paramref name="robotPose"/>, keeping
+        /// <see cref="HeadsetPose"/>. Uncertainties are passed through unchanged.
+        /// </summary>
+        public AprilTagMeasurement ForRobot(Pose3d robotPose) =>
+            new AprilTagMeasurement(
+                CaptureTimestampMicros,
+                AppTimestamp,
+                robotPose,
+                TagIds,
+                InlierCount,
+                CornerCount,
+                InlierRatio,
+                AverageTagDistanceMeters,
+                XStdDevMeters,
+                YStdDevMeters,
+                ZStdDevMeters,
+                RollStdDevRadians,
+                PitchStdDevRadians,
+                YawStdDevRadians,
+                Ambiguity,
+                ReprojectionErrorPixels,
+                Observations
+            )
+            {
+                HeadsetPose = HeadsetPose,
+            };
     }
 
     /// <summary>

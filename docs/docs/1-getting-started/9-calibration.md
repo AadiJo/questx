@@ -49,12 +49,12 @@ Secure the headset to its robot mount. If you haven't built or attached a mount 
 
 ### 6. Determine the Quest's offset transform
 
-The Quest reports its own pose, so your robot code needs to know where the headset sits relative to the center of the robot. This offset is the `ROBOT_TO_QUEST` transform (X forward, Y left, Z up, plus rotation).
+The Quest tracks its own pose, so it needs to know where the headset sits relative to the center of the robot. This offset is the robot-to-Quest transform (X forward, Y left, Z up, plus rotation). Set it in the web interface's **3D** tab, in the **Robot** view. The headset then publishes the robot's pose, so robot code does not apply the offset.
 
 :::note Placeholder
 A detailed, guided procedure for measuring the Quest's offset transform from the center of the robot will be added here.
 
-For now, measure the offset by hand and set it in your robot code as described in [Measuring `ROBOT_TO_QUEST`](./robot-code#measuring-robot_to_quest).
+For now, measure the offset by hand and enter it as described in [Measuring robot-to-Quest](./robot-code#measuring-robot_to_quest).
 :::
 
 ### 7. Follow the robot code setup

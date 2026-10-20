@@ -100,33 +100,26 @@ Create a subsystem that calls `commandPeriodic()` and feeds pose data to your dr
 ```java
 import gg.questx.questx.QuestX;
 import gg.questx.questx.AprilTagFrame;
-import edu.wpi.first.math.geometry.Pose3d;
-import edu.wpi.first.math.geometry.Transform3d;
-import edu.wpi.first.math.geometry.Rotation3d;
 
 public class QuestXSubsystem extends SubsystemBase {
     private final QuestX questX = new QuestX();
-
-    // Offset from robot center to the Quest headset
-    // Example: Quest is 0.3m forward, 0.0m left, 0.5m up from robot center
-    private static final Transform3d ROBOT_TO_QUEST =
-        new Transform3d(0.3, 0.0, 0.5, new Rotation3d());
 
     @Override
     public void periodic() {
         questX.commandPeriodic();
 
         for (AprilTagFrame frame : questX.getAllUnreadAprilTagFrames()) {
-            Pose3d robotPose = frame.fieldPose3d()
-                .transformBy(ROBOT_TO_QUEST.inverse());
+            // fieldPose3d() is already the robot pose; the headset applies the mount.
             driveSubsystem.addVisionMeasurement(
-                robotPose.toPose2d(),
+                frame.fieldPose3d().toPose2d(),
                 frame.measurementTimestamp(),
                 frame.pose2dStdDevs());
         }
     }
 }
 ```
+
+Set where the headset sits on the robot in the web interface (`http://<Quest IP>:5801`), under **3D** > **Robot**. Do not apply a mount transform in robot code. See [Robot-to-Quest mount](./robot-code#robot-to-quest-mount).
 
 See [Robot Code Setup](./robot-code) for the full integration guide.
 
@@ -174,5 +167,5 @@ Print this checklist and verify each item before every match.
 ### If Something Goes Wrong
 - **QuestX/Connected = false**: Check the Ethernet cable and adapter. Verify the headset is powered on and QuestX is running.
 - **QuestX/Tracking = false**: Ensure the headset cameras have a clear view. Restart QuestX if tracking doesn't recover.
-- **Pose is in the wrong frame**: VIO is local. Verify the robot's VIO-to-field alignment, tracking epoch, and `ROBOT_TO_QUEST` mounting transform.
+- **Pose is in the wrong frame**: VIO is local. Verify the robot's VIO-to-field alignment, tracking epoch, and the robot-to-Quest mount in the web interface's 3D tab. Robot code should not apply its own mount transform.
 - **Battery dropping fast**: Verify the USB battery bank is connected and outputting power. Check for a damaged cable.

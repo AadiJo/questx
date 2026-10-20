@@ -10,13 +10,15 @@ using Quaternion = UnityEngine.Quaternion;
 namespace QuestX.Commands.Commands
 {
     /// <summary>
-    /// Re-bases the published VIO frame on a target pose and applies the matching display-space
-    /// offset to the VR camera rig.
+    /// Re-bases the published VIO frame on a target robot pose and applies the matching
+    /// display-space offset to the VR camera rig. The target is the robot's pose; the headset is
+    /// re-based on the matching headset pose through the robot-to-Quest transform.
     /// </summary>
     public class PoseResetCommand : ICommand
     {
         private readonly ICommandContext commandContext;
         private readonly VioReferenceFrame vioFrame;
+        private readonly RobotMount robotMount;
         private readonly Transform vrCamera;
         private readonly Transform vrCameraRoot;
         private readonly Transform resetTransform;
@@ -27,6 +29,7 @@ namespace QuestX.Commands.Commands
         public PoseResetCommand(
             ICommandContext commandContext,
             VioReferenceFrame vioFrame,
+            RobotMount robotMount,
             Transform vrCamera,
             Transform vrCameraRoot,
             Transform resetTransform
@@ -34,6 +37,7 @@ namespace QuestX.Commands.Commands
         {
             this.commandContext = commandContext;
             this.vioFrame = vioFrame;
+            this.robotMount = robotMount;
             this.vrCamera = vrCamera;
             this.vrCameraRoot = vrCameraRoot;
             this.resetTransform = resetTransform;
@@ -100,7 +104,7 @@ namespace QuestX.Commands.Commands
             }
 
             // Re-base VIO first: if the headset cannot anchor the reset, nothing changes.
-            var target = new Pose3d(
+            var robotTarget = new Pose3d(
                 new Translation3d(poseX, poseY, poseZ),
                 new Rotation3d(
                     new global::QuestX.QuestX.Geometry.Quaternion(
@@ -111,6 +115,7 @@ namespace QuestX.Commands.Commands
                     )
                 )
             );
+            var target = robotMount.RobotToHeadsetPose(robotTarget);
             if (!vioFrame.TryReset(target, out string reason))
             {
                 Fail(receivedCommand.CommandId, reason);
@@ -119,7 +124,9 @@ namespace QuestX.Commands.Commands
 
             // Display-space offset for the rig (does not affect published VIO).
             // Step 1: Convert FRC field coordinates to Unity coordinates
-            var (targetCameraPosition, targetCameraRotation) = Conversions.FrcToUnity3d(resetPose);
+            var (targetCameraPosition, targetCameraRotation) = Conversions.FrcToUnity3d(
+                target.ToProtobuf()
+            );
 
             // Step 2: Calculate rotation difference between current camera and target
             Quaternion newRotation =

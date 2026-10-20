@@ -110,6 +110,13 @@ namespace QuestX.Config
         public event Action<TagDetectorBackend> OnAprilTagDetectorBackendChanged;
         #endregion
 
+        #region Robot Mount
+        /// <summary>
+        /// Raised when the robot-to-headset transform changes.
+        /// </summary>
+        public event Action<RobotToQuest> OnRobotToQuestChanged;
+        #endregion
+
         #region Logging
         /// <summary>
         /// Raised when debug logging setting changes.
@@ -184,7 +191,7 @@ namespace QuestX.Config
         /// Gets how the headset is rolled on its mount.
         /// </summary>
         /// <returns>
-        /// The orientation used to rotate streams, previews, tag angles, and headset poses.
+        /// The orientation used to rotate streams, previews, and tag angles. Poses ignore it.
         /// </returns>
         public Task<CameraOrientation> GetCameraOrientationAsync();
         #endregion
@@ -227,6 +234,13 @@ namespace QuestX.Config
         /// Gets the tag detector backend.
         /// </summary>
         public Task<TagDetectorBackend> GetAprilTagDetectorBackendAsync();
+        #endregion
+
+        #region Robot Mount
+        /// <summary>
+        /// Gets where the headset is mounted on the robot.
+        /// </summary>
+        public Task<RobotToQuest> GetRobotToQuestAsync();
         #endregion
 
         #region Logging
@@ -323,6 +337,14 @@ namespace QuestX.Config
         /// </summary>
         public Task SetAprilTagDetectorBackendAsync(TagDetectorBackend backend);
         #endregion
+
+        #region Robot Mount
+        /// <summary>
+        /// Sets where the headset is mounted on the robot. Invalid values are refused
+        /// (see <see cref="RobotToQuest.IsValid"/>).
+        /// </summary>
+        public Task SetRobotToQuestAsync(RobotToQuest robotToQuest);
+        #endregion
         #region Logging
         /// <summary>
         /// Sets whether debug logging is enabled.
@@ -378,6 +400,7 @@ namespace QuestX.Config
             await connection.CreateTableAsync<Config.AprilTag>();
             await connection.CreateTableAsync<Config.AprilTagIgnoredId>();
             await connection.CreateTableAsync<Config.Logging>();
+            await connection.CreateTableAsync<Config.RobotMount>();
 
             QueuedLogger.Log($"Database initialized at: {dbPath}");
         }
@@ -410,6 +433,8 @@ namespace QuestX.Config
             OnAprilTagConfidencePresetChanged?.Invoke(await GetAprilTagConfidencePresetAsync());
             OnAprilTagNoiseScaleChanged?.Invoke(await GetAprilTagNoiseScaleAsync());
             OnEnableAprilTagDetectorChanged?.Invoke(await GetEnableAprilTagDetectorAsync());
+
+            OnRobotToQuestChanged?.Invoke(await GetRobotToQuestAsync());
 
             OnEnableDebugLoggingChanged?.Invoke(await GetEnableDebugLoggingAsync());
         }
@@ -457,6 +482,8 @@ namespace QuestX.Config
             await SetAprilTagDetectorBackendAsync(
                 (TagDetectorBackend)aprilTagDefaults.AprilTagDetectorBackend
             );
+
+            await SetRobotToQuestAsync(new RobotToQuest(0, 0, 0, 0, 0, 0));
 
             await SetEnableDebugLoggingAsync(loggingDefaults.EnableDebugLogging);
 
@@ -524,6 +551,11 @@ namespace QuestX.Config
 
         /// <inheritdoc/>
         public event Action<TagDetectorBackend> OnAprilTagDetectorBackendChanged;
+        #endregion
+
+        #region Robot Mount
+        /// <inheritdoc/>
+        public event Action<RobotToQuest> OnRobotToQuestChanged;
         #endregion
         #region Logging
         public event Action<bool> OnEnableDebugLoggingChanged;
@@ -663,6 +695,22 @@ namespace QuestX.Config
             return Enum.IsDefined(typeof(TagDetectorBackend), config.AprilTagDetectorBackend)
                 ? (TagDetectorBackend)config.AprilTagDetectorBackend
                 : TagDetectorBackend.NAPA;
+        }
+        #endregion
+
+        #region Robot Mount
+        /// <inheritdoc/>
+        public async Task<RobotToQuest> GetRobotToQuestAsync()
+        {
+            var config = await GetRobotMountConfigAsync();
+            return new RobotToQuest(
+                config.RobotToQuestXMeters,
+                config.RobotToQuestYMeters,
+                config.RobotToQuestZMeters,
+                config.RobotToQuestRollDegrees,
+                config.RobotToQuestPitchDegrees,
+                config.RobotToQuestYawDegrees
+            );
         }
         #endregion
 
@@ -949,6 +997,36 @@ namespace QuestX.Config
         }
         #endregion
 
+        #region Robot Mount
+        /// <inheritdoc/>
+        public async Task SetRobotToQuestAsync(RobotToQuest robotToQuest)
+        {
+            if (!robotToQuest.IsValid(out string reason))
+            {
+                QueuedLogger.LogError($"Refusing robot-to-Quest transform: {reason}");
+                return;
+            }
+
+            if ((await GetRobotToQuestAsync()).Equals(robotToQuest))
+            {
+                QueuedLogger.Log($"Key 'robotToQuest' already {robotToQuest}; no-op write");
+                return;
+            }
+
+            var config = await GetRobotMountConfigAsync();
+            config.RobotToQuestXMeters = robotToQuest.XMeters;
+            config.RobotToQuestYMeters = robotToQuest.YMeters;
+            config.RobotToQuestZMeters = robotToQuest.ZMeters;
+            config.RobotToQuestRollDegrees = robotToQuest.RollDegrees;
+            config.RobotToQuestPitchDegrees = robotToQuest.PitchDegrees;
+            config.RobotToQuestYawDegrees = robotToQuest.YawDegrees;
+            await SaveRobotMountConfigAsync(config);
+
+            invokeOnMainThread(() => OnRobotToQuestChanged?.Invoke(robotToQuest));
+            QueuedLogger.Log($"Updated Key 'robotToQuest' to {robotToQuest}");
+        }
+        #endregion
+
         #region Logging
         /// <inheritdoc/>
         public async Task SetEnableDebugLoggingAsync(bool enableDebugLogging)
@@ -1077,6 +1155,25 @@ namespace QuestX.Config
             }
             return config;
         }
+
+        /// <summary>
+        /// Gets robot mount config from DB, creating defaults if not found.
+        /// </summary>
+        /// <returns>
+        /// The robot mount configuration.
+        /// </returns>
+        private async Task<Config.RobotMount> GetRobotMountConfigAsync()
+        {
+            var config = await connection.FindAsync<Config.RobotMount>(1);
+
+            // If we don't find one, create a new one with defaults
+            if (config == null)
+            {
+                config = new Config.RobotMount();
+                await SaveRobotMountConfigAsync(config);
+            }
+            return config;
+        }
         #endregion
 
         #region Setters
@@ -1145,6 +1242,16 @@ namespace QuestX.Config
         /// </summary>
         /// <param name="config">The logging configuration to save.</param>
         private async Task SaveLoggingConfigAsync(Config.Logging config)
+        {
+            config.ID = 1;
+            await connection.InsertOrReplaceAsync(config);
+        }
+
+        /// <summary>
+        /// Persists robot mount config to the database.
+        /// </summary>
+        /// <param name="config">The robot mount configuration to save.</param>
+        private async Task SaveRobotMountConfigAsync(Config.RobotMount config)
         {
             config.ID = 1;
             await connection.InsertOrReplaceAsync(config);

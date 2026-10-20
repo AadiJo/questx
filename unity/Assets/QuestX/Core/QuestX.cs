@@ -46,9 +46,14 @@ namespace QuestX.Core
         );
 
         /// <summary>
-        /// How the headset is rolled on its mount. VIO is reported as an upright headset.
+        /// Where the headset sits on the robot. Published VIO and AprilTag poses are the robot's.
         /// </summary>
-        private CameraOrientation cameraOrientation;
+        private readonly RobotMount robotMount = new RobotMount();
+
+        /// <summary>
+        /// Display-only alignment of VIO to the field for the web UI's field view.
+        /// </summary>
+        private readonly VioFieldAlignment fieldAlignment = new VioFieldAlignment();
 
         /// <summary>
         /// Reference to the OVR Camera Rig for tracking
@@ -247,6 +252,11 @@ namespace QuestX.Core
 
         private AprilTagManager aprilTagManager;
 
+        /// <summary>
+        /// Poses and detections for the web UI's 3D views.
+        /// </summary>
+        private SceneProvider sceneProvider;
+
         #endregion
 
         #endregion
@@ -265,7 +275,7 @@ namespace QuestX.Core
             versionText.text = Application.version;
 
             configManager = new ConfigManager();
-            configManager.OnCameraOrientationChanged += OnCameraOrientationChanged;
+            configManager.OnRobotToQuestChanged += OnRobotToQuestChanged;
 
             networkTableConnection = new NetworkTableConnection(configManager);
 
@@ -311,6 +321,12 @@ namespace QuestX.Core
                 () => networkTableConnection.NtNow
             );
             aprilTagManager.MeasurementAvailable += OnAprilTagMeasurementAvailable;
+            sceneProvider = new SceneProvider(
+                robotMount,
+                fieldAlignment,
+                aprilTagManager.Scene,
+                aprilTagFieldLayout
+            );
 
             passthroughFrameSource = new PassthroughFrameSource(
                 this,
@@ -331,12 +347,15 @@ namespace QuestX.Core
                 cameraArbiter,
                 cameraAccess,
                 resetTransform,
-                aprilTagManager.Overlay
+                aprilTagManager.Overlay,
+                sceneProvider,
+                robotMount
             );
 
             commandProcessor = new CommandProcessor(
                 networkTableConnection,
                 vioFrame,
+                robotMount,
                 vrCamera,
                 vrCameraRoot,
                 resetTransform,
@@ -387,10 +406,25 @@ namespace QuestX.Core
 
             // Publish the VIO sample in its reference frame. While a recenter settles, the frame
             // repeats the last pre-recenter pose and reports it as not tracking.
+            // Published poses are the robot's, through the mount set in the web UI.
+            var robotPose = robotMount.HeadsetToRobotPose(pose);
             networkTableConnection.PublishVioData(
                 vioCaptureTimestampMicros,
                 timeStamp,
+                robotPose,
+                vioFrame.PublishedTracking,
+                vioFrame.Epoch
+            );
+            fieldAlignment.RecordVio(
+                timeStamp,
+                vioFrame.Epoch,
+                vioFrame.PublishedTracking,
+                robotPose
+            );
+            sceneProvider?.UpdateVio(
+                timeStamp,
                 pose,
+                robotPose,
                 vioFrame.PublishedTracking,
                 vioFrame.Epoch
             );
@@ -432,9 +466,10 @@ namespace QuestX.Core
         /// </summary>
         private void SlowUpdate()
         {
-            networkTableConnection.PublishAprilTagDiagnostics(
-                aprilTagManager.GetDiagnosticsSnapshot()
-            );
+            var aprilTagDiagnostics = aprilTagManager.GetDiagnosticsSnapshot();
+            networkTableConnection.PublishAprilTagDiagnostics(aprilTagDiagnostics);
+            sceneProvider?.UpdateDiagnostics(aprilTagDiagnostics);
+            sceneProvider?.UpdateAlliance(networkTableConnection.IsRedAlliance);
             // Poll for connection status, logging, ip address changes, etc.
             networkTableConnection.Periodic();
 
@@ -461,7 +496,7 @@ namespace QuestX.Core
                     currentlyTracking,
                     trackingLostEvents,
                     vioFrame.Epoch,
-                    aprilTagManager.GetDiagnosticsSnapshot()
+                    aprilTagDiagnostics
                 );
             }
 
@@ -642,13 +677,10 @@ namespace QuestX.Core
             vioCaptureTimestampMicros = networkTableConnection.NtNow;
             timeStamp = Time.timeAsDouble;
 
-            var localPose = CameraOrientationMath.UprightPose(
-                cameraOrientation,
-                new Pose3d(
-                    Conversions.UnityToFrc3d(
-                        cameraRig.centerEyeAnchor.localPosition,
-                        cameraRig.centerEyeAnchor.localRotation
-                    )
+            var localPose = new Pose3d(
+                Conversions.UnityToFrc3d(
+                    cameraRig.centerEyeAnchor.localPosition,
+                    cameraRig.centerEyeAnchor.localRotation
                 )
             );
             vioFrame.Sample(localPose, currentlyTracking, timeStamp);
@@ -656,21 +688,26 @@ namespace QuestX.Core
         }
 
         /// <summary>
-        /// Handles mount orientation changes. The published roll and pitch change at once, so
-        /// samples after the change start a new epoch rather than appearing as motion.
+        /// Handles robot-to-Quest changes. The published robot pose jumps at once, so samples
+        /// after the change start a new epoch rather than appearing as motion. The camera
+        /// orientation setting never reaches poses: like Limelight's stream orientation it only
+        /// rotates images, and a rolled mount belongs in this transform.
         /// </summary>
-        private void OnCameraOrientationChanged(CameraOrientation orientation)
+        private void OnRobotToQuestChanged(Config.Config.RobotToQuest robotToQuest)
         {
-            if (orientation == cameraOrientation)
-            {
-                return;
-            }
-            cameraOrientation = orientation;
-            if (pose != null)
+            bool changed = robotMount.Set(
+                robotToQuest.XMeters,
+                robotToQuest.YMeters,
+                robotToQuest.ZMeters,
+                robotToQuest.RollDegrees,
+                robotToQuest.PitchDegrees,
+                robotToQuest.YawDegrees
+            );
+            if (changed && pose != null)
             {
                 vioFrame.BeginNewEpoch();
                 QueuedLogger.Log(
-                    $"Headset mount orientation is now {orientation}; VIO tracking epoch is now {vioFrame.Epoch}"
+                    $"Robot-to-Quest is now {robotToQuest}; VIO tracking epoch is now {vioFrame.Epoch}"
                 );
             }
         }
@@ -711,7 +748,12 @@ namespace QuestX.Core
 
         private void OnAprilTagMeasurementAvailable(AprilTagMeasurement measurement)
         {
-            networkTableConnection.PublishAprilTagData(measurement);
+            var robotMeasurement = measurement.ForRobot(
+                robotMount.HeadsetToRobotPose(measurement.HeadsetPose)
+            );
+            networkTableConnection.PublishAprilTagData(robotMeasurement);
+            fieldAlignment.Align(robotMeasurement.AppTimestamp, robotMeasurement.Pose, out _);
+            sceneProvider?.UpdateMeasurement(robotMeasurement);
         }
 
         /// <summary>

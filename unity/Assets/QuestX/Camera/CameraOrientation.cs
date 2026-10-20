@@ -1,13 +1,17 @@
 using System;
-using QuestX.QuestX.Geometry;
 
 namespace QuestX.Camera
 {
     /// <summary>
     /// How the headset is rolled about its forward axis, viewed from behind it (as worn).
-    /// Images, image-space angles, and reported headset poses are rotated to undo the roll,
-    /// so they read as if the headset were mounted upright.
+    /// Images and image-space angles are rotated to undo the roll so they read upright.
     /// </summary>
+    /// <remarks>
+    /// Like Limelight's stream orientation, this is display only: it never changes a reported
+    /// pose. The physical roll belongs in the robot-to-Quest transform, which is the only place
+    /// poses learn how the headset is mounted (see <see cref="CameraOrientationMath.MountRollRadians"/>
+    /// for the matching roll).
+    /// </remarks>
     public enum CameraOrientation
     {
         /// <summary>Mounted upright. Nothing is rotated.</summary>
@@ -24,9 +28,8 @@ namespace QuestX.Camera
     }
 
     /// <summary>
-    /// Maps raw camera images and headset poses to the upright frame for a
-    /// <see cref="CameraOrientation"/>. Pixel coordinates are top-left origin with y down;
-    /// angles are right- and up-positive.
+    /// Maps raw camera images to the upright frame for a <see cref="CameraOrientation"/>.
+    /// Pixel coordinates are top-left origin with y down; angles are right- and up-positive.
     /// </summary>
     public static class CameraOrientationMath
     {
@@ -34,8 +37,9 @@ namespace QuestX.Camera
             value >= (int)CameraOrientation.NORMAL && value <= (int)CameraOrientation.RIGHT;
 
         /// <summary>
-        /// The mount's roll about the headset's forward (+X) axis in WPILib axes, so rolled
-        /// right is positive.
+        /// The roll about the headset's forward (+X) axis that this orientation implies, in WPILib
+        /// axes (rolled right is positive). It is the robot-to-Quest roll for a headset mounted
+        /// level and facing forward; the web UI uses it to flag a mount that disagrees.
         /// </summary>
         public static double MountRollRadians(CameraOrientation orientation) =>
             orientation switch
@@ -45,20 +49,6 @@ namespace QuestX.Camera
                 CameraOrientation.RIGHT => Math.PI / 2,
                 _ => 0,
             };
-
-        /// <summary>
-        /// Re-expresses a headset pose as an upright headset at the same point: the mount's roll
-        /// is undone about the headset's own forward axis, so position and yaw are unchanged.
-        /// </summary>
-        public static Pose3d UprightPose(CameraOrientation orientation, Pose3d headsetPose) =>
-            orientation == CameraOrientation.NORMAL
-                ? headsetPose
-                : headsetPose.TransformBy(
-                    new Transform3d(
-                        Translation3d.Zero,
-                        new Rotation3d(-MountRollRadians(orientation), 0, 0)
-                    )
-                );
 
         /// <summary>Whether the upright image swaps the raw width and height.</summary>
         public static bool SwapsAxes(CameraOrientation orientation) =>

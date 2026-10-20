@@ -28,7 +28,8 @@ import java.util.List;
  * them ({@link MeasurementTransport#V2} and {@link MeasurementTransport#LEGACY_PROTOBUF}); the same
  * applies to {@link #processingLatencyMilliseconds()}.
  *
- * @param fieldPose3d field-relative pose of the Quest headset
+ * @param fieldPose3d field-relative pose of the robot (the solved headset pose through the
+ *     robot-to-Quest transform set in the QuestX web interface)
  * @param measurementTimestamp NetworkTables server timestamp in seconds, translated to the robot
  *     clock; use this timestamp when fusing the measurement
  * @param captureTimestampMicros camera capture timestamp transmitted by the app, in microseconds;
@@ -72,7 +73,8 @@ public record AprilTagFrame(
   /**
    * Creates an AprilTag frame and defensively copies its tag ID and ambiguity lists.
    *
-   * @param fieldPose3d field-relative pose of the Quest headset
+   * @param fieldPose3d field-relative pose of the robot (the solved headset pose through the
+   *     robot-to-Quest transform set in the QuestX web interface)
    * @param measurementTimestamp NetworkTables server timestamp in seconds
    * @param captureTimestampMicros camera capture timestamp transmitted by the app, in microseconds
    * @param appTimestamp Quest app uptime timestamp in seconds

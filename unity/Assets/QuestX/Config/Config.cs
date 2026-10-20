@@ -1,3 +1,4 @@
+using System;
 using QuestX.Camera;
 using QuestX.Core;
 using SQLite;
@@ -110,7 +111,8 @@ namespace QuestX.Config
 
             /// <summary>
             /// How the headset is rolled on its mount, stored as a <see cref="CameraOrientation"/>.
-            /// Streams, previews, tag angles, and headset poses are rotated to match. Default is upright.
+            /// Streams, previews, and tag angles are rotated to match; poses never are (the mount
+            /// roll belongs in <see cref="RobotMount"/>). Default is upright.
             /// </summary>
             public int Orientation { get; set; } = (int)CameraOrientation.NORMAL;
         }
@@ -211,6 +213,49 @@ namespace QuestX.Config
             public int AprilTagDetectorBackend { get; set; } = (int)TagDetectorBackend.NAPA;
         }
 
+        /// <summary>
+        /// Where the headset sits on the robot. Published poses are the robot's pose,
+        /// so robot code must not apply this transform a second time.
+        /// </summary>
+        public class RobotMount
+        {
+            /// <summary>
+            /// The ID to be used as the primary key of this column in the database
+            /// </summary>
+            [PrimaryKey]
+            public int ID { get; set; }
+
+            /// <summary>
+            /// Headset center-eye position forward of the robot origin, in meters.
+            /// </summary>
+            public double RobotToQuestXMeters { get; set; }
+
+            /// <summary>
+            /// Headset center-eye position left of the robot origin, in meters.
+            /// </summary>
+            public double RobotToQuestYMeters { get; set; }
+
+            /// <summary>
+            /// Headset center-eye position above the robot origin, in meters.
+            /// </summary>
+            public double RobotToQuestZMeters { get; set; }
+
+            /// <summary>
+            /// Headset roll relative to the robot, in degrees (counter-clockwise positive).
+            /// </summary>
+            public double RobotToQuestRollDegrees { get; set; }
+
+            /// <summary>
+            /// Headset pitch relative to the robot, in degrees (WPILib convention: positive tilts the front down).
+            /// </summary>
+            public double RobotToQuestPitchDegrees { get; set; }
+
+            /// <summary>
+            /// Headset yaw relative to the robot, in degrees (counter-clockwise positive).
+            /// </summary>
+            public double RobotToQuestYawDegrees { get; set; }
+        }
+
         public class Logging
         {
             /// <summary>
@@ -290,6 +335,81 @@ namespace QuestX.Config
             /// University of Michigan libapriltag (quad decimation 2, 2 corrected bits).
             /// </summary>
             APRILTAG = 1,
+        }
+
+        /// <summary>
+        /// The robot-to-headset transform as stored and edited: translation in meters and
+        /// roll, pitch, yaw in degrees, all in the robot's WPILib frame.
+        /// </summary>
+        public readonly struct RobotToQuest
+        {
+            /// <summary>Largest accepted translation on any axis, in meters.</summary>
+            public const double MaxTranslationMeters = 2.0;
+
+            public double XMeters { get; }
+            public double YMeters { get; }
+            public double ZMeters { get; }
+            public double RollDegrees { get; }
+            public double PitchDegrees { get; }
+            public double YawDegrees { get; }
+
+            public RobotToQuest(
+                double xMeters,
+                double yMeters,
+                double zMeters,
+                double rollDegrees,
+                double pitchDegrees,
+                double yawDegrees
+            )
+            {
+                XMeters = xMeters;
+                YMeters = yMeters;
+                ZMeters = zMeters;
+                RollDegrees = rollDegrees;
+                PitchDegrees = pitchDegrees;
+                YawDegrees = yawDegrees;
+            }
+
+            /// <summary>
+            /// True when every value is finite, each translation is within
+            /// <see cref="MaxTranslationMeters"/>, and each angle is within [-180, 180].
+            /// </summary>
+            public bool IsValid(out string reason)
+            {
+                double[] translation = { XMeters, YMeters, ZMeters };
+                double[] angles = { RollDegrees, PitchDegrees, YawDegrees };
+                foreach (double value in translation)
+                {
+                    if (!double.IsFinite(value) || Math.Abs(value) > MaxTranslationMeters)
+                    {
+                        reason =
+                            $"Robot-to-Quest translation must be within ±{MaxTranslationMeters} m";
+                        return false;
+                    }
+                }
+                foreach (double value in angles)
+                {
+                    if (!double.IsFinite(value) || Math.Abs(value) > 180)
+                    {
+                        reason = "Robot-to-Quest angles must be within ±180°";
+                        return false;
+                    }
+                }
+                reason = "";
+                return true;
+            }
+
+            public bool Equals(RobotToQuest other) =>
+                XMeters == other.XMeters
+                && YMeters == other.YMeters
+                && ZMeters == other.ZMeters
+                && RollDegrees == other.RollDegrees
+                && PitchDegrees == other.PitchDegrees
+                && YawDegrees == other.YawDegrees;
+
+            public override string ToString() =>
+                $"({XMeters:F3}, {YMeters:F3}, {ZMeters:F3}) m, "
+                + $"roll {RollDegrees:F1}°, pitch {PitchDegrees:F1}°, yaw {YawDegrees:F1}°";
         }
 
         public readonly struct AprilTagDetectorMode

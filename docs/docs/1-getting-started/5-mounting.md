@@ -7,12 +7,12 @@ Securely mounting your Quest headset on your robot is crucial for reliable track
 
 ## Pose Origin
 
-Before measuring `ROBOT_TO_QUEST` for your robot code, you need to know exactly where on the headset QuestX reports its position. QuestX uses a **"Third-Eye Pose"** — a point centered between the two lenses, on the plane created by the lens surface. It is **not** the center of the housing, the front face, or the strap.
+Before measuring the robot-to-Quest mount (set in the web interface's **3D** tab), you need to know exactly where on the headset QuestX reports its position. QuestX uses a **"Third-Eye Pose"** — a point centered between the two lenses, on the plane created by the lens surface. It is **not** the center of the housing, the front face, or the strap.
 
 <img src="/img/mounting/quest3-pose-origin.webp" alt="Quest 3 pose origin between the lenses, with the 7-degree lens-plane tilt called out" width="800"/>
 
 :::warning Quest 3 has a 7° lens tilt
-On the Quest 3, the lenses (and therefore the pose plane) are tilted 7° relative to the housing's front face. If you mount the housing vertically, the reported pose's local axes are tilted 7° forward. Either tilt the mount 7° backward to compensate, or include the 7° pitch in your `ROBOT_TO_QUEST` rotation. See [Robot Code Setup](./robot-code) for how to specify rotation offsets.
+On the Quest 3, the lenses (and therefore the pose plane) are tilted 7° relative to the housing's front face. If you mount the housing vertically, the reported pose's local axes are tilted 7° forward. Either tilt the mount 7° backward to compensate, or include the 7° pitch in the robot-to-Quest rotation. See [Robot-to-Quest mount](./robot-code#robot-to-quest-mount) for how to specify rotation offsets.
 :::
 
 <img src="/img/mounting/quest3s-pose-origin.webp" alt="Quest 3S pose origin between the lenses" width="800"/>
@@ -71,10 +71,12 @@ Mounting the headset too close to the ground can result in poor tracking as the 
 The headset's orientation doesn't really matter for tracking quality, as long as the SLAM cameras have a clear view of their surroundings (see [Field of View Requirements](#field-of-view-requirements) below). Mount the headset in whichever orientation best fits your robot: upside-down, sideways, rotated 90° or 180° relative to the robot's forward direction, or tilted at an arbitrary angle. QuestX tracks identically in all cases.
 
 :::info
-The only requirement is that the rotation must be reflected in the `ROBOT_TO_QUEST` transform in your robot code, so reported pose data converts correctly to robot-frame coordinates. See [Robot Code Setup](./robot-code) for how to specify rotation offsets.
+The only requirement is that the rotation must be entered in the robot-to-Quest mount (web interface, **3D** tab, **Robot** view), so the headset converts its pose to the robot's pose correctly. See [Robot-to-Quest mount](./robot-code#robot-to-quest-mount) for how to specify rotation offsets.
 :::
 
-If the headset is upside-down or on its side, set **Orientation** on the web interface's Camera tab to **Upside-down**, **Left**, or **Right**. Left and Right are the direction the top of the headset is rolled, seen from behind it (as if you were wearing it and tilted your head). Pick whichever makes the camera preview upright. This rotates the camera stream, the AprilTag preview, the Limelight-compatible `txnc`/`tync` angles, and every reported headset pose (VIO, AprilTag, and `botpose`). Poses are reported as an upright headset at the same point, so leave that roll out of `ROBOT_TO_QUEST`, or it is applied twice. Position and yaw are unchanged.
+If the headset is upside-down or on its side, set **Orientation** on the web interface's Camera tab to **Upside-down**, **Left**, or **Right**. Left and Right are the direction the top of the headset is rolled, seen from behind it (as if you were wearing it and tilted your head). Pick whichever makes the camera preview upright. Like Limelight's stream orientation, this setting is display-only: it rotates the camera stream, the AprilTag preview, and the Limelight-compatible `txnc`/`tync` angles upright. It does not change any pose.
+
+The roll must also be in the robot-to-Quest mount. For a headset that is otherwise level and facing forward, Normal is roll 0°, Upside-down is roll 180°, Left is roll −90°, and Right is roll +90°. The **3D** tab's **Robot** view warns when Orientation and the mount's roll disagree, and offers a one-click fix.
 
 ### Field of View Requirements
 

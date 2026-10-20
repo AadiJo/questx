@@ -15,7 +15,7 @@
             <input type="checkbox" v-model="overlayEnabled" :disabled="!streamEnabled" />
             AprilTag Overlay
           </label>
-          <div class="control-container" title="How the headset is rolled on its mount, viewed from behind it. Rotates the stream, preview, Limelight tx/ty, and reported poses upright.">
+          <div class="control-container" title="How the headset is rolled on its mount, viewed from behind it. Rotates the stream, preview, and Limelight tx/ty upright. Display only: poses use the Robot-to-Quest roll on the 3D tab.">
             <label for="camera-orientation">Orientation:</label>
             <select id="camera-orientation" :value="cameraOrientation" @change="handleOrientationChange">
               <option v-for="option in orientationOptions" :key="option.value" :value="option.value">

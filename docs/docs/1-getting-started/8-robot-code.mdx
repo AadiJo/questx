@@ -61,24 +61,31 @@ public void robotPeriodic() {
 
 `commandPeriodic()` processes command responses and connection, tracking, and battery callbacks. Call it even when you consume measurements elsewhere.
 
-## Mount transform
+## Robot-to-Quest mount
 
-QuestX reports the headset camera pose. Define the transform from robot center to the headset using WPILib coordinates: X forward, Y left, Z up.
+The robot-to-Quest transform is set on the headset, not in robot code. Open the web interface (`http://<Quest IP>:5801`), go to the **3D** tab, and choose the **Robot** view. Enter Forward (X), Left (Y), and Up (Z) in meters and Roll, Pitch, and Yaw in degrees, using WPILib robot axes (X forward, Y left, Z up). The transform runs from the robot origin to the headset's [Third-Eye Pose](./mounting#pose-origin) point. Edits preview live in 3D before you click **Save**. Each axis is limited to ±2 m and each angle to ±180°.
 
-```java
-private static final Transform3d ROBOT_TO_QUEST =
-    new Transform3d(0.30, 0.0, 0.50, new Rotation3d());
-```
+The headset publishes the robot's pose, computed as `headsetPose.transformBy(robotToQuest.inverse())`. This applies to `/QuestX/vioData`, `/QuestX/aprilTagData`, and the Limelight-compatible `botpose_wpiblue`. Only `headsetpose_wpiblue` still reports the headset center eye.
 
-A field-relative Quest camera pose becomes a robot-center pose with:
+:::warning Do not apply the mount in robot code
+Use `frame.fieldPose3d()` directly as the robot pose. Applying a `ROBOT_TO_QUEST` transform in robot code applies the mount twice.
+:::
 
-```java
-Pose3d robotPose = questPose.transformBy(ROBOT_TO_QUEST.inverse());
-```
+Saving a new mount starts a new VIO tracking epoch. The published pose jumps, so drop any VIO delta across it, the same as any other epoch change.
 
-### Measuring `ROBOT_TO_QUEST`
+### Measuring robot-to-Quest {#measuring-robot_to_quest}
 
-Measure the headset position from the robot estimator's origin along X (forward), Y (left), and Z (up). Include a `Rotation3d` if the headset is not level and forward-facing. A rigid mount matters: motion between the headset and chassis appears as sensor motion.
+Measure the headset position from the robot estimator's origin along X (forward), Y (left), and Z (up). Include a rotation if the headset is not level and forward-facing. For a headset that is otherwise level and facing forward, upside-down is roll 180°, top rolled to the left (seen from behind) is roll −90°, and top rolled to the right is roll +90°. A rigid mount matters: motion between the headset and chassis appears as sensor motion.
+
+The Camera tab's **Orientation** setting is display-only and does not change any pose. See [Mounting](./mounting#orientation).
+
+### 3D tab
+
+The web interface's **3D** tab has three views, drawn in the style of Limelight's field visualizer. The robot has bumpers in its alliance color with the configured team number on them. The alliance comes from the Driver Station (`/FMSInfo/IsRedAlliance`), or you can pick red or blue in the Field view.
+
+- **Field** draws the full field from the loaded layout (carpet, guardrails, and alliance walls, plus simplified REBUILT or REEFSCAPE game elements placed on their own AprilTags) and the robot at a display-only field pose: VIO carried into the field by the most recent accepted AprilTag measurement. Robot code still does its own fusion. The view also shows the raw AprilTag solve as a robot with yellow bumpers that fades, lines from the camera to tags seen now, tag rims (green: used in the last solve; amber: seen now), a trail, and **VIO drift at last solve**, which is how far the VIO-aligned prediction was from each new tag solve.
+- **Headset** shows each detected tag solved on its own in the camera frame, so ignored, unknown, and rejected tags appear too. Tags are drawn level with gravity around the headset, with ID, status, distance, and ambiguity.
+- **Robot** is the mount editor described above. It warns when the Camera tab's Orientation and the mount's roll disagree, and offers a one-click fix.
 
 ## AprilTag measurements
 
@@ -95,10 +102,9 @@ for (AprilTagFrame frame : questX.getAllUnreadAprilTagFrames()) {
     continue;
   }
 
-  Pose3d robotPose = frame.fieldPose3d().transformBy(ROBOT_TO_QUEST.inverse());
-
+  // fieldPose3d() is already the robot pose; the headset applies the mount.
   drivePoseEstimator.addVisionMeasurement(
-      robotPose.toPose2d(),
+      frame.fieldPose3d().toPose2d(),
       frame.measurementTimestamp(),
       frame.pose2dStdDevs());
 }
@@ -114,7 +120,7 @@ Reject camera-derived robot poses outside the official field dimensions (plus a 
 
 ## Local VIO measurements
 
-VIO is smooth and high-rate, but its origin is arbitrary. Consume it as a local-motion sensor:
+VIO reports the robot origin in the Quest's local tracking frame. It is smooth and high-rate, but its origin is arbitrary. Consume it as a local-motion sensor:
 
 ```java
 for (VioFrame frame : questX.getAllUnreadVioFrames()) {
@@ -140,7 +146,7 @@ Your robot-side fusion layer must maintain the rigid transform from the current 
 
 ### Setting Robot Pose
 
-Seed or reset the drivetrain pose estimator directly from the known autonomous starting pose, then initialize the current local-VIO-to-field alignment against that state or the first trusted AprilTag measurement. If robot code also calls `setPose()` with the Quest's pose (the robot pose transformed by the mount), VIO heading matches the field after the reset, but robot-side alignment must still restart at the new epoch.
+Seed or reset the drivetrain pose estimator directly from the known autonomous starting pose, then initialize the current local-VIO-to-field alignment against that state or the first trusted AprilTag measurement. If robot code also calls `setPose()`, pass the robot pose; the headset converts it through the mount. The web interface's pose reset also takes a robot pose. VIO heading matches the field after the reset, but robot-side alignment must still restart at the new epoch.
 
 ## Freshness and connection
 

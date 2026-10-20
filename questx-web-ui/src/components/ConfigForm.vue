@@ -50,6 +50,11 @@
             <AprilTagView />
           </div>
           
+          <!-- 3D Tab -->
+          <div v-show="activeTab === '3D'" class="tab-panel">
+            <ThreeDView :active="activeTab === '3D'" />
+          </div>
+
           <!-- Settings Tab -->
           <div v-show="activeTab === 'Settings'" class="tab-panel">
             <div class="settings-grid">
@@ -248,11 +253,12 @@ import LogsView from './LogsView.vue'
 import CameraView from './CameraView.vue'
 import ConfigField from './ConfigField.vue'
 import AprilTagView from './AprilTagView.vue'
+import ThreeDView from './ThreeDView.vue'
 import { TriangleAlert } from '@lucide/vue'
 
 const configStore = useConfigStore()
 const activeTab = ref<string>('Status')
-const tabs = ['Status', 'Logs', 'Camera', 'AprilTag', 'Settings']
+const tabs = ['Status', 'Logs', 'Camera', 'AprilTag', '3D', 'Settings']
 let pollInterval: number | null = null
 
 const pendingTeamNumber = ref<number | null>(null)

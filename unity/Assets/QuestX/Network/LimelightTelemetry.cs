@@ -5,8 +5,8 @@ namespace QuestX.Network
 {
     /// <summary>
     /// A small compatibility view. The complete v2 samples remain the fusion interface.
-    /// Botpose assumes the headset is at robot center with matching axes. Use the robot
-    /// mounting settings for other installations, and do not apply that offset twice.
+    /// Botpose is the robot pose after the Quest-side robot-to-Quest transform (set in the
+    /// web UI); headsetpose is the headset center eye. Do not apply the mount offset again.
     /// </summary>
     internal sealed class LimelightTelemetry
     {
@@ -54,7 +54,7 @@ namespace QuestX.Network
             status = nt.GetStringPublisher(Root + "status", options);
             reason = nt.GetStringPublisher(Root + "reason", options);
             frame.Set(
-                "WPILib blue origin, headset center. botpose assumes zero robot mount offset."
+                "WPILib blue origin. botpose: robot origin (Quest-side mount applied). headsetpose: headset center."
             );
             tv.Set(0);
             tid.Set(-1);
@@ -76,11 +76,17 @@ namespace QuestX.Network
                 measurement.AverageTagDistanceMeters,
                 tags
             );
+            var headsetValue = LimelightPoseFormat.Encode(
+                measurement.HeadsetPose,
+                latencyMs,
+                measurement.AverageTagDistanceMeters,
+                tags
+            );
             // Like Limelight, these compatibility topics carry PUBLICATION timestamps.
             // Subtract value[6] from the synchronized NT publication time once. The v2
             // topics instead carry CAPTURE timestamps and must not subtract it again.
             botpose.Set(value, now);
-            headsetpose.Set(value, now);
+            headsetpose.Set(headsetValue, now);
             rawFiducials.Set(LimelightPoseFormat.RawFiducials(tags), now);
             latency.Set(latencyMs);
             ids.Set(tagIds);

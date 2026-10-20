@@ -473,7 +473,7 @@ namespace QuestX.QuestX.AprilTag
             return true;
         }
 
-        private static double Ratio(double lower, double higher)
+        internal static double Ratio(double lower, double higher)
         {
             if (double.IsNaN(lower) || double.IsNaN(higher) || double.IsPositiveInfinity(lower))
             {

@@ -6,12 +6,19 @@ import { resolve } from 'path'
 export default defineConfig({
   plugins: [vue()],
   base: './',
-  
+  // 3D models; inlined into main.js by assetsInlineLimit below.
+  assetsInclude: ['**/*.glb'],
+
   // Build configuration
   build: {
     outDir: '../unity/Assets/StreamingAssets/ui',
     emptyOutDir: true,
     assetsDir: 'assets',
+    // Everything, three.js included, ships as one main.js because the Android build
+    // extracts a fixed file list (WebServerManager.ExtractAndroidUIFilesAsync).
+    chunkSizeWarningLimit: 1024,
+    // For the same reason, models are inlined as data: URLs instead of emitted as files.
+    assetsInlineLimit: (file: string) => (file.endsWith('.glb') ? true : undefined),
     rollupOptions: {
       input: {
         main: resolve(__dirname, 'index.html')

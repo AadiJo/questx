@@ -79,6 +79,8 @@ namespace QuestX.WebServer
         private readonly LogCollector logCollector;
         private readonly CameraResourceManager cameraArbiter;
         private readonly AprilTagOverlay aprilTagOverlay;
+        private readonly SceneProvider sceneProvider;
+        private readonly RobotMount robotMount;
 
         /// <summary>
         /// Meta SDK camera reference. Forwarded to <see cref="ConfigServer"/> so the
@@ -104,7 +106,9 @@ namespace QuestX.WebServer
             CameraResourceManager cameraArbiter,
             PassthroughCameraAccess cameraAccess,
             Transform resetTransform,
-            AprilTagOverlay aprilTagOverlay
+            AprilTagOverlay aprilTagOverlay,
+            SceneProvider sceneProvider,
+            RobotMount robotMount
         )
         {
             this.configManager = configManager;
@@ -116,6 +120,8 @@ namespace QuestX.WebServer
             this.cameraArbiter = cameraArbiter;
             this.cameraAccess = cameraAccess;
             this.aprilTagOverlay = aprilTagOverlay;
+            this.sceneProvider = sceneProvider;
+            this.robotMount = robotMount;
 
             statusProvider = new StatusProvider();
             logCollector = new LogCollector();
@@ -282,7 +288,7 @@ namespace QuestX.WebServer
         }
 
         /// <summary>
-        /// Executes pose reset to origin (0,0,0) with no rotation.
+        /// Executes a pose reset that puts the robot at the origin (0,0,0) with no rotation.
         /// Uses the existing PoseResetCommand implementation to ensure single source of truth.
         /// </summary>
         private void ExecutePoseResetToOrigin()
@@ -325,6 +331,7 @@ namespace QuestX.WebServer
             var webPoseResetCommand = new PoseResetCommand(
                 webContext, // Web context is no-op (no NetworkTables responses)
                 vioFrame,
+                robotMount,
                 vrCamera,
                 vrCameraRoot,
                 resetTransform
@@ -376,7 +383,8 @@ namespace QuestX.WebServer
                 logCollector,
                 streamProvider,
                 cameraAccess,
-                aprilTagOverlay
+                aprilTagOverlay,
+                sceneProvider
             );
 
             await server.StartAsync();

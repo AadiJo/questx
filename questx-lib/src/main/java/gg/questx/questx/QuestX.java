@@ -98,6 +98,10 @@ import java.util.function.IntConsumer;
  * AprilTagFrame} poses are expressed in the field frame. QuestXLib does not fuse the streams; robot
  * code owns alignment, rejection, and fusion.
  *
+ * <p>Both streams report the <strong>robot's</strong> pose. The headset applies the robot-to-Quest
+ * transform set in the QuestX web interface (3D tab, Robot view), so robot code must not apply a
+ * {@code ROBOT_TO_QUEST} offset of its own.
+ *
  * <h2>Threading and Performance</h2>
  *
  * <p>This class is designed for use in FRC robot code and follows WPILib threading conventions:
@@ -493,8 +497,8 @@ public class QuestX {
   }
 
   /**
-   * Resets the Quest's published VIO frame so that the headset's current pose reads as {@code
-   * pose}.
+   * Resets the Quest's published VIO frame so that the robot's current pose reads as {@code pose}.
+   * The Quest converts it to the matching headset pose through its robot-to-Quest transform.
    *
    * <p>The Quest rotates its VIO frame about the vertical axis and translates it: x, y, z, and yaw
    * of the next {@link VioFrame} match {@code pose}, while roll and pitch remain gravity-referenced
@@ -511,7 +515,7 @@ public class QuestX {
    * #onCommandSuccess(Consumer)} and {@link #onCommandFailure(Consumer)} respectively, and failures
    * are also logged to the DriverStation.
    *
-   * @param pose The Quest's current field-relative pose in WPILib coordinates (meters for
+   * @param pose The robot's current field-relative pose in WPILib coordinates (meters for
    *     translation, radians for rotation)
    * @throws IllegalArgumentException if pose contains NaN or infinite values
    * @see #onCommandSuccess(Consumer)

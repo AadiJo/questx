@@ -45,6 +45,7 @@ namespace QuestX.Commands
         /// </summary>
         /// <param name="networkTableConnection">Network connection for command communication</param>
         /// <param name="vioFrame">Frame that published VIO is expressed in</param>
+        /// <param name="robotMount">Where the headset sits on the robot</param>
         /// <param name="vrCamera">Reference to the VR camera transform</param>
         /// <param name="vrCameraRoot">Reference to the VR camera root transform</param>
         /// <param name="resetTransform">Reference to the reset position transform</param>
@@ -52,6 +53,7 @@ namespace QuestX.Commands
         public CommandProcessor(
             INetworkTableConnection networkTableConnection,
             VioReferenceFrame vioFrame,
+            RobotMount robotMount,
             Transform vrCamera,
             Transform vrCameraRoot,
             Transform resetTransform,
@@ -71,6 +73,7 @@ namespace QuestX.Commands
             poseResetCommand = new PoseResetCommand(
                 commandContext,
                 vioFrame,
+                robotMount,
                 vrCamera,
                 vrCameraRoot,
                 resetTransform
