@@ -15,3 +15,8 @@ These checks compile the production C# sources directly, without Unity:
 Add `--export-fixtures` to regenerate the fixtures in `questx-lib/src/test/resources/measurement-v3/` and `measurement-v4/` for the Java decoder tests.
 
 The geometry types depend on the C# protobuf classes in `unity/Assets/QuestX/Generated`, which are generated from `protos/` and not committed. Generate them first, as CI does (`.github/workflows/reusable-build-proto-csharp.yml`).
+
+The `Localization checks` workflow runs these checks on .NET 8, regenerates the wire fixtures
+with the production C# encoder, and passes those fresh arrays to the Java decoder and WPILib
+checks on JDK 17. It also runs the portable capture validator and synthetic NT4 loopback tests.
+This regression coverage does not require Unity or a headset and does not replace hardware validation.
