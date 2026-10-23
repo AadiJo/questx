@@ -9,6 +9,10 @@ on:
       - 'questx-lib/**'
       - 'tests/measurement-checks/**'
       - 'tests/frame-worker/**'
+      - 'tests/mjpeg-stream/**'
+      - 'tests/network-address/**'
+      - 'tests/network-telemetry/**'
+      - 'tests/vio-quality/**'
       - 'tests/poselib-packing-checks/**'
       - 'tests/apriltag-preview/**'
       - 'tests/native-localization/**'
@@ -24,6 +28,10 @@ on:
       - 'questx-lib/**'
       - 'tests/measurement-checks/**'
       - 'tests/frame-worker/**'
+      - 'tests/mjpeg-stream/**'
+      - 'tests/network-address/**'
+      - 'tests/network-telemetry/**'
+      - 'tests/vio-quality/**'
       - 'tests/poselib-packing-checks/**'
       - 'tests/apriltag-preview/**'
       - 'tests/native-localization/**'
@@ -60,6 +68,10 @@ jobs:
             questx-lib
             tests/measurement-checks
             tests/frame-worker
+            tests/mjpeg-stream
+            tests/network-address
+            tests/network-telemetry
+            tests/vio-quality
             tests/poselib-packing-checks
             tests/apriltag-preview
             unity/Assets/QuestX
@@ -92,9 +104,13 @@ jobs:
       - name: Check covariance and regenerate wire fixtures with the C# encoder
         run: dotnet run --configuration Release --project tests/measurement-checks/MeasurementChecks.csproj -- --export-fixtures
 
-      - name: Check frame worker, preview handoff, and solver input packing
+      - name: Check frame worker, streaming, address discovery, and solver inputs
         run: |
           dotnet run --configuration Release --project tests/frame-worker/FrameWorkerChecks.csproj
+          dotnet run --configuration Release --project tests/mjpeg-stream/MjpegStreamChecks.csproj
+          dotnet run --configuration Release --project tests/network-address/NetworkAddressChecks.csproj
+          dotnet run --configuration Release --project tests/network-telemetry/NetworkTelemetryChecks.csproj
+          dotnet run --configuration Release --project tests/vio-quality/VioQualityChecks.csproj
           dotnet run --configuration Release --project tests/apriltag-preview/PreviewChecks.csproj
           dotnet run --configuration Release --project tests/poselib-packing-checks/PoseLibPackingChecks.csproj
 

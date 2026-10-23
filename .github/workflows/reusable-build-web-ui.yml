@@ -47,6 +47,10 @@ jobs:
         working-directory: ./questx-web-ui
         run: npm ci
         
+      - name: Check UI behavior
+        working-directory: ./questx-web-ui
+        run: npm test
+
       - name: Build UI
         working-directory: ./questx-web-ui
         run: npm run build
