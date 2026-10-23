@@ -1,7 +1,5 @@
 using System;
 using System.IO;
-using System.Net;
-using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
 using Meta.XR;
@@ -100,11 +98,6 @@ namespace QuestX.WebServer
         private int cachedTeamNumber;
         private string cachedDebugIpOverride = "";
         private string cachedRobotIpAddress = "";
-
-        /// <summary>How often the local IP address is looked up again.</summary>
-        private const double IpAddressRefreshSeconds = 5.0;
-        private string cachedIpAddress;
-        private double nextIpAddressRefreshAt;
 
         // App FPS is averaged over the frames since the previous status update rather than
         // taken from a single frame's deltaTime, which jumps with every slow frame.
@@ -257,13 +250,12 @@ namespace QuestX.WebServer
             AprilTagDiagnosticsSnapshot aprilTagDiagnostics
         )
         {
+            // Shared with NetworkTableConnection, which looks it up off the main thread
+            string ipAddress = networkTableConnection.IpAddress;
+            if (ipAddress == LocalAddressMonitor.NoAddress)
+                ipAddress = null;
+
             double now = Time.realtimeSinceStartupAsDouble;
-            if (cachedIpAddress == null || now >= nextIpAddressRefreshAt)
-            {
-                cachedIpAddress = GetLocalIPAddress();
-                nextIpAddressRefreshAt = now + IpAddressRefreshSeconds;
-            }
-            string ipAddress = cachedIpAddress;
 
             int frameCount = Time.frameCount;
             float currentFps =
@@ -281,7 +273,7 @@ namespace QuestX.WebServer
                 SystemInfo.batteryLevel,
                 SystemInfo.batteryStatus,
                 networkTableConnection.IsConnected,
-                ipAddress,
+                ipAddress ?? "0.0.0.0",
                 cachedTeamNumber,
                 cachedRobotIpAddress,
                 currentFps,
@@ -305,11 +297,15 @@ namespace QuestX.WebServer
                 );
             }
 
-            bool hasAddress = ipAddress != "0.0.0.0";
-            IpAddress = hasAddress ? ipAddress : null;
-            BaseUrl = hasAddress
-                ? $"http://{ipAddress}:{QuestXConstants.WebServer.SERVER_PORT}"
-                : null;
+            if (ipAddress != IpAddress)
+            {
+                IpAddress = ipAddress;
+                BaseUrl =
+                    ipAddress == null
+                        ? null
+                        : $"http://{ipAddress}:{QuestXConstants.WebServer.SERVER_PORT}";
+                ShowConnectionInfo();
+            }
         }
         #endregion
 
@@ -497,27 +493,12 @@ namespace QuestX.WebServer
         #endregion
 
         #region Utility Methods
-        private string GetLocalIPAddress()
-        {
-            try
-            {
-                using (Socket socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, 0))
-                {
-                    socket.Connect("8.8.8.8", 65530);
-                    IPEndPoint endPoint = socket.LocalEndPoint as IPEndPoint;
-                    return endPoint?.Address.ToString() ?? "0.0.0.0";
-                }
-            }
-            catch
-            {
-                return "0.0.0.0";
-            }
-        }
-
         private void ShowConnectionInfo()
         {
             QueuedLogger.Log(
-                $"Connect to WebUI at http://{GetLocalIPAddress()}:{QuestXConstants.WebServer.SERVER_PORT}"
+                BaseUrl == null
+                    ? $"WebUI is waiting for a network address (port {QuestXConstants.WebServer.SERVER_PORT})"
+                    : $"Connect to WebUI at {BaseUrl}"
             );
         }
 

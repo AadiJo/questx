@@ -1,6 +1,4 @@
 using System;
-using System.Net;
-using System.Net.Sockets;
 using QuestX.Config;
 using QuestX.Core;
 using QuestX.Native.NTCore;
@@ -51,7 +49,8 @@ namespace QuestX.Network
         long NtNow { get; }
 
         /// <summary>
-        /// Caches the last known IP address to detect changes
+        /// The headset's local IPv4 address, or <see cref="LocalAddressMonitor.NoAddress"/>
+        /// ("127.0.0.1") when none is known. Refreshed off the main thread.
         /// </summary>
         string IpAddress { get; }
 
@@ -180,6 +179,11 @@ namespace QuestX.Network
         private PolledLogger ntInstanceLogger;
 
         /// <summary>
+        /// Shared local address source for the UI, web server and mDNS
+        /// </summary>
+        private readonly LocalAddressMonitor localAddress = new LocalAddressMonitor();
+
+        /// <summary>
         /// Publisher for frame data (position/rotation updates)
         /// </summary>
         private readonly ProtobufPublisher<ProtobufQuestXFrameData> frameDataPublisher;
@@ -287,6 +291,7 @@ namespace QuestX.Network
         public NetworkTableConnection(IConfigManager configManager)
         {
             this.configManager = configManager;
+            localAddress.Changed += OnLocalAddressChanged;
 
             // Create NetworkTables instance with QuestX namespace
             // This isolates QuestX topics from other NetworkTables data
@@ -421,10 +426,8 @@ namespace QuestX.Network
 
         #region Properties
 
-        /// <summary>
-        /// Caches the last known IP address to detect changes
-        /// </summary>
-        public string IpAddress { get; private set; } = "127.0.0.1";
+        /// <inheritdoc />
+        public string IpAddress => localAddress.Address ?? LocalAddressMonitor.NoAddress;
 
         /// <summary>
         /// Gets whether the connection is currently established.
@@ -931,6 +934,8 @@ namespace QuestX.Network
         /// </summary>
         public void Initialize()
         {
+            // Starts the first lookup; the address arrives through a later Periodic.
+            localAddress.Poll();
             OnIpAddressChanged?.Invoke(IpAddress);
             if (IsConnected)
             {
@@ -954,26 +959,19 @@ namespace QuestX.Network
         }
 
         /// <summary>
-        /// Checks for changes in the local IP address and raises event if changed.
+        /// Applies a finished local address lookup and raises the change event on this thread.
         /// </summary>
         private void PollForNewIpAddress()
         {
-            var hostEntry = Dns.GetHostEntry(Dns.GetHostName());
-            foreach (var ip in hostEntry.AddressList)
-            {
-                // We only care about local IP address
-                if (ip.AddressFamily == AddressFamily.InterNetwork)
-                {
-                    // If it is the same as the previous, ignore
-                    if (IpAddress.Equals(ip.ToString()))
-                        continue;
+            localAddress.Poll();
+        }
 
-                    IpAddress = ip.ToString();
-                    QueuedLogger.Log($"Got new IP Address: {IpAddress}");
-                    OnIpAddressChanged?.Invoke(IpAddress);
-                    break;
-                }
-            }
+        private void OnLocalAddressChanged(string address)
+        {
+            QueuedLogger.Log(
+                address == null ? "Lost local IP address" : $"Got new IP Address: {address}"
+            );
+            OnIpAddressChanged?.Invoke(IpAddress);
         }
 
         /// <summary>
