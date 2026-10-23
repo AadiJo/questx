@@ -274,7 +274,9 @@ export class SceneViewer {
   private readonly camera = new THREE.PerspectiveCamera(50, 1, 0.01, 200)
   private readonly controls: OrbitControls
   private readonly resizeObserver: ResizeObserver
-  private frameRequest = 0
+  private frameRequest: number | null = null
+  private active = false
+  private disposed = false
 
   private mode: ViewMode = 'field'
   private fieldPreset: FieldCameraPreset = 'perspective'
@@ -297,7 +299,7 @@ export class SceneViewer {
   private trailCount = 0
   private trailEpoch = -1
   private followTarget: THREE.Vector3 | null = null
-  // Until the user orbits, resizes re-fit the preset (the tab mounts hidden at zero size).
+  // Until the user orbits, resizes re-fit the preset, including when returning to the tab.
   private cameraTouched = false
 
   // The robot -> headset -> camera -> tags chain, shared by every view.
@@ -320,6 +322,7 @@ export class SceneViewer {
 
     this.camera.up.set(0, 0, 1)
     this.controls = new OrbitControls(this.camera, this.renderer.domElement)
+    this.controls.enabled = false
     this.controls.enableDamping = true
     this.controls.dampingFactor = 0.12
     this.controls.addEventListener('start', () => {
@@ -353,11 +356,25 @@ export class SceneViewer {
     this.resizeObserver.observe(container)
     this.resize()
     this.setMode('field')
-    this.loop()
+  }
+
+  /** Pause without losing camera/scene state; a new viewer starts paused. */
+  setActive(active: boolean) {
+    if (this.disposed || this.active === active) return
+    this.active = active
+    this.controls.enabled = active
+    if (active) {
+      this.resize()
+      this.frameRequest = requestAnimationFrame(this.loop)
+    } else {
+      if (this.frameRequest !== null) cancelAnimationFrame(this.frameRequest)
+      this.frameRequest = null
+    }
   }
 
   dispose() {
-    cancelAnimationFrame(this.frameRequest)
+    this.setActive(false)
+    this.disposed = true
     this.resizeObserver.disconnect()
     this.controls.dispose()
     disposeTree(this.scene)
@@ -619,6 +636,7 @@ export class SceneViewer {
   }
 
   private loop = () => {
+    if (!this.active || this.disposed) return
     this.frameRequest = requestAnimationFrame(this.loop)
     this.controls.update()
     this.renderer.render(this.scene, this.camera)
