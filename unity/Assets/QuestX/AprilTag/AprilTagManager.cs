@@ -200,6 +200,8 @@ namespace QuestX.QuestX.AprilTag
         // processed frames on the worker; rates are refreshed about once per second.
         private long cameraUpdateCount;
         private long busyFrameCount;
+        private long replacedFrameCount;
+        private long nativeOverwrittenFrameCount;
         private long processedFrameCount;
         private long rateWindowStart = Stopwatch.GetTimestamp();
         private long rateWindowCameraUpdates;
@@ -577,7 +579,11 @@ namespace QuestX.QuestX.AprilTag
                 }
                 return false;
             }
-            worker = null;
+            lock (diagnosticsLock)
+            {
+                replacedFrameCount += worker.ReplacedCount;
+                worker = null;
+            }
             ReleaseWorkerResources();
             return true;
         }
@@ -801,6 +807,9 @@ namespace QuestX.QuestX.AprilTag
                     ProcessedFramesPerSecond = processedFramesPerSecond,
                     MeasurementsPerSecond = measurementsPerSecond,
                     BusyFrameCount = busyFrameCount,
+                    ReplacedFrameCount = replacedFrameCount + (worker?.ReplacedCount ?? 0),
+                    NativeOverwrittenFrameCount = Interlocked.Read(ref nativeOverwrittenFrameCount),
+                    PreviewReplacedFrameCount = previewEncoder.DroppedCount,
                 };
             }
         }
@@ -1769,6 +1778,7 @@ namespace QuestX.QuestX.AprilTag
 
             /// <summary>Camera updates counted before this session; the camera counts from 0.</summary>
             public long DeliveredBase;
+            public long OverwrittenBase;
             public Thread Thread;
             public volatile bool Running;
             public volatile int Failure;
@@ -1909,7 +1919,9 @@ namespace QuestX.QuestX.AprilTag
             nativeSession = new NativeCaptureSession(camera, cachedIntrinsicsVersion)
             {
                 DeliveredBase = Interlocked.Read(ref cameraUpdateCount),
+                OverwrittenBase = Interlocked.Read(ref nativeOverwrittenFrameCount),
             };
+            previewEncoder.Reset();
             Overlay.Clear();
             Scene.Clear();
             nativeSession.Running = true;
@@ -1980,10 +1992,10 @@ namespace QuestX.QuestX.AprilTag
                     ref cameraUpdateCount,
                     session.DeliveredBase + stats.delivered
                 );
-                lock (diagnosticsLock)
-                {
-                    busyFrameCount = stats.overwritten;
-                }
+                Interlocked.Exchange(
+                    ref nativeOverwrittenFrameCount,
+                    session.OverwrittenBase + stats.overwritten
+                );
                 ProcessNativeFrame(session, frame);
             }
             camera.Release();

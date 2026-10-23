@@ -361,6 +361,11 @@ namespace QuestX.WebServer
                         processedFps = aprilTagDiagnostics?.ProcessedFramesPerSecond ?? 0,
                         measurementFps = aprilTagDiagnostics?.MeasurementsPerSecond ?? 0,
                         busyFrameCount = aprilTagDiagnostics?.BusyFrameCount ?? 0,
+                        replacedFrameCount = aprilTagDiagnostics?.ReplacedFrameCount ?? 0,
+                        nativeOverwrittenFrameCount = aprilTagDiagnostics?.NativeOverwrittenFrameCount
+                            ?? 0,
+                        previewReplacedFrameCount = aprilTagDiagnostics?.PreviewReplacedFrameCount
+                            ?? 0,
                     },
 
                     passthroughStream = new

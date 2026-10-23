@@ -232,8 +232,17 @@ namespace QuestX.QuestX.AprilTag
         /// <summary>Measurements published per second.</summary>
         public double MeasurementsPerSecond { get; set; }
 
-        /// <summary>Due camera frames dropped because the detector was still busy.</summary>
+        /// <summary>Meta capture frames skipped because no capture buffer was free.</summary>
         public long BusyFrameCount { get; set; }
+
+        /// <summary>Pending frames replaced by fresher captures, excluding shutdown discards.</summary>
+        public long ReplacedFrameCount { get; set; }
+
+        /// <summary>Native camera frames overwritten before acquisition, across camera sessions.</summary>
+        public long NativeOverwrittenFrameCount { get; set; }
+
+        /// <summary>Pending previews replaced before encoding; excludes reset discards.</summary>
+        public long PreviewReplacedFrameCount { get; set; }
 
         public AprilTagDiagnosticsSnapshot(
             bool detectorActive,

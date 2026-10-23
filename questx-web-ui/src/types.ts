@@ -275,6 +275,9 @@ export interface HeadsetStatus {
     measurementFps?: number
     // Due camera frames dropped because detection was still busy.
     busyFrameCount?: number
+    replacedFrameCount?: number
+    nativeOverwrittenFrameCount?: number
+    previewReplacedFrameCount?: number
   }
 
   passthroughStream: {
