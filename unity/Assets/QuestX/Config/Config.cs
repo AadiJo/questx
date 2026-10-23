@@ -115,6 +115,13 @@ namespace QuestX.Config
             /// roll belongs in <see cref="RobotMount"/>). Default is upright.
             /// </summary>
             public int Orientation { get; set; } = (int)CameraOrientation.NORMAL;
+
+            /// <summary>
+            /// How much the AprilTag preview is scaled down from the detector resolution: 1, 2,
+            /// 4 or 8 (full, half, quarter, eighth per side). Detection always uses full
+            /// resolution. Default is a quarter, about the size of a Limelight stream.
+            /// </summary>
+            public int PreviewScale { get; set; } = 4;
         }
 
         /// <summary>

@@ -141,6 +141,19 @@ export const useConfigStore = defineStore('config', () => {
     }
   }
 
+  async function updatePreviewScale(value: number) {
+    try {
+      const response = await configApi.updateConfig({ previewScale: value })
+      if (response.success) {
+        await loadConfig(false)
+      }
+      return response.success
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : 'Failed to update'
+      return false
+    }
+  }
+
   async function updateRobotToQuest(value: RobotToQuest) {
     try {
       const response = await configApi.updateConfig({ robotToQuest: value })
@@ -222,6 +235,7 @@ export const useConfigStore = defineStore('config', () => {
     updateEnablePassthroughStream,
     updateEnableHighQualityStream,
     updateCameraOrientation,
+    updatePreviewScale,
     updateEnableDebugLogging,
     updateRobotToQuest,
     updateStreamMode,

@@ -482,6 +482,7 @@ namespace QuestX.WebServer.Server
                 enablePassthroughStream = await configManager.GetEnablePassthroughStreamAsync(),
                 enableHighQualityStream = await configManager.GetEnableHighQualityStreamsAsync(),
                 cameraOrientation = (int)await configManager.GetCameraOrientationAsync(),
+                previewScale = await configManager.GetPreviewScaleAsync(),
                 robotToQuest = ToModel(await configManager.GetRobotToQuestAsync()),
                 streamMode = new StreamModeModel
                 {
@@ -591,6 +592,25 @@ namespace QuestX.WebServer.Server
                     await configManager.SetCameraOrientationAsync(
                         (CameraOrientation)request.CameraOrientation.Value
                     );
+                }
+                if (request.PreviewScale.HasValue)
+                {
+                    if (!ConfigManager.IsValidPreviewScale(request.PreviewScale.Value))
+                    {
+                        context.Response.StatusCode = 400;
+                        await SendJsonResponse(
+                            context,
+                            new SimpleResponse
+                            {
+                                success = false,
+                                message =
+                                    $"Preview scale {request.PreviewScale.Value} is not supported. "
+                                    + "Use 1 (full), 2 (half), 4 (quarter), or 8 (eighth).",
+                            }
+                        );
+                        return;
+                    }
+                    await configManager.SetPreviewScaleAsync(request.PreviewScale.Value);
                 }
                 if (request.RobotToQuest != null)
                 {
@@ -1830,6 +1850,8 @@ namespace QuestX.WebServer.Server
                 parts.Add($"enableHighQualityStream={request.EnableHighQualityStream.Value}");
             if (request.CameraOrientation.HasValue)
                 parts.Add($"cameraOrientation={request.CameraOrientation.Value}");
+            if (request.PreviewScale.HasValue)
+                parts.Add($"previewScale={request.PreviewScale.Value}");
             if (request.RobotToQuest != null)
             {
                 var m = request.RobotToQuest;

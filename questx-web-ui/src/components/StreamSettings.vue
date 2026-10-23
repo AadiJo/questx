@@ -30,12 +30,23 @@
     <div v-if="lockedByDetector" class="callout-note">
       <LockKeyhole :size="15" :stroke-width="1.8" aria-hidden="true" />
       <span>
-        The AprilTag detector owns the camera, so the stream runs at the detector's
-        <b>{{ effectiveResolution }}</b>. Change it on the Detector tab, or turn the detector off.
+        The AprilTag detector owns the camera at <b>{{ effectiveResolution }}</b>, and the stream
+        shows its frames scaled to the preview resolution. Detection always uses the full
+        resolution; change it on the Detector tab.
       </span>
     </div>
 
-    <div class="row">
+    <div v-if="lockedByDetector" class="row">
+      <label for="stream-preview-scale">Preview resolution</label>
+      <div class="control">
+        <select id="stream-preview-scale" :value="previewScale" :disabled="!streamEnabled" @change="setPreviewScale">
+          <option v-for="option in previewChoices" :key="option.scale" :value="option.scale" :disabled="!option.available">
+            {{ option.label }}
+          </option>
+        </select>
+      </div>
+    </div>
+    <div v-else class="row">
       <label for="stream-resolution">Resolution</label>
       <div class="control">
         <select id="stream-resolution" :value="resolutionKey" :disabled="modeLocked" @change="setResolution">
@@ -69,7 +80,7 @@
         </label>
       </div>
     </div>
-    <p class="hint">Unlocks resolutions above 640x480 and framerates above 30 fps.</p>
+    <p class="hint">Unlocks resolutions above 640x480 and framerates above 30 fps. Larger streams use more of the robot radio's bandwidth.</p>
   </div>
 </template>
 
@@ -81,6 +92,7 @@ import { useHeadsetStatus } from '../composables/useHeadsetStatus'
 import { errorText, toast } from '../composables/useToast'
 import { videoApi } from '../api/video'
 import { mountedOrientation } from '../three/mountMath'
+import { previewOptions } from '../previewScale'
 import { CameraOrientation, type PageId, type StreamModeModel, type VideoModeModel } from '../types'
 
 const emit = defineEmits<{ navigate: [page: PageId] }>()
@@ -125,6 +137,23 @@ const effectiveResolution = computed(() => {
   return r ? `${r.width}x${r.height}` : 'resolution'
 })
 const modeLocked = computed(() => !streamEnabled.value || lockedByDetector.value)
+
+// With the detector on, the stream is its frames scaled down by a whole factor.
+const previewScale = computed(() => configStore.config?.previewScale ?? 4)
+const previewChoices = computed(() => {
+  const r = status.value?.effectivePassthroughResolution
+  if (!r) return []
+  const sideways = orientation.value === CameraOrientation.Left || orientation.value === CameraOrientation.Right
+  return previewOptions(r.width, r.height, sideways, highQuality.value)
+})
+
+async function setPreviewScale(event: Event) {
+  const target = event.target as HTMLSelectElement
+  if (!(await configStore.updatePreviewScale(Number(target.value)))) {
+    target.value = String(previewScale.value)
+    toast(errorText('Could not change the preview resolution', configStore.error), 'error')
+  }
+}
 
 // ---- Mode options ----
 

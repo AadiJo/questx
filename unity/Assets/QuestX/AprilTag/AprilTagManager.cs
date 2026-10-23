@@ -117,8 +117,8 @@ namespace QuestX.QuestX.AprilTag
         private int overlayQuality = 75;
 
         /// <summary>
-        /// The preview is a quarter of the detector resolution per side, about the size of a
-        /// Limelight stream; larger than 640x480 only with high-quality streams.
+        /// Preview scale-down per side from the settings (default a quarter, about the size of a
+        /// Limelight stream); larger than 640x480 only with high-quality streams.
         /// </summary>
         private volatile int previewScale = 4;
         private volatile bool highQualityStreams;
@@ -278,6 +278,11 @@ namespace QuestX.QuestX.AprilTag
             configManager.OnEnablePassthroughStreamChanged += OnOverlayStreamEnabledChanged;
             configManager.OnCameraOrientationChanged += OnCameraOrientationChanged;
             configManager.OnEnableDebugLoggingChanged += OnEnableDebugLoggingChanged;
+            configManager.OnPreviewScaleChanged += scale =>
+            {
+                previewScale = scale;
+                Overlay.Clear();
+            };
             configManager.OnEnableHighQualityStreamsChanged += enabled =>
             {
                 highQualityStreams = enabled;

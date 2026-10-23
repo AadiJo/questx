@@ -164,6 +164,8 @@ export interface ConfigResponse {
   enablePassthroughStream: boolean
   enableHighQualityStream: boolean
   cameraOrientation: CameraOrientation
+  // AprilTag preview scale-down per side from the detector resolution: 1, 2, 4 or 8.
+  previewScale: number
   robotToQuest: RobotToQuest
   enableDebugLogging: boolean
   streamMode: StreamModeModel
@@ -180,6 +182,7 @@ export interface ConfigUpdateRequest {
   enablePassthroughStream?: boolean
   enableHighQualityStream?: boolean
   cameraOrientation?: CameraOrientation
+  previewScale?: number
   robotToQuest?: RobotToQuest
   enableDebugLogging?: boolean
   streamMode?: StreamModeModel

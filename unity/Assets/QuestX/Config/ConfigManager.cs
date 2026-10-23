@@ -81,6 +81,11 @@ namespace QuestX.Config
         /// Raised when the camera orientation changes.
         /// </summary>
         public event Action<CameraOrientation> OnCameraOrientationChanged;
+
+        /// <summary>
+        /// Raised when the AprilTag preview scale changes.
+        /// </summary>
+        public event Action<int> OnPreviewScaleChanged;
         #endregion
 
         #region AprilTag
@@ -194,6 +199,11 @@ namespace QuestX.Config
         /// The orientation used to rotate streams, previews, and tag angles. Poses ignore it.
         /// </returns>
         public Task<CameraOrientation> GetCameraOrientationAsync();
+
+        /// <summary>
+        /// Gets how much the AprilTag preview is scaled down per side: 1, 2, 4 or 8.
+        /// </summary>
+        public Task<int> GetPreviewScaleAsync();
         #endregion
 
         #region AprilTag
@@ -301,6 +311,11 @@ namespace QuestX.Config
         /// Sets how the headset is rolled on its mount.
         /// </summary>
         public Task SetCameraOrientationAsync(CameraOrientation orientation);
+
+        /// <summary>
+        /// Sets how much the AprilTag preview is scaled down per side: 1, 2, 4 or 8.
+        /// </summary>
+        public Task SetPreviewScaleAsync(int scale);
         #endregion
 
         #region AprilTag
@@ -420,6 +435,7 @@ namespace QuestX.Config
             OnPassthroughStreamModeChanged?.Invoke(await GetPassthroughStreamModeAsync());
             OnEnableHighQualityStreamsChanged?.Invoke(await GetEnableHighQualityStreamsAsync());
             OnCameraOrientationChanged?.Invoke(await GetCameraOrientationAsync());
+            OnPreviewScaleChanged?.Invoke(await GetPreviewScaleAsync());
 
             // Mode MUST fire before Enable. AprilTagManager caches the requested
             // resolution from the Mode event and uses it when Enable triggers the
@@ -455,6 +471,7 @@ namespace QuestX.Config
             await SetEnablePassthroughStreamAsync(cameraDefaults.EnablePassthroughStream);
             await SetEnableHighQualityStreamsAsync(cameraDefaults.EnableHighQualityStreams);
             await SetCameraOrientationAsync((CameraOrientation)cameraDefaults.Orientation);
+            await SetPreviewScaleAsync(cameraDefaults.PreviewScale);
             await SetPassthroughStreamModeAsync(
                 new StreamMode(
                     cameraDefaults.PassthroughStreamWidth,
@@ -534,6 +551,9 @@ namespace QuestX.Config
 
         /// <inheritdoc/>
         public event Action<CameraOrientation> OnCameraOrientationChanged;
+
+        /// <inheritdoc/>
+        public event Action<int> OnPreviewScaleChanged;
         #endregion
 
         #region AprilTag
@@ -637,6 +657,21 @@ namespace QuestX.Config
             return CameraOrientationMath.IsValid(config.Orientation)
                 ? (CameraOrientation)config.Orientation
                 : CameraOrientation.NORMAL;
+        }
+
+        /// <summary>The preview scales the dashboard offers.</summary>
+        public static bool IsValidPreviewScale(int scale) =>
+            scale == 1 || scale == 2 || scale == 4 || scale == 8;
+
+        /// <inheritdoc/>
+        public async Task<int> GetPreviewScaleAsync()
+        {
+            var config = await GetCameraConfigAsync();
+
+            // Databases from before this setting existed read 0 here.
+            return IsValidPreviewScale(config.PreviewScale)
+                ? config.PreviewScale
+                : new Config.Camera().PreviewScale;
         }
 
         #endregion
@@ -851,6 +886,22 @@ namespace QuestX.Config
             // Notify subscribed methods on the main thread
             invokeOnMainThread(() => OnCameraOrientationChanged?.Invoke(orientation));
             QueuedLogger.Log($"Updated Key 'cameraOrientation' to {orientation}");
+        }
+
+        /// <inheritdoc/>
+        public async Task SetPreviewScaleAsync(int scale)
+        {
+            if (!IsValidPreviewScale(scale))
+            {
+                throw new ArgumentOutOfRangeException(nameof(scale), scale, "Use 1, 2, 4 or 8");
+            }
+            var config = await GetCameraConfigAsync();
+            config.PreviewScale = scale;
+            await SaveCameraConfigAsync(config);
+
+            // Notify subscribed methods on the main thread
+            invokeOnMainThread(() => OnPreviewScaleChanged?.Invoke(scale));
+            QueuedLogger.Log($"Updated Key 'previewScale' to {scale}");
         }
         #endregion
 

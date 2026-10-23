@@ -150,6 +150,12 @@ namespace QuestX.WebServer
         /// Display only: it never changes reported poses.
         /// </summary>
         public int cameraOrientation;
+
+        /// <summary>
+        /// How much the AprilTag preview is scaled down per side from the detector resolution:
+        /// 1, 2, 4 or 8.
+        /// </summary>
+        public int previewScale;
         public RobotToQuestModel robotToQuest;
         public StreamModeModel streamMode;
         public bool enableAprilTagDetector;
@@ -171,6 +177,7 @@ namespace QuestX.WebServer
         public bool? EnablePassthroughStream;
         public bool? EnableHighQualityStream;
         public int? CameraOrientation;
+        public int? PreviewScale;
         public RobotToQuestModel RobotToQuest;
         public StreamModeModel StreamMode;
         public bool? EnableAprilTagDetector;

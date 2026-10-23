@@ -36,6 +36,7 @@ const defaults = () => ({
   enableHighQualityStream: false,
   enableDebugLogging: false,
   cameraOrientation: 0,
+  previewScale: 4,
   robotToQuest: { x: 0.28, y: 0, z: 0.6, roll: 0, pitch: 0, yaw: 0 },
   streamMode: { width: 640, height: 480, framerate: 30, quality: 75 },
   enableAprilTagDetector: true,
