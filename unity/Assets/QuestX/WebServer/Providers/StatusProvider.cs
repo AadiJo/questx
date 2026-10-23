@@ -352,6 +352,8 @@ namespace QuestX.WebServer
                         lastDetectMs = aprilTagDiagnostics?.LastDetectMilliseconds ?? 0,
                         averageDetectMs = aprilTagDiagnostics?.AverageDetectMilliseconds ?? 0,
                         averageReadbackMs = aprilTagDiagnostics?.AverageReadbackMilliseconds ?? 0,
+                        captureBackend = aprilTagDiagnostics?.CaptureBackend ?? "",
+                        averageDeliveryMs = aprilTagDiagnostics?.AverageDeliveryMilliseconds ?? 0,
                         averageSolveMs = aprilTagDiagnostics?.AverageSolveMilliseconds ?? 0,
                         averagePreviewMs = aprilTagDiagnostics?.AveragePreviewMilliseconds ?? 0,
                         averageLatencyMs = aprilTagDiagnostics?.AverageLatencyMilliseconds ?? 0,

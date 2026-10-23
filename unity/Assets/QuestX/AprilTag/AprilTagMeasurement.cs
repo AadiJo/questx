@@ -205,6 +205,15 @@ namespace QuestX.QuestX.AprilTag
         /// <summary>From requesting a frame's GPU copy to the copy arriving in CPU memory.</summary>
         public double AverageReadbackMilliseconds { get; set; }
 
+        /// <summary>
+        /// Where frames come from: "Native" (QuestX's Camera2 client) or "Mruk" (Meta's camera
+        /// access); empty while disabled.
+        /// </summary>
+        public string CaptureBackend { get; set; } = "";
+
+        /// <summary>Native capture: from exposure until the frame reached the capture thread.</summary>
+        public double AverageDeliveryMilliseconds { get; set; }
+
         /// <summary>PoseLib solve, ambiguity, covariance and local validation.</summary>
         public double AverageSolveMilliseconds { get; set; }
 

@@ -259,6 +259,10 @@ export interface HeadsetStatus {
     // Other pipeline stages, moving averages in milliseconds: GPU readback of the camera
     // frame, pose solve with covariance, preview encoding, and exposure-to-publish latency.
     averageReadbackMs?: number
+    // Where frames come from: "Native" (QuestX's camera client) or "Mruk" (Meta's camera
+    // access). Native frames skip the GPU readback; averageDeliveryMs is exposure to arrival.
+    captureBackend?: string
+    averageDeliveryMs?: number
     averageSolveMs?: number
     averagePreviewMs?: number
     averageLatencyMs?: number

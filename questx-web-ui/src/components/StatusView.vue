@@ -55,7 +55,13 @@
           <dt>Detection rate</dt>
           <dd :title="`Frames detected of camera frames delivered; ${(tag.busyFrameCount ?? 0).toLocaleString()} dropped while detection was busy`">{{ (tag.processedFps ?? 0).toFixed(0) }} / {{ (tag.cameraFps ?? 0).toFixed(0) }} fps</dd>
           <dt>Publish rate</dt><dd>{{ (tag.measurementFps ?? 0).toFixed(0) }}/s</dd>
-          <dt>Readback</dt><dd>{{ (tag.averageReadbackMs ?? 0).toFixed(1) }} ms</dd>
+          <template v-if="tag.captureBackend === 'Native'">
+            <dt>Camera</dt>
+            <dd title="QuestX's own camera client: grayscale frames, no GPU readback. Delivery is exposure to frame arrival.">Native · {{ (tag.averageDeliveryMs ?? 0).toFixed(1) }} ms delivery</dd>
+          </template>
+          <template v-else>
+            <dt>Readback</dt><dd>{{ (tag.averageReadbackMs ?? 0).toFixed(1) }} ms</dd>
+          </template>
           <dt>Solve</dt><dd>{{ (tag.averageSolveMs ?? 0).toFixed(1) }} ms</dd>
           <template v-if="tag.averagePreviewMs">
             <dt>Preview encode</dt><dd>{{ tag.averagePreviewMs.toFixed(1) }} ms</dd>

@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Threading;
 using LibJpegTurboUnity;
 using Meta.XR;
@@ -9,6 +10,7 @@ using QuestX.Camera;
 using QuestX.Config;
 using QuestX.Core;
 using QuestX.Native.AprilTag;
+using QuestX.Native.Camera;
 using QuestX.Native.Napa;
 using QuestX.Native.PoseLib;
 using QuestX.QuestX.Geometry;
@@ -19,12 +21,13 @@ using TagDetectorBackend = QuestX.Config.Config.TagDetectorBackend;
 namespace QuestX.QuestX.AprilTag
 {
     /// <summary>
-    /// Runs AprilTag localization off the Unity main thread. The main thread only decides which
-    /// camera frames to use and starts a non-blocking GPU readback of each; a dedicated worker
-    /// converts, detects, solves, and publishes the measurement as soon as it is built.
-    /// Rendering therefore never waits on the GPU copy or the detector, detection runs at the
-    /// camera's rate rather than being capped by (and slowing) the app's frame rate, and the
-    /// robot's sample does not wait for the next Unity frame.
+    /// Runs AprilTag localization off the Unity main thread. Frames normally come from QuestX's
+    /// own Camera2 client as grayscale, straight to a capture thread that detects, solves and
+    /// publishes each one as it arrives. If that camera cannot start, Meta's camera access is
+    /// used instead: the main thread decides which frames to use and starts a non-blocking GPU
+    /// readback of each, and a dedicated worker converts, detects, solves and publishes. Either
+    /// way rendering never waits on the camera or the detector, detection runs at the camera's
+    /// rate, and the robot's sample does not wait for the next Unity frame.
     /// </summary>
     public class AprilTagManager
     {
@@ -68,6 +71,23 @@ namespace QuestX.QuestX.AprilTag
         private readonly MonoBehaviour coroutineHost;
         private Coroutine captureCoroutine;
         private float frameDelaySeconds;
+
+        private CaptureBackend activeCapture = CaptureBackend.Mruk;
+
+        /// <summary>Set when native capture cannot start; Meta's access is used until restart.</summary>
+        private bool nativeUnavailable;
+        private NativeCaptureSession nativeSession;
+        private readonly string captureOverridePath;
+        private double nextCaptureOverrideCheck;
+        private int configuredFramerate = 60;
+
+        /// <summary>
+        /// <see cref="Time.timeAsDouble"/> and the stopwatch at the same instant, refreshed every
+        /// frame, so the native capture thread can stamp measurements in app time.
+        /// </summary>
+        private readonly object appClockLock = new object();
+        private double appClockTime;
+        private long appClockTicks;
 
         private readonly FrameSlot[] frameSlots = new FrameSlot[FrameSlotCount];
         private readonly object slotLock = new object();
@@ -157,6 +177,9 @@ namespace QuestX.QuestX.AprilTag
         private string detectorName = "";
         private RunningAverage detectTime;
         private RunningAverage readbackTime;
+
+        /// <summary>Native capture: exposure until the frame reached the capture thread.</summary>
+        private RunningAverage deliveryTime;
         private RunningAverage solveTime;
         private RunningAverage previewTime;
         private RunningAverage latency;
@@ -208,6 +231,11 @@ namespace QuestX.QuestX.AprilTag
             this.aprilTagFieldLayout = aprilTagFieldLayout;
             this.coroutineHost = coroutineHost;
             poseLibSolver = new PoseLibSolver(aprilTagFieldLayout, cameraAccess.Intrinsics);
+            captureOverridePath = Path.Combine(
+                Application.persistentDataPath,
+                "capture-backend.txt"
+            );
+            UpdateAppClock();
             for (int i = 0; i < frameSlots.Length; i++)
             {
                 frameSlots[i] = new FrameSlot();
@@ -239,6 +267,13 @@ namespace QuestX.QuestX.AprilTag
         private sealed class FrameSlot
         {
             public readonly CameraFrameReadback Readback = new CameraFrameReadback();
+
+            /// <summary>
+            /// Native capture: the camera's top-left-origin luma, valid while the capture thread
+            /// processes this frame. Zero for a Meta readback.
+            /// </summary>
+            public IntPtr Gray;
+            public int GrayStride;
             public SlotState State;
             public int Generation;
 
@@ -382,30 +417,38 @@ namespace QuestX.QuestX.AprilTag
                     return;
                 }
 
-                // Reserve the camera at high priority. The arbiter will downgrade the
-                // passthrough stream's reservation if it conflicts. Reserve is async
-                // (posts to main thread); the coroutine waits for cameraAccess.enabled
-                // before reading frames so the early frames before the arbiter has
-                // applied the reservation are skipped instead of crashing.
-                cameraArbiter.Reserve(
-                    CameraArbiterRequesterId,
-                    currentResolution,
-                    CameraRequestPriority.High
-                );
-
                 intrinsicsStale = true;
                 nextFrameExposureSeconds = 0;
                 nextMeasurementLogAtMs = 0;
-                Interlocked.Increment(ref pipelineGeneration);
+                int generation = Interlocked.Increment(ref pipelineGeneration);
                 requestedBackend = (int)detectorBackend;
-                worker = new LatestOnlyWorker<FrameSlot>(
-                    "AprilTag detection",
-                    ProcessFrameOnWorker,
-                    ReleaseSlot
-                );
                 detectorActive = true;
                 Overlay.SetEnabled(true);
-                captureCoroutine = coroutineHost.StartCoroutine(AprilTagFrameCaptureCoroutine());
+                lock (diagnosticsLock)
+                {
+                    deliveryTime = default;
+                    readbackTime = default;
+                    latency = default;
+                }
+                nextCaptureOverrideCheck = Time.realtimeSinceStartupAsDouble + 1.0;
+                UpdateAppClock();
+                if (PreferredCapture() == CaptureBackend.Native)
+                {
+                    // QuestX's camera client takes the left camera, so Meta's access moves to the
+                    // right one if the passthrough stream wants it. The supervisor starts the
+                    // camera once Meta's access has let go of the left one.
+                    activeCapture = CaptureBackend.Native;
+                    cameraArbiter.SetCameraPosition(
+                        PassthroughCameraAccess.CameraPositionType.Right
+                    );
+                    captureCoroutine = coroutineHost.StartCoroutine(
+                        NativeCaptureSupervisor(generation)
+                    );
+                }
+                else
+                {
+                    StartMrukCapture();
+                }
                 RecordOutcome("Waiting for camera frame", "");
                 QueuedLogger.Log("AprilTagDetector Enabled");
             }
@@ -444,6 +487,7 @@ namespace QuestX.QuestX.AprilTag
                 }
 
                 StopWorker(WorkerStopTimeout);
+                cameraArbiter.SetCameraPosition(PassthroughCameraAccess.CameraPositionType.Left);
                 RecordOutcome("Detector disabled", "");
                 QueuedLogger.Log("AprilTagDetector Disabled");
             }
@@ -465,15 +509,20 @@ namespace QuestX.QuestX.AprilTag
         }
 
         /// <summary>
-        /// Stops the worker after its current frame, then frees the detector, the preview encoder
-        /// and the frame buffers. If the worker is stuck in native code, its resources are left
-        /// allocated rather than freed underneath it, and a later call retries. Returns whether
-        /// no worker remains.
+        /// Stops the worker or native capture thread after its current frame, then frees the
+        /// detector, the preview encoder and the frame buffers. If the thread is stuck in native
+        /// code, its resources are left allocated rather than freed underneath it, and a later
+        /// call retries. Returns whether no worker remains.
         /// </summary>
         private bool StopWorker(TimeSpan timeout)
         {
+            if (!StopNativeCapture(timeout))
+            {
+                return false;
+            }
             if (worker == null)
             {
+                ReleaseWorkerResources();
                 return true;
             }
             if (!worker.Stop(timeout))
@@ -488,7 +537,12 @@ namespace QuestX.QuestX.AprilTag
                 return false;
             }
             worker = null;
+            ReleaseWorkerResources();
+            return true;
+        }
 
+        private void ReleaseWorkerResources()
+        {
             // The worker can no longer publish, so a scene or preview frame it published after
             // disable cleared them goes now.
             if (!detectorActive)
@@ -521,7 +575,6 @@ namespace QuestX.QuestX.AprilTag
                     slot.State = SlotState.Free;
                 }
             }
-            return true;
         }
 
         /// <summary>
@@ -632,11 +685,23 @@ namespace QuestX.QuestX.AprilTag
             var requested = new Vector2Int(configuration.Width, configuration.Height);
             bool resolutionChanged = requested != currentResolution;
             currentResolution = requested;
+            bool framerateChanged = configuration.Framerate != configuredFramerate;
+            configuredFramerate = configuration.Framerate;
 
             // Only ask the arbiter to re-apply when we are currently the active high-priority
             // requester AND the resolution actually changed. A pure FPS change does not need
             // to bounce the camera (the framerate is enforced by IsFrameDue).
-            if (resolutionChanged && detectorActive)
+            if (
+                activeCapture == CaptureBackend.Native
+                && detectorActive
+                && (resolutionChanged || framerateChanged)
+            )
+            {
+                // The supervisor reopens the camera in the new mode (its auto exposure is
+                // locked to the frame rate).
+                StopNativeCapture(WorkerStopTimeout);
+            }
+            else if (resolutionChanged && detectorActive)
             {
                 cameraArbiter.Reserve(
                     CameraArbiterRequesterId,
@@ -688,6 +753,8 @@ namespace QuestX.QuestX.AprilTag
                     LastDetectMilliseconds = detectTime.Last,
                     AverageDetectMilliseconds = detectTime.Average,
                     AverageReadbackMilliseconds = readbackTime.Average,
+                    CaptureBackend = detectorActive ? activeCapture.ToString() : "",
+                    AverageDeliveryMilliseconds = deliveryTime.Average,
                     AverageSolveMilliseconds = solveTime.Average,
                     AveragePreviewMilliseconds = previewTime.Average,
                     AverageLatencyMilliseconds = latency.Average,
@@ -793,14 +860,22 @@ namespace QuestX.QuestX.AprilTag
             }
         }
 
-        private IEnumerator AprilTagFrameCaptureCoroutine()
+        private IEnumerator AprilTagFrameCaptureCoroutine(int generation)
         {
             while (true)
             {
                 UpdateRates();
 
-                // Bail out cleanly if the detector was disabled between iterations.
-                if (!detectorActive || worker == null)
+                // Bail out cleanly if the detector was disabled or restarted between iterations.
+                if (
+                    !detectorActive
+                    || worker == null
+                    || generation != Volatile.Read(ref pipelineGeneration)
+                )
+                {
+                    yield break;
+                }
+                if (SwitchCaptureIfRequested())
                 {
                     yield break;
                 }
@@ -822,7 +897,7 @@ namespace QuestX.QuestX.AprilTag
                     yield return null;
                     continue;
                 }
-                cameraUpdateCount++;
+                Interlocked.Increment(ref cameraUpdateCount);
 
                 // The camera timestamp is the hardware exposure time in UTC. Convert its
                 // age into both app-time and NT-time domains so the robot receives the
@@ -1081,14 +1156,15 @@ namespace QuestX.QuestX.AprilTag
                 return;
             }
             long processed = Interlocked.Read(ref processedFrameCount);
+            long cameraUpdates = Interlocked.Read(ref cameraUpdateCount);
             lock (diagnosticsLock)
             {
-                cameraFramesPerSecond = (cameraUpdateCount - rateWindowCameraUpdates) / seconds;
+                cameraFramesPerSecond = (cameraUpdates - rateWindowCameraUpdates) / seconds;
                 processedFramesPerSecond = (processed - rateWindowProcessed) / seconds;
                 measurementsPerSecond = (measurementCount - rateWindowMeasurements) / seconds;
                 rateWindowMeasurements = measurementCount;
             }
-            rateWindowCameraUpdates = cameraUpdateCount;
+            rateWindowCameraUpdates = cameraUpdates;
             rateWindowProcessed = processed;
             rateWindowStart = Stopwatch.GetTimestamp();
         }
@@ -1143,16 +1219,29 @@ namespace QuestX.QuestX.AprilTag
             // origin) and copies its results into managed TagDetections, so no native
             // result memory outlives this call.
             long detectStart = Stopwatch.GetTimestamp();
-            bool converted;
+            bool converted = true;
             try
             {
-                converted = tagDetector.Detect(
-                    readback.Data,
-                    readback.ByteCount,
-                    actualW,
-                    actualH,
-                    detections
-                );
+                if (slot.Gray != IntPtr.Zero)
+                {
+                    tagDetector.DetectGray(
+                        slot.Gray,
+                        actualW,
+                        actualH,
+                        slot.GrayStride,
+                        detections
+                    );
+                }
+                else
+                {
+                    converted = tagDetector.Detect(
+                        readback.Data,
+                        readback.ByteCount,
+                        actualW,
+                        actualH,
+                        detections
+                    );
+                }
             }
             catch (Exception ex)
             {
@@ -1614,6 +1703,410 @@ namespace QuestX.QuestX.AprilTag
         }
 
         private const double DegreesPerRadian = 180.0 / Math.PI;
+
+        // ---- Native capture ----------------------------------------------------------------
+
+        /// <summary>
+        /// Where frames come from. Native reads luma from QuestX's own Camera2 client on a
+        /// dedicated thread that detects, solves and publishes each frame the moment it arrives,
+        /// with no GPU copy and no wait for a Unity frame. Mruk is Meta's PassthroughCameraAccess
+        /// with a GPU readback and the detection worker, kept as the fallback.
+        /// </summary>
+        private enum CaptureBackend
+        {
+            Native,
+            Mruk,
+        }
+
+        /// <summary>
+        /// One open native camera and the thread reading it. The thread checks and reports through
+        /// its own session, so a late thread can never stop or fail a newer one.
+        /// </summary>
+        private sealed class NativeCaptureSession
+        {
+            public readonly NativePassthroughCamera Camera;
+            public readonly int IntrinsicsVersion;
+            public readonly FrameSlot Slot = new FrameSlot();
+
+            /// <summary>Camera updates counted before this session; the camera counts from 0.</summary>
+            public long DeliveredBase;
+            public Thread Thread;
+            public volatile bool Running;
+            public volatile int Failure;
+
+            public NativeCaptureSession(NativePassthroughCamera camera, int intrinsicsVersion)
+            {
+                Camera = camera;
+                IntrinsicsVersion = intrinsicsVersion;
+            }
+        }
+
+        private void StartMrukCapture()
+        {
+            activeCapture = CaptureBackend.Mruk;
+            cameraArbiter.SetCameraPosition(PassthroughCameraAccess.CameraPositionType.Left);
+            // Reserve the camera at high priority. The arbiter will downgrade the
+            // passthrough stream's reservation if it conflicts. Reserve is async
+            // (posts to main thread); the coroutine waits for cameraAccess.enabled
+            // before reading frames so the early frames before the arbiter has
+            // applied the reservation are skipped instead of crashing.
+            cameraArbiter.Reserve(
+                CameraArbiterRequesterId,
+                currentResolution,
+                CameraRequestPriority.High
+            );
+            intrinsicsStale = true;
+            worker = new LatestOnlyWorker<FrameSlot>(
+                "AprilTag detection",
+                ProcessFrameOnWorker,
+                ReleaseSlot
+            );
+            captureCoroutine = coroutineHost.StartCoroutine(
+                AprilTagFrameCaptureCoroutine(Volatile.Read(ref pipelineGeneration))
+            );
+        }
+
+        /// <summary>
+        /// Keeps the native camera running for as long as this enable lasts: starts it once Meta's
+        /// access has let go of the left camera, restarts it after a device error or a mode
+        /// change, and falls back to Meta's access for the rest of the session if it cannot start.
+        /// Also refreshes the app clock the capture thread reads, and the rates.
+        /// </summary>
+        private IEnumerator NativeCaptureSupervisor(int generation)
+        {
+            // StartCoroutine runs the first step synchronously; start nothing until it returns,
+            // so a fallback's coroutine handle is not overwritten by this one.
+            yield return null;
+            bool everStarted = false;
+            int failedStarts = 0;
+            double retryAt = 0;
+            double waitingSince = Time.realtimeSinceStartupAsDouble;
+            while (detectorActive && generation == Volatile.Read(ref pipelineGeneration))
+            {
+                UpdateAppClock();
+                UpdateRates();
+                if (SwitchCaptureIfRequested())
+                {
+                    yield break;
+                }
+                double now = Time.realtimeSinceStartupAsDouble;
+                var session = nativeSession;
+                if (session != null && session.Failure != 0)
+                {
+                    QueuedLogger.LogWarning(
+                        $"AprilTag camera stopped (status {session.Failure}); restarting it"
+                    );
+                    lock (diagnosticsLock)
+                    {
+                        cameraFailureCount++;
+                    }
+                    RecordOutcome(
+                        "Camera capture failed",
+                        $"Native camera status {session.Failure}"
+                    );
+                    StopNativeCapture(WorkerStopTimeout);
+                    retryAt = now + 1.0;
+                }
+
+                bool leftCameraFree = !cameraArbiter.IsUsingCamera(
+                    PassthroughCameraAccess.CameraPositionType.Left
+                );
+                string fallbackReason = null;
+                if (nativeSession == null && now >= retryAt && leftCameraFree)
+                {
+                    try
+                    {
+                        StartNativeCapture();
+                        everStarted = true;
+                        failedStarts = 0;
+                    }
+                    catch (Exception ex)
+                        when (ex is DllNotFoundException || ex is EntryPointNotFoundException)
+                    {
+                        fallbackReason = ex.Message;
+                    }
+                    catch (InvalidOperationException ex)
+                    {
+                        // Opening can fail briefly, e.g. right after Meta's access closed the
+                        // camera or before the camera permission is granted.
+                        RecordOutcome("Camera capture failed", ex.Message);
+                        retryAt = now + 1.0;
+                        if (!everStarted && ++failedStarts >= 3)
+                        {
+                            fallbackReason = ex.Message;
+                        }
+                    }
+                }
+                else if (nativeSession == null && !everStarted && now - waitingSince > 5.0)
+                {
+                    fallbackReason = "Meta's camera access did not release the left camera";
+                }
+                if (fallbackReason != null)
+                {
+                    QueuedLogger.LogError(
+                        $"Native passthrough camera unavailable ({fallbackReason}); using Meta's camera access until the app restarts."
+                    );
+                    nativeUnavailable = true;
+                    StartMrukCapture();
+                    yield break;
+                }
+                yield return null;
+            }
+        }
+
+        private void StartNativeCapture()
+        {
+            var camera = NativePassthroughCamera.Start(
+                PassthroughCameraAccess.CameraPositionType.Left,
+                currentResolution,
+                configuredFramerate
+            );
+            var intrinsics = camera.Intrinsics;
+            cachedIntrinsics = intrinsics;
+            cachedIntrinsicsVersion++;
+            cachedIntrinsicsResolution = currentResolution;
+            intrinsicsStale = false;
+            nextFrameExposureSeconds = 0;
+            nativeSession = new NativeCaptureSession(camera, cachedIntrinsicsVersion)
+            {
+                DeliveredBase = Interlocked.Read(ref cameraUpdateCount),
+            };
+            Overlay.Clear();
+            Scene.Clear();
+            nativeSession.Running = true;
+            nativeSession.Thread = new Thread(NativeCaptureLoop)
+            {
+                IsBackground = true,
+                Name = "AprilTag native capture",
+                Priority = System.Threading.ThreadPriority.Highest,
+            };
+            nativeSession.Thread.Start(nativeSession);
+            QueuedLogger.Log(
+                $"AprilTag camera {camera.CameraId} streaming {camera.Resolution.x}x{camera.Resolution.y} at {camera.Fps} fps "
+                    + $"(f=({intrinsics.FocalLength.x:F2}, {intrinsics.FocalLength.y:F2}) c=({intrinsics.PrincipalPoint.x:F2}, {intrinsics.PrincipalPoint.y:F2}))"
+            );
+        }
+
+        /// <summary>
+        /// Stops the capture thread, then closes the camera. Returns false, leaving both alone,
+        /// if the thread is still inside a frame after <paramref name="timeout"/>: its frame
+        /// buffer and the detector must outlive it. A later call retries.
+        /// </summary>
+        private bool StopNativeCapture(TimeSpan timeout)
+        {
+            var session = nativeSession;
+            if (session == null)
+            {
+                return true;
+            }
+            session.Running = false;
+            if (session.Thread != null && !session.Thread.Join(timeout))
+            {
+                if (timeout > TimeSpan.Zero)
+                {
+                    QueuedLogger.LogError(
+                        $"AprilTag native capture thread did not stop within {timeout.TotalSeconds:F0} s; "
+                            + "leaving the camera and detector allocated."
+                    );
+                }
+                return false;
+            }
+            session.Camera.Dispose();
+            nativeSession = null;
+            return true;
+        }
+
+        /// <summary>
+        /// The native capture thread: waits on the camera, then detects, solves and publishes
+        /// each frame as soon as it arrives. It owns the detector while it runs.
+        /// </summary>
+        private void NativeCaptureLoop(object state)
+        {
+            var session = (NativeCaptureSession)state;
+            var camera = session.Camera;
+            while (session.Running)
+            {
+                int status = camera.Acquire(250, out QxFrame frame);
+                if (status == 0)
+                {
+                    continue;
+                }
+                if (status < 0)
+                {
+                    session.Failure = status;
+                    break;
+                }
+                var stats = camera.Stats;
+                Interlocked.Exchange(
+                    ref cameraUpdateCount,
+                    session.DeliveredBase + stats.delivered
+                );
+                lock (diagnosticsLock)
+                {
+                    busyFrameCount = stats.overwritten;
+                }
+                ProcessNativeFrame(session, frame);
+            }
+            camera.Release();
+        }
+
+        private void ProcessNativeFrame(NativeCaptureSession session, QxFrame frame)
+        {
+            // While Unity is paused or stalled its clock stands still, and Meta's capture would
+            // not run either; skip frames rather than stamp them with an extrapolated app time.
+            if (!TryAppNow(out double appNow))
+            {
+                RecordOutcome("Waiting for app", "Unity is paused");
+                return;
+            }
+            long nowUnixNs = (DateTime.UtcNow.Ticks - UnixEpochTicks) * 100;
+            double exposureAgeSeconds = (nowUnixNs - frame.exposure_unix_ns) / 1e9;
+            if (exposureAgeSeconds < -0.01 || exposureAgeSeconds > 0.5)
+            {
+                RecordOutcome("Camera timestamp invalid", $"Exposure age {exposureAgeSeconds:F3}s");
+                return;
+            }
+            exposureAgeSeconds = Math.Max(0.0, exposureAgeSeconds);
+            double exposureSeconds = frame.exposure_unix_ns / 1e9;
+            if (!IsFrameDue(exposureSeconds))
+            {
+                return;
+            }
+            TakeFrame(exposureSeconds);
+            lock (diagnosticsLock)
+            {
+                cameraFrameCount++;
+                deliveryTime.Add((frame.arrival_unix_ns - frame.exposure_unix_ns) / 1e6);
+            }
+
+            var slot = session.Slot;
+            slot.Gray = frame.data;
+            slot.GrayStride = frame.stride;
+            slot.Generation = Volatile.Read(ref pipelineGeneration);
+            slot.RequestedAt = Stopwatch.GetTimestamp();
+            slot.ExposureUtcTicks = frame.exposure_unix_ns / 100 + UnixEpochTicks;
+            slot.CaptureTimestampMicros =
+                captureTimestampProvider() - (long)Math.Round(exposureAgeSeconds * 1_000_000.0);
+            slot.CaptureAppTimestamp = Math.Max(0.0, appNow - exposureAgeSeconds);
+            double now = AprilTagOverlay.MonotonicMilliseconds();
+            slot.CapturedAtMs = now - exposureAgeSeconds * 1000.0;
+            slot.Width = frame.width;
+            slot.Height = frame.height;
+            slot.Intrinsics = session.Camera.Intrinsics;
+            slot.IntrinsicsVersion = session.IntrinsicsVersion;
+            slot.LensOffset = session.Camera.Intrinsics.LensOffset;
+            slot.IgnoredIds = ignoredIdSet;
+            slot.MaxDistance = maxDistance;
+            slot.MinimumNumberOfTags = minimumNumberOfTags;
+            slot.Orientation = orientation;
+            slot.BuildScene = Scene.IsRequested;
+            slot.OverlayQuality = overlayQuality;
+            double overlayRetryAt;
+            lock (diagnosticsLock)
+            {
+                overlayRetryAt = overlayRetryAtMs;
+            }
+            slot.BuildOverlay =
+                Overlay.IsRequested
+                && now >= overlayRetryAt
+                && FrameCadence.TryTake(now, overlayFrameIntervalMs, ref nextOverlayFrameAt);
+            ProcessFrameOnWorker(slot);
+        }
+
+        private const long UnixEpochTicks = 621355968000000000L;
+
+        /// <summary>
+        /// Reads the capture override (<c>capture-backend.txt</c> in the app's files, containing
+        /// <c>native</c> or <c>mruk</c>), so the two paths can be compared on a headset without a
+        /// rebuild. Null when there is no override.
+        /// </summary>
+        private CaptureBackend? ReadCaptureOverride()
+        {
+            try
+            {
+                if (File.Exists(captureOverridePath))
+                {
+                    switch (File.ReadAllText(captureOverridePath).Trim().ToLowerInvariant())
+                    {
+                        case "mruk":
+                            return CaptureBackend.Mruk;
+                        case "native":
+                            return CaptureBackend.Native;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                QueuedLogger.LogWarning($"Could not read {captureOverridePath}: {ex.Message}");
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Native unless the override asks for Meta's access, or native capture already failed
+        /// this session.
+        /// </summary>
+        private CaptureBackend PreferredCapture() =>
+            nativeUnavailable
+                ? CaptureBackend.Mruk
+                : ReadCaptureOverride() ?? CaptureBackend.Native;
+
+        /// <summary>
+        /// Main thread, about once a second: restarts the detector if the override names the
+        /// other path. Returns true when a restart is queued and the calling coroutine should end.
+        /// </summary>
+        private bool SwitchCaptureIfRequested()
+        {
+            double now = Time.realtimeSinceStartupAsDouble;
+            if (now < nextCaptureOverrideCheck)
+            {
+                return false;
+            }
+            nextCaptureOverrideCheck = now + 1.0;
+            var preferred = PreferredCapture();
+            if (preferred == activeCapture)
+            {
+                return false;
+            }
+            QueuedLogger.Log($"Switching AprilTag capture from {activeCapture} to {preferred}");
+            coroutineHost.StartCoroutine(RestartDetectorNextFrame());
+            return true;
+        }
+
+        private IEnumerator RestartDetectorNextFrame()
+        {
+            yield return null;
+            if (!detectorActive)
+            {
+                yield break;
+            }
+            OnEnableAprilTagDetectorChanged(false);
+            OnEnableAprilTagDetectorChanged(true);
+        }
+
+        private void UpdateAppClock()
+        {
+            lock (appClockLock)
+            {
+                appClockTime = Time.timeAsDouble;
+                appClockTicks = Stopwatch.GetTimestamp();
+            }
+        }
+
+        /// <summary>
+        /// <see cref="Time.timeAsDouble"/> now, from any thread. False if Unity has not refreshed
+        /// the anchor for 250 ms (paused or stalled).
+        /// </summary>
+        private bool TryAppNow(out double now)
+        {
+            lock (appClockLock)
+            {
+                double elapsed =
+                    (Stopwatch.GetTimestamp() - appClockTicks) / (double)Stopwatch.Frequency;
+                now = appClockTime + elapsed;
+                return elapsed < 0.25;
+            }
+        }
 
         private void OnOverlayStreamModeChanged(Config.Config.StreamMode mode)
         {
