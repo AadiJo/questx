@@ -26,16 +26,10 @@ namespace QuestX.Native.AprilTag
         /// </summary>
         public static ImageU8 FromBottomUpRgba(ImageU8 image, IntPtr rgba, int width, int height)
         {
-            if (image == null || image.Width != width || image.Height != height)
+            image = Resize(image, width, height);
+            if (image == null)
             {
-                image?.Dispose();
-                var native = AprilTagNatives.image_u8_create(width, height);
-                if (native == null)
-                {
-                    QueuedLogger.LogError("Failed to create native ImageU8");
-                    return null;
-                }
-                image = new ImageU8(native);
+                return null;
             }
 
             GrayscaleConversion.BottomUpRgbaToGray(
@@ -46,6 +40,56 @@ namespace QuestX.Native.AprilTag
                 image.Handle->stride
             );
             return image;
+        }
+
+        /// <summary>
+        /// Returns <paramref name="image"/> refilled from a top-left-origin grayscale image with
+        /// rows <paramref name="stride"/> bytes apart. Reallocates when the size changes. Returns
+        /// null for an invalid source or if the native image cannot be created.
+        /// </summary>
+        public static ImageU8 FromGray(
+            ImageU8 image,
+            IntPtr gray,
+            int width,
+            int height,
+            int stride
+        )
+        {
+            if (gray == IntPtr.Zero || width <= 0 || height <= 0 || stride < width)
+            {
+                return null;
+            }
+            image = Resize(image, width, height);
+            if (image == null)
+            {
+                return null;
+            }
+            for (int y = 0; y < height; y++)
+            {
+                Buffer.MemoryCopy(
+                    (byte*)gray + (long)y * stride,
+                    (byte*)image.Handle->buf + (long)y * image.Handle->stride,
+                    width,
+                    width
+                );
+            }
+            return image;
+        }
+
+        private static ImageU8 Resize(ImageU8 image, int width, int height)
+        {
+            if (image != null && image.Width == width && image.Height == height)
+            {
+                return image;
+            }
+            image?.Dispose();
+            var native = AprilTagNatives.image_u8_create(width, height);
+            if (native == null)
+            {
+                QueuedLogger.LogError("Failed to create native ImageU8");
+                return null;
+            }
+            return new ImageU8(native);
         }
 
         public void Dispose()

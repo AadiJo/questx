@@ -24,6 +24,13 @@ static unsafe bool Detect(ITagDetector detector, NativeArray<Color32> colors, in
         height,
         found);
 
+static bool SameDetections(List<TagDetection> a, List<TagDetection> b) =>
+    a.Count == b.Count
+    && Enumerable.Range(0, a.Count).All(i =>
+        a[i].Id == b[i].Id
+        && Enumerable.Range(0, 4).All(c =>
+            a[i].GetCorners()[c].x == b[i].GetCorners()[c].x && a[i].GetCorners()[c].y == b[i].GetCorners()[c].y));
+
 void Check(bool condition, string message)
 {
     if (!condition)
@@ -237,6 +244,28 @@ for (int trial = 0; trial < trials; trial++)
     if (trial < 5)
         Check(SameImage(napa.Image, aprilTag.Image, width, height), "both backends expose the same top-down grayscale image");
     colors.Dispose();
+    if (trial < 20)
+    {
+        // The native camera hands the detectors grayscale directly (with padded rows); it must
+        // find exactly what the RGBA readback path finds.
+        int stride = width + 24;
+        var gray = new byte[stride * height];
+        var napaGray = new List<TagDetection>();
+        var aprilTagGray = new List<TagDetection>();
+        unsafe
+        {
+            fixed (byte* g = gray)
+            {
+                for (int y = 0; y < height; y++)
+                    Buffer.MemoryCopy((byte*)napa.Image.Buffer + y * napa.Image.Stride, g + y * stride, width, width);
+                napa.DetectGray((IntPtr)g, width, height, stride, napaGray);
+                aprilTag.DetectGray((IntPtr)g, width, height, stride, aprilTagGray);
+                Check(napa.Image.IsValid && aprilTag.Image.IsValid, "grayscale input exposes a preview image");
+            }
+        }
+        Check(SameDetections(napaGray, napaDetections), "napa: grayscale input matches the RGBA readback");
+        Check(SameDetections(aprilTagGray, aprilTagDetections), "apriltag: grayscale input matches the RGBA readback");
+    }
 
     Check(napaDetections.All(d => d.Id == id), $"trial {trial}: napa false ID {string.Join(",", napaDetections.Select(d => d.Id))}");
     Check(aprilTagDetections.All(d => d.Id == id), $"trial {trial}: apriltag false ID");

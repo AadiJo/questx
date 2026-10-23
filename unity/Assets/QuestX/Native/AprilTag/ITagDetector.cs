@@ -58,6 +58,20 @@ namespace QuestX.Native.AprilTag
             int height,
             List<TagDetection> detections
         );
+
+        /// <summary>
+        /// Detects tags in an 8-bit grayscale image with a top-left origin, such as the native
+        /// camera's luma plane, and replaces the contents of <paramref name="detections"/>.
+        /// The caller keeps <paramref name="gray"/> valid until the next call; <see cref="Image"/>
+        /// may refer to it. Throws when the native detector fails.
+        /// </summary>
+        void DetectGray(
+            IntPtr gray,
+            int width,
+            int height,
+            int stride,
+            List<TagDetection> detections
+        );
     }
 
     /// <summary>The University of Michigan libapriltag backend.</summary>
@@ -124,6 +138,31 @@ namespace QuestX.Native.AprilTag
                 detections.Add(TagDetection.From(detection));
             }
             return true;
+        }
+
+        public void DetectGray(
+            IntPtr gray,
+            int width,
+            int height,
+            int stride,
+            List<TagDetection> detections
+        )
+        {
+            if (detector == null)
+                throw new ObjectDisposedException(nameof(LibAprilTagDetector));
+            detections.Clear();
+            Image = default;
+            image = ImageU8.FromGray(image, gray, width, height, stride);
+            if (image == null)
+                return;
+            var native = image.Handle;
+            Image = new GrayImage(native->buf, native->width, native->height, native->stride);
+
+            using var results = detector.Detect(image);
+            foreach (var detection in results)
+            {
+                detections.Add(TagDetection.From(detection));
+            }
         }
 
         /// <summary>Whether a readback holds a whole bottom-up RGBA frame.</summary>

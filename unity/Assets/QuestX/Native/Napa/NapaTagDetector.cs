@@ -55,6 +55,23 @@ namespace QuestX.Native.Napa
             return true;
         }
 
+        public void DetectGray(
+            IntPtr gray,
+            int width,
+            int height,
+            int stride,
+            List<TagDetection> detections
+        )
+        {
+            if (core == null)
+                throw new ObjectDisposedException(nameof(NapaTagDetector));
+            detections.Clear();
+            Image = default;
+            // Napa reads the caller's buffer directly; no copy.
+            core.Detect((byte*)gray, width, height, stride, detections);
+            Image = new GrayImage(gray, width, height, stride);
+        }
+
         private void FreeGray()
         {
             if (gray != null)
