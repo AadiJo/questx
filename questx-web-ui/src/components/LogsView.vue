@@ -32,6 +32,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { configApi } from '../api/config'
+import { useVisiblePolling } from '../composables/useVisiblePolling'
 import { Download } from '@lucide/vue'
 import ConfirmButton from './ConfirmButton.vue'
 
@@ -43,34 +44,36 @@ interface LogEntry {
 }
 
 const logs = ref<LogEntry[]>([])
+const props = defineProps<{ active: boolean }>()
 const loading = ref(true)
 const error = ref<string | null>(null)
 const filterLevel = ref('all')
 const autoScroll = ref(true)
 const logsContainer = ref<HTMLElement | null>(null)
-let intervalId: number | null = null
 
 const filteredLogs = computed(() => {
   if (filterLevel.value === 'all') return logs.value
   return logs.value.filter(log => log.Type === filterLevel.value)
 })
 
-async function loadLogs() {
+const visible = useVisiblePolling(() => props.active, 2000, async isCurrent => {
   try {
     error.value = null
     const response = await configApi.getLogs(200)
+    if (!isCurrent()) return
     logs.value = response.logs
     loading.value = false
     
     if (autoScroll.value) {
       await nextTick()
-      scrollToBottom()
+      if (isCurrent()) scrollToBottom()
     }
   } catch (err) {
+    if (!isCurrent()) return
     error.value = err instanceof Error ? err.message : 'Failed to load logs'
     loading.value = false
   }
-}
+}, 'fixed')
 
 async function clearLogs() {
   
@@ -164,32 +167,23 @@ function levelClass(type: string) {
 }
 
 watch(filteredLogs, async () => {
-  if (autoScroll.value) {
+  if (visible.value && autoScroll.value) {
     await nextTick()
-    scrollToBottom()
+    if (visible.value) scrollToBottom()
   }
 })
 
-onMounted(async () => {
-  await loadLogs()
-  
+onMounted(() => {
   // Attach scroll listener to detect manual scrolling
   if (logsContainer.value) {
     logsContainer.value.addEventListener('scroll', handleScroll)
   }
-  
-  // Poll logs every 2 seconds
-  intervalId = setInterval(loadLogs, 2000) as unknown as number
 })
 
 onUnmounted(() => {
   // Remove scroll listener
   if (logsContainer.value) {
     logsContainer.value.removeEventListener('scroll', handleScroll)
-  }
-  
-  if (intervalId !== null) {
-    clearInterval(intervalId)
   }
 })
 </script>

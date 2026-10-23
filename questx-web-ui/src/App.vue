@@ -46,7 +46,7 @@
           <section v-show="activePage === '3d'"><ThreeDView :active="activePage === '3d'" /></section>
           <section v-show="activePage === 'status'"><StatusView /></section>
           <section v-show="activePage === 'field'"><FieldLayoutsPage /></section>
-          <section v-show="activePage === 'logs'"><LogsView /></section>
+          <section v-show="activePage === 'logs'"><LogsView :active="activePage === 'logs'" /></section>
           <section v-show="activePage === 'settings'"><SettingsPage /></section>
         </template>
       </main>

@@ -213,6 +213,7 @@ Check(nearOblique < 0.1, "Near, oblique single tag should not be ambiguous");
     Check(threw, "Short 2D buffer is rejected");
 }
 
+AmbiguityRegressionChecks.Run(Check);
 VioFrameChecks.Run(Check);
 WireChecks.Run(Check);
 VioQualityChecks.Run(Check);

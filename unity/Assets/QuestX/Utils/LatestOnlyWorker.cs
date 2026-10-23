@@ -18,6 +18,7 @@ namespace QuestX.Utils
         private readonly Thread thread;
         private T pending;
         private bool stopping;
+        private long replacedCount;
 
         public LatestOnlyWorker(string name, Action<T> process, Action<T> discard)
         {
@@ -28,6 +29,9 @@ namespace QuestX.Utils
         }
 
         public string Name => thread.Name;
+
+        /// <summary>Pending items replaced by newer work, excluding shutdown discards.</summary>
+        public long ReplacedCount => Interlocked.Read(ref replacedCount);
 
         /// <summary>Queues <paramref name="item"/>, discarding any item still waiting.</summary>
         public void Post(T item)
@@ -42,6 +46,10 @@ namespace QuestX.Utils
                 else
                 {
                     dropped = pending;
+                    if (dropped != null)
+                    {
+                        Interlocked.Increment(ref replacedCount);
+                    }
                     pending = item;
                     Monitor.Pulse(sync);
                 }

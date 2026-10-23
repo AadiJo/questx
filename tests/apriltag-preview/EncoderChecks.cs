@@ -42,6 +42,43 @@ static unsafe class EncoderChecks
         public void Dispose() { }
     }
 
+    // Independent output-order reference checks orientation, box boundaries and rounding.
+    private static void CheckResampling()
+    {
+        var random = new Random(719);
+        foreach (var (width, height) in new[] { (32, 48), (80, 60), (1280, 960) })
+        foreach (int factor in new[] { 1, 2, 4, 8, 16 })
+        {
+            if (width % factor != 0 || height % factor != 0) continue;
+            var input = new byte[width * height];
+            foreach (int pattern in new[] { 0, 1, 2, 3 })
+            {
+                for (int i = 0; i < input.Length; i++)
+                    input[i] = pattern == 0 ? (byte)0 : pattern == 1 ? (byte)255
+                        : pattern == 2 ? (byte)(i % 2) : (byte)random.Next(256);
+                foreach (CameraOrientation orientation in Enum.GetValues(typeof(CameraOrientation)))
+                {
+                    int sw = width / factor, sh = height / factor;
+                    CameraOrientationMath.RotateSize(orientation, sw, sh, out int ow, out int oh);
+                    var actual = new byte[ow * oh];
+                    AprilTagPreviewEncoder.Resample(input, width, height, factor, orientation, actual);
+                    bool equal = true;
+                    for (int y = 0; y < oh; y++)
+                    for (int x = 0; x < ow; x++)
+                    {
+                        CameraOrientationMath.SourcePixel(orientation, x, y, sw, sh, out int sx, out int sy);
+                        int sum = 0;
+                        for (int by = 0; by < factor; by++)
+                        for (int bx = 0; bx < factor; bx++)
+                            sum += input[(sy * factor + by) * width + sx * factor + bx];
+                        equal &= actual[y * ow + x] == (sum + factor * factor / 2) / (factor * factor);
+                    }
+                    Check(equal, $"Exact resample {width}x{height}/{factor} {orientation} pattern {pattern}");
+                }
+            }
+        }
+    }
+
     public static int Run()
     {
         // Scale choices at the Quest's sizes, with and without the 640x480 standard cap.
@@ -70,6 +107,8 @@ static unsafe class EncoderChecks
                 }
             }
         }
+
+        CheckResampling();
 
         // 2x2 box averages, rounded.
         var src = new byte[] { 0, 2, 10, 20, 4, 6, 30, 41, 100, 100, 7, 7, 100, 101, 7, 8 };
@@ -165,16 +204,39 @@ static unsafe class EncoderChecks
             Check(publishedSignal.Wait(2000), "Encodes again after backing off");
             Check(published[^1].At == 6 && FakeEncoder.Created == createdBefore + 1, "Fresh encoder after a failure");
 
-            // Reset drops a queued frame; after Dispose submissions are ignored.
+            // Reset invalidates both queued and active jobs, plus captures awaiting Submit.
             FakeEncoder.Gate.Reset();
             FakeEncoder.Entered.Reset();
             Submit(70, 7);
             Check(FakeEncoder.Entered.Wait(2000), "Worker busy");
             Submit(80, 8);
+            long oldGeneration = encoder.Generation;
             encoder.Reset();
+            Check(encoder.Generation != oldGeneration, "Reset advances submission generation");
+            long drops = encoder.DroppedCount;
+            // A captured frame can reach Submit after Reset. It must not occupy the pending slot.
+            encoder.Submit(ptr, 1280, 1280, 1280, 8.5, tags, CameraOrientation.NORMAL, 60, 2, oldGeneration);
+            Submit(90, 9);
+            Check(encoder.DroppedCount == drops, "Reset and stale submissions do not count as replacements");
             FakeEncoder.Gate.Set();
-            Check(publishedSignal.Wait(2000) && published[^1].At == 7, "In-flight frame completes");
-            Check(!publishedSignal.Wait(300), "Reset drops the queued frame");
+            Check(publishedSignal.Wait(2000) && published[^1].At == 9,
+                "Only the new generation publishes after reset, not active or queued old frames");
+            Check(!publishedSignal.Wait(100), "No extra publication after reset");
+
+            // A failure from the old generation must not clear or back off the new run.
+            FakeEncoder.Gate.Reset();
+            FakeEncoder.Entered.Reset();
+            FakeEncoder.ThrowNext = true;
+            Submit(100, 10);
+            Check(FakeEncoder.Entered.Wait(2000), "Failing old encode is running");
+            int priorErrors;
+            lock (errors) priorErrors = errors.Count;
+            encoder.Reset();
+            Submit(110, 11);
+            FakeEncoder.Gate.Set();
+            Check(publishedSignal.Wait(2000) && published[^1].At == 11,
+                "A new frame publishes immediately after an old-generation failure");
+            lock (errors) Check(errors.Count == priorErrors, "Old-generation error callback suppressed");
         }
         finally
         {
@@ -183,7 +245,7 @@ static unsafe class EncoderChecks
         }
         encoder.Dispose();
         encoder.Submit((IntPtr)1, 4, 4, 4, 9, null, CameraOrientation.NORMAL, 60, 1);
-        Check(published[^1].At == 7, "Submit after Dispose is ignored");
+        Check(published[^1].At == 11, "Submit after Dispose is ignored");
         Check(encodeTimes == published.Count, "Encode time is reported once per published frame");
         return assertions;
     }

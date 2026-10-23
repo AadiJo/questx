@@ -114,26 +114,52 @@ namespace QuestX.QuestX.AprilTag
         /// </summary>
         private readonly AprilTagPreviewEncoder previewEncoder;
 
-        private int overlayQuality = 75;
+        // Main-thread configuration publishes one immutable snapshot for both capture paths.
+        private sealed class PreviewSettings
+        {
+            public readonly int Quality,
+                Scale,
+                Version;
+            public readonly double IntervalMs;
+            public readonly bool HighQuality;
+            public readonly CameraOrientation Orientation;
 
-        /// <summary>
-        /// Preview scale-down per side from the settings (default a quarter, about the size of a
-        /// Limelight stream); larger than 640x480 only with high-quality streams.
-        /// </summary>
-        private volatile int previewScale = 4;
-        private volatile bool highQualityStreams;
-        private double overlayFrameIntervalMs = 1000.0 / 24;
+            public PreviewSettings(
+                int quality,
+                double intervalMs,
+                int scale,
+                bool highQuality,
+                CameraOrientation orientation,
+                int version
+            )
+            {
+                Quality = quality;
+                IntervalMs = intervalMs;
+                Scale = scale;
+                HighQuality = highQuality;
+                Orientation = orientation;
+                Version = version;
+            }
+        }
+
+        private PreviewSettings previewSettings = new PreviewSettings(
+            75,
+            1000.0 / 24,
+            4,
+            false,
+            CameraOrientation.NORMAL,
+            0
+        );
+
+        // Only the detection worker advances this schedule, after pending-frame replacement.
         private double nextOverlayFrameAt;
+        private int workerOverlayModeVersion = -1;
+        private int workerOverlayGeneration = -1;
 
         // Informational logging is sampled; diagnostics still record every measurement.
         // nextMeasurementLogAtMs belongs to the worker.
         private double nextMeasurementLogAtMs;
         private volatile bool debugLogging;
-
-        /// <summary>
-        /// How the stream is rotated. The preview and tag angles follow it; poses never do.
-        /// </summary>
-        private CameraOrientation orientation;
 
         /// <summary>
         /// Single source of truth for the detector lifecycle. The capture coroutine checks
@@ -200,6 +226,8 @@ namespace QuestX.QuestX.AprilTag
         // processed frames on the worker; rates are refreshed about once per second.
         private long cameraUpdateCount;
         private long busyFrameCount;
+        private long replacedFrameCount;
+        private long nativeOverwrittenFrameCount;
         private long processedFrameCount;
         private long rateWindowStart = Stopwatch.GetTimestamp();
         private long rateWindowCameraUpdates;
@@ -278,16 +306,9 @@ namespace QuestX.QuestX.AprilTag
             configManager.OnEnablePassthroughStreamChanged += OnOverlayStreamEnabledChanged;
             configManager.OnCameraOrientationChanged += OnCameraOrientationChanged;
             configManager.OnEnableDebugLoggingChanged += OnEnableDebugLoggingChanged;
-            configManager.OnPreviewScaleChanged += scale =>
-            {
-                previewScale = scale;
-                Overlay.Clear();
-            };
+            configManager.OnPreviewScaleChanged += scale => UpdatePreviewSettings(scale: scale);
             configManager.OnEnableHighQualityStreamsChanged += enabled =>
-            {
-                highQualityStreams = enabled;
-                Overlay.Clear();
-            };
+                UpdatePreviewSettings(highQuality: enabled);
 
             // Refresh PoseLib's cached intrinsics whenever the camera arbiter changes
             // the effective resolution. Meta SDK exposes per-resolution intrinsics
@@ -336,7 +357,8 @@ namespace QuestX.QuestX.AprilTag
             public int MinimumNumberOfTags;
             public CameraOrientation Orientation;
             public bool BuildOverlay;
-            public int OverlayQuality;
+            public PreviewSettings Preview;
+            public long EncoderGeneration;
             public bool BuildScene;
         }
 
@@ -577,7 +599,11 @@ namespace QuestX.QuestX.AprilTag
                 }
                 return false;
             }
-            worker = null;
+            lock (diagnosticsLock)
+            {
+                replacedFrameCount += worker.ReplacedCount;
+                worker = null;
+            }
             ReleaseWorkerResources();
             return true;
         }
@@ -801,6 +827,9 @@ namespace QuestX.QuestX.AprilTag
                     ProcessedFramesPerSecond = processedFramesPerSecond,
                     MeasurementsPerSecond = measurementsPerSecond,
                     BusyFrameCount = busyFrameCount,
+                    ReplacedFrameCount = replacedFrameCount + (worker?.ReplacedCount ?? 0),
+                    NativeOverwrittenFrameCount = Interlocked.Read(ref nativeOverwrittenFrameCount),
+                    PreviewReplacedFrameCount = previewEncoder.DroppedCount,
                 };
             }
         }
@@ -1059,19 +1088,8 @@ namespace QuestX.QuestX.AprilTag
                 slot.IgnoredIds = ignoredIdSet;
                 slot.MaxDistance = maxDistance;
                 slot.MinimumNumberOfTags = minimumNumberOfTags;
-                slot.Orientation = orientation;
                 slot.BuildScene = Scene.IsRequested;
-                slot.OverlayQuality = overlayQuality;
-                double now = AprilTagOverlay.MonotonicMilliseconds();
-                double overlayRetryAt;
-                lock (diagnosticsLock)
-                {
-                    overlayRetryAt = overlayRetryAtMs;
-                }
-                slot.BuildOverlay =
-                    Overlay.IsRequested
-                    && now >= overlayRetryAt
-                    && FrameCadence.TryTake(now, overlayFrameIntervalMs, ref nextOverlayFrameAt);
+                CapturePreviewSettings(slot);
 
                 if (
                     !slot.Readback.TryRequest(
@@ -1423,10 +1441,9 @@ namespace QuestX.QuestX.AprilTag
                 slot.BuildScene && Scene.IsRequested
                     ? new AprilTagSceneTag[detections.Count]
                     : null;
-            var overlayTags =
-                slot.BuildOverlay && Overlay.IsRequested
-                    ? new AprilTagOverlayTag[detections.Count]
-                    : null;
+            var overlayTags = ShouldBuildOverlay(slot)
+                ? new AprilTagOverlayTag[detections.Count]
+                : null;
             for (int i = 0; i < detections.Count; i++)
             {
                 var detection = detections[i];
@@ -1769,6 +1786,7 @@ namespace QuestX.QuestX.AprilTag
 
             /// <summary>Camera updates counted before this session; the camera counts from 0.</summary>
             public long DeliveredBase;
+            public long OverwrittenBase;
             public Thread Thread;
             public volatile bool Running;
             public volatile int Failure;
@@ -1909,7 +1927,9 @@ namespace QuestX.QuestX.AprilTag
             nativeSession = new NativeCaptureSession(camera, cachedIntrinsicsVersion)
             {
                 DeliveredBase = Interlocked.Read(ref cameraUpdateCount),
+                OverwrittenBase = Interlocked.Read(ref nativeOverwrittenFrameCount),
             };
+            previewEncoder.Reset();
             Overlay.Clear();
             Scene.Clear();
             nativeSession.Running = true;
@@ -1980,10 +2000,10 @@ namespace QuestX.QuestX.AprilTag
                     ref cameraUpdateCount,
                     session.DeliveredBase + stats.delivered
                 );
-                lock (diagnosticsLock)
-                {
-                    busyFrameCount = stats.overwritten;
-                }
+                Interlocked.Exchange(
+                    ref nativeOverwrittenFrameCount,
+                    session.OverwrittenBase + stats.overwritten
+                );
                 ProcessNativeFrame(session, frame);
             }
             camera.Release();
@@ -2037,18 +2057,8 @@ namespace QuestX.QuestX.AprilTag
             slot.IgnoredIds = ignoredIdSet;
             slot.MaxDistance = maxDistance;
             slot.MinimumNumberOfTags = minimumNumberOfTags;
-            slot.Orientation = orientation;
             slot.BuildScene = Scene.IsRequested;
-            slot.OverlayQuality = overlayQuality;
-            double overlayRetryAt;
-            lock (diagnosticsLock)
-            {
-                overlayRetryAt = overlayRetryAtMs;
-            }
-            slot.BuildOverlay =
-                Overlay.IsRequested
-                && now >= overlayRetryAt
-                && FrameCadence.TryTake(now, overlayFrameIntervalMs, ref nextOverlayFrameAt);
+            CapturePreviewSettings(slot);
             ProcessFrameOnWorker(slot);
         }
 
@@ -2147,21 +2157,83 @@ namespace QuestX.QuestX.AprilTag
             }
         }
 
-        private void OnOverlayStreamModeChanged(Config.Config.StreamMode mode)
+        // Worker thread. A replaced pending frame must not consume a preview opportunity.
+        private bool ShouldBuildOverlay(FrameSlot slot)
         {
-            overlayQuality = Math.Clamp(mode.Quality, 1, 100);
-            overlayFrameIntervalMs = 1000.0 / Math.Max(1, mode.Framerate);
-            nextOverlayFrameAt = 0;
+            if (
+                !slot.BuildOverlay
+                || !Overlay.IsRequested
+                || !ReferenceEquals(slot.Preview, Volatile.Read(ref previewSettings))
+            )
+            {
+                return false;
+            }
+            lock (diagnosticsLock)
+            {
+                if (AprilTagOverlay.MonotonicMilliseconds() < overlayRetryAtMs)
+                {
+                    return false;
+                }
+            }
+            if (
+                workerOverlayGeneration != slot.Generation
+                || workerOverlayModeVersion != slot.Preview.Version
+            )
+            {
+                nextOverlayFrameAt = 0;
+                workerOverlayGeneration = slot.Generation;
+                workerOverlayModeVersion = slot.Preview.Version;
+            }
+            return FrameCadence.TryTake(
+                slot.CapturedAtMs,
+                slot.Preview.IntervalMs,
+                ref nextOverlayFrameAt
+            );
+        }
+
+        private void CapturePreviewSettings(FrameSlot slot)
+        {
+            slot.Preview = Volatile.Read(ref previewSettings);
+            slot.Orientation = slot.Preview.Orientation;
+            slot.EncoderGeneration = previewEncoder.Generation;
+            slot.BuildOverlay = Overlay.IsRequested;
+        }
+
+        // ConfigManager dispatches these updates on the main thread. Capture reads atomically.
+        private void UpdatePreviewSettings(
+            int? quality = null,
+            double? intervalMs = null,
+            int? scale = null,
+            bool? highQuality = null,
+            CameraOrientation? orientation = null
+        )
+        {
+            var previous = Volatile.Read(ref previewSettings);
+            Volatile.Write(
+                ref previewSettings,
+                new PreviewSettings(
+                    quality ?? previous.Quality,
+                    intervalMs ?? previous.IntervalMs,
+                    scale ?? previous.Scale,
+                    highQuality ?? previous.HighQuality,
+                    orientation ?? previous.Orientation,
+                    unchecked(previous.Version + 1)
+                )
+            );
+            previewEncoder.Reset();
             Overlay.Clear();
         }
+
+        private void OnOverlayStreamModeChanged(Config.Config.StreamMode mode) =>
+            UpdatePreviewSettings(
+                quality: Math.Clamp(mode.Quality, 1, 100),
+                intervalMs: 1000.0 / Math.Max(1, mode.Framerate)
+            );
 
         private void OnEnableDebugLoggingChanged(bool enabled) => debugLogging = enabled;
 
-        private void OnCameraOrientationChanged(CameraOrientation value)
-        {
-            orientation = value;
-            Overlay.Clear();
-        }
+        private void OnCameraOrientationChanged(CameraOrientation value) =>
+            UpdatePreviewSettings(orientation: value);
 
         private void OnOverlayStreamEnabledChanged(bool enabled)
         {
@@ -2191,13 +2263,14 @@ namespace QuestX.QuestX.AprilTag
                 slot.CapturedAtMs,
                 tags,
                 slot.Orientation,
-                slot.OverlayQuality,
+                slot.Preview.Quality,
                 AprilTagPreviewEncoder.ScaleFactor(
                     image.Width,
                     image.Height,
-                    previewScale,
-                    highQualityStreams ? 0 : AprilTagPreviewEncoder.StandardMaxPixels
-                )
+                    slot.Preview.Scale,
+                    slot.Preview.HighQuality ? 0 : AprilTagPreviewEncoder.StandardMaxPixels
+                ),
+                slot.EncoderGeneration
             );
         }
 

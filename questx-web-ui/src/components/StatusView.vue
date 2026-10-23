@@ -53,7 +53,7 @@
           <dt>Detect time</dt>
           <dd :title="`Last frame ${(tag.lastDetectMs ?? 0).toFixed(1)} ms`">{{ tag.detector }} · {{ (tag.averageDetectMs ?? 0).toFixed(1) }} ms avg</dd>
           <dt>Detection rate</dt>
-          <dd :title="`Frames detected of camera frames delivered; ${(tag.busyFrameCount ?? 0).toLocaleString()} dropped while detection was busy`">{{ (tag.processedFps ?? 0).toFixed(0) }} / {{ (tag.cameraFps ?? 0).toFixed(0) }} fps</dd>
+          <dd :title="`Frames detected of camera frames delivered; Meta capture: ${(tag.busyFrameCount ?? 0).toLocaleString()} skipped with no free buffer, ${(tag.replacedFrameCount ?? 0).toLocaleString()} pending detections replaced; native capture: ${(tag.nativeOverwrittenFrameCount ?? 0).toLocaleString()} overwritten; preview: ${(tag.previewReplacedFrameCount ?? 0).toLocaleString()} pending encodes replaced`">{{ (tag.processedFps ?? 0).toFixed(0) }} / {{ (tag.cameraFps ?? 0).toFixed(0) }} fps</dd>
           <dt>Publish rate</dt><dd>{{ (tag.measurementFps ?? 0).toFixed(0) }}/s</dd>
           <template v-if="tag.captureBackend === 'Native'">
             <dt>Camera</dt>

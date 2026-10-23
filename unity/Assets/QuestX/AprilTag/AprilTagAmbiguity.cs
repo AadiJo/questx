@@ -202,13 +202,18 @@ namespace QuestX.QuestX.AprilTag
             double farthest = 0;
             for (int i = first; i < first + count; i++)
             {
-                double[] offset = Subtract(Point(points3d, i), origin);
-                double[] inPlane = Subtract(offset, Scale(normal, Dot(offset, normal)));
-                double length = Dot(inPlane, inPlane);
+                double ox = points3d[i * 3] - origin[0];
+                double oy = points3d[i * 3 + 1] - origin[1];
+                double oz = points3d[i * 3 + 2] - origin[2];
+                double dot = ox * normal[0] + oy * normal[1] + oz * normal[2];
+                double px = ox - normal[0] * dot;
+                double py = oy - normal[1] * dot;
+                double pz = oz - normal[2] * dot;
+                double length = px * px + py * py + pz * pz;
                 if (length > farthest)
                 {
                     farthest = length;
-                    axisX = inPlane;
+                    axisX = new[] { px, py, pz };
                 }
             }
             if (axisX == null || !TryNormalize(axisX))
@@ -223,9 +228,11 @@ namespace QuestX.QuestX.AprilTag
             double sumSquares = 0;
             for (int i = 0; i < count; i++)
             {
-                double[] offset = Subtract(Point(points3d, first + i), origin);
-                planeX[i] = Dot(offset, axisX);
-                planeY[i] = Dot(offset, axisY);
+                double ox = points3d[(first + i) * 3] - origin[0];
+                double oy = points3d[(first + i) * 3 + 1] - origin[1];
+                double oz = points3d[(first + i) * 3 + 2] - origin[2];
+                planeX[i] = ox * axisX[0] + oy * axisX[1] + oz * axisX[2];
+                planeY[i] = ox * axisY[0] + oy * axisY[1] + oz * axisY[2];
                 sumSquares += planeX[i] * planeX[i] + planeY[i] * planeY[i];
             }
             double scale = Math.Sqrt(sumSquares / count);

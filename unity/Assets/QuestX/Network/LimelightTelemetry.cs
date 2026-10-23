@@ -28,8 +28,6 @@ namespace QuestX.Network
             status,
             reason;
         private readonly BooleanPublisher layoutLoaded;
-        private long captureMicros;
-        private int firstId = -1;
         private long heartbeat;
 
         public LimelightTelemetry(NtInstance nt)
@@ -63,12 +61,10 @@ namespace QuestX.Network
 
         public void Update(AprilTagMeasurement measurement, long capture, long now)
         {
-            captureMicros = capture;
             var tags = measurement.Observations;
             var tagIds = new double[tags.Length];
             for (int i = 0; i < tags.Length; i++)
                 tagIds[i] = tags[i].Id;
-            firstId = tags.Length > 0 ? tags[0].Id : -1;
             double latencyMs = System.Math.Max(0, (now - capture) / 1000.0);
             var value = LimelightPoseFormat.Encode(
                 measurement.Pose,
@@ -103,7 +99,8 @@ namespace QuestX.Network
             );
         }
 
-        public void Publish(long now)
+        // Main-thread freshness comes from the same completed sample as named telemetry.
+        public void Publish(long now, long captureMicros, int firstId)
         {
             bool fresh = firstId >= 0 && LimelightPoseFormat.IsFresh(now, captureMicros);
             tv.Set(fresh ? 1 : 0);

@@ -172,10 +172,11 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref, shallowRef, watch } from 'vue'
+import { computed, onUnmounted, reactive, ref, shallowRef, watch } from 'vue'
 import { TriangleAlert } from '@lucide/vue'
 import { useConfigStore } from '../stores/config'
 import { sceneApi } from '../api/scene'
+import { useVisiblePolling } from '../composables/useVisiblePolling'
 import { CameraOrientation, type PoseJson, type RobotToQuest, type SceneLayout, type SceneResponse, type SceneTagStatus } from '../types'
 import { ORIENTATION_ROLL_DEGREES, isValidRobotToQuest, mountedOrientation, yawOf } from '../three/mountMath'
 import { SceneViewer, type FieldCameraPreset, type ViewMode } from '../three/SceneViewer'
@@ -352,46 +353,37 @@ watch(mode, value => {
 watch(fieldPreset, value => viewer.value?.setFieldPreset(value))
 watch([drawnMount, robotSize, resolvedAlliance, teamNumber], redraw, { deep: true })
 
-let polling = false
-let pollTimer: number | undefined
-
-async function poll() {
-  if (!polling) return
+const visible = useVisiblePolling(() => props.active, 66, async isCurrent => {
   try {
-    scene.value = await sceneApi.getScene()
-    if (!layout.value) layout.value = await sceneApi.getLayout()
+    const nextScene = await sceneApi.getScene()
+    if (!isCurrent()) return
+    const nextLayout = layout.value ?? await sceneApi.getLayout()
+    if (!isCurrent()) return
+    scene.value = nextScene
+    layout.value = nextLayout
     redraw()
   } catch {
     // The connection banner reports outages; keep drawing the last scene.
   }
-  if (polling) pollTimer = window.setTimeout(poll, 66)
-}
-
-function startPolling() {
-  if (polling) return
-  polling = true
-  poll()
-}
-
-function stopPolling() {
-  polling = false
-  window.clearTimeout(pollTimer)
-}
-
-watch(() => props.active, active => (active ? startPolling() : stopPolling()))
-
-onMounted(() => {
-  if (!viewport.value) return
-  try {
-    viewer.value = new SceneViewer(viewport.value)
-  } catch (error) {
-    console.error('WebGL unavailable:', error)
-  }
-  if (props.active) startPolling()
 })
 
+let viewerAttempted = false
+watch(visible, active => {
+  if (active && !viewerAttempted && viewport.value) {
+    viewerAttempted = true
+    try {
+      viewer.value = new SceneViewer(viewport.value)
+      viewer.value.setMode(mode.value)
+      viewer.value.setFieldPreset(fieldPreset.value)
+      redraw()
+    } catch (error) {
+      console.error('WebGL unavailable:', error)
+    }
+  }
+  viewer.value?.setActive(active)
+}, { flush: 'post' }) // Resize after v-show has restored the viewport's dimensions.
+
 onUnmounted(() => {
-  stopPolling()
   viewer.value?.dispose()
   viewer.value = null
 })

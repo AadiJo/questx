@@ -1,0 +1,489 @@
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
+import ts from 'typescript'
+import { compileScript, parse } from '@vue/compiler-sfc'
+import * as vue from 'vue'
+import * as THREE from 'three'
+
+// Run actual SFC setup/lifecycle code with Vue. Replace only the host DOM,
+// network, timers, and WebGL boundary; no source-string behavior assertions.
+function compile(source, dependencies) {
+  const compiled = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText
+  const module = { exports: {} }
+  new Function('require', 'module', 'exports', compiled)(name => {
+    assert.ok(name in dependencies, `Unexpected import: ${name}`)
+    return dependencies[name]
+  }, module, module.exports)
+  return module.exports
+}
+const read = path => readFile(new URL(`../src/${path}`, import.meta.url), 'utf8')
+const polling = compile(await read('composables/useVisiblePolling.ts'), { vue })
+const types = compile(await read('types.ts'), {})
+const mountMath = compile(await read('three/mountMath.ts'), { '../types': types })
+const flush = () => new Promise(resolve => setImmediate(resolve))
+
+const cleanups = new WeakMap()
+function cleanup(t, callback) {
+  if (!cleanups.has(t)) {
+    const callbacks = []
+    cleanups.set(t, callbacks)
+    t.after(() => { for (const fn of callbacks.reverse()) fn() })
+  }
+  cleanups.get(t).push(callback)
+}
+
+function globals(t, values) {
+  for (const [name, value] of Object.entries(values)) {
+    const original = Object.getOwnPropertyDescriptor(globalThis, name)
+    Object.defineProperty(globalThis, name, { configurable: true, writable: true, value })
+    cleanup(t, () => {
+      if (original) Object.defineProperty(globalThis, name, original)
+      else delete globalThis[name]
+    })
+  }
+}
+
+function environment(t, hidden = false) {
+  const listeners = new Set()
+  const document = {
+    hidden,
+    addEventListener: (name, listener) => {
+      assert.equal(name, 'visibilitychange')
+      listeners.add(listener)
+    },
+    removeEventListener: (name, listener) => listeners.delete(listener),
+    setHidden(value) {
+      this.hidden = value
+      for (const listener of listeners) listener()
+    },
+  }
+  let now = 0, nextId = 0
+  const timers = new Map()
+  globals(t, {
+    document,
+    performance: { now: () => now },
+    localStorage: { getItem: () => null, setItem() {} },
+    setTimeout: (fn, delay) => {
+      const id = ++nextId
+      // Browser timeout delays are converted to integer milliseconds.
+      timers.set(id, { fn, due: now + Math.trunc(delay) })
+      return id
+    },
+    clearTimeout: id => timers.delete(id),
+  })
+  return {
+    document, listeners, timers,
+    async advance(ms) {
+      now += ms
+      for (const [id, timer] of [...timers]) {
+        if (timer.due <= now) { timers.delete(id); timer.fn() }
+      }
+      await flush()
+    },
+  }
+}
+
+function network() {
+  const requests = []
+  let pending = 0, maxPending = 0
+  function request() {
+    pending++
+    maxPending = Math.max(maxPending, pending)
+    return new Promise((resolve, reject) => requests.push({
+      resolve: value => { pending--; resolve(value) },
+      reject: error => { pending--; reject(error) },
+    }))
+  }
+  return { requests, request, maxPending: () => maxPending }
+}
+
+const renderer = vue.createRenderer({
+  createElement: tag => ({ tag }), createText: text => ({ text }), createComment: () => ({}),
+  insert() {}, remove() {}, setText() {}, setElementText() {}, patchProp() {},
+  parentNode: () => null, nextSibling: () => null,
+})
+
+async function mountView(t, file, dependencies, initiallyActive = false) {
+  const { descriptor } = parse(await read(`components/${file}.vue`))
+  const script = compileScript(descriptor, { id: file })
+  const component = compile(script.content, {
+    vue, '../composables/useVisiblePolling': polling,
+    '@lucide/vue': {}, ...dependencies,
+  }).default
+  // Templates are irrelevant to ownership; setup's refs remain real Vue refs.
+  component.render = () => null
+  const active = vue.ref(initiallyActive)
+  const child = vue.ref()
+  const app = renderer.createApp({ setup: () => () => vue.h(component, { active: active.value, ref: child }) })
+  app.mount({})
+  const state = child.value.$.setupState
+  let unmounted = false
+  const unmount = () => { if (!unmounted) { app.unmount(); unmounted = true } }
+  cleanup(t, unmount)
+  return { state, unmount, async activate(value) { active.value = value; await flush() } }
+}
+
+async function threeFixture(t, hidden = false) {
+  const env = environment(t, hidden)
+  const scenes = network(), layouts = network(), viewers = []
+  class Viewer {
+    constructor() { viewers.push(this); this.disposed = false; this.updates = [] }
+    setMode(mode) { this.mode = mode }
+    setFieldPreset(preset) { this.preset = preset }
+    setActive(active) { this.active = active }
+    update(input) { this.updates.push(input) }
+    dispose() { this.disposed = true; this.active = false }
+  }
+  const view = await mountView(t, 'ThreeDView', {
+    '../api/scene': { sceneApi: { getScene: scenes.request, getLayout: layouts.request } },
+    '../stores/config': { useConfigStore: () => ({ config: null }) },
+    '../types': types,
+    '../three/mountMath': mountMath,
+    '../three/SceneViewer': { SceneViewer: Viewer },
+    '../three/robotModel': { BUMPER_COLORS: { blue: 1, red: 2 } },
+  })
+  view.state.viewport = {}
+  return { ...env, ...view, scenes, layouts, viewers }
+}
+
+async function completeScene(f, scene, layout = { loaded: true }) {
+  f.scenes.requests.at(-1).resolve(scene)
+  await flush()
+  if (!f.state.layout) f.layouts.requests.at(-1).resolve(layout)
+  await flush()
+}
+
+test('3D starts lazily, pauses for page/document visibility, and preserves viewer state', async t => {
+  const f = await threeFixture(t, true)
+  await f.activate(true)
+  assert.equal(f.viewers.length, 0)
+  assert.equal(f.scenes.requests.length, 0)
+  f.document.setHidden(false)
+  await flush()
+  assert.equal(f.viewers.length, 1)
+  assert.equal(f.scenes.requests.length, 1)
+  const viewer = f.viewers[0]
+  await completeScene(f, { id: 'first' })
+  f.state.mode = 'robot'
+  f.state.fieldPreset = 'top'
+  await flush()
+  assert.equal(f.timers.size, 1)
+  await f.activate(false)
+  assert.equal(viewer.active, false)
+  assert.equal(f.timers.size, 0)
+  await f.advance(10_000)
+  assert.equal(f.scenes.requests.length, 1)
+  assert.equal(f.state.scene.id, 'first')
+  await f.activate(true)
+  assert.equal(viewer.active, true)
+  assert.equal(viewer.mode, 'robot')
+  assert.equal(viewer.preset, 'top')
+  assert.equal(f.viewers.length, 1)
+  f.document.setHidden(true)
+  await flush()
+  assert.equal(viewer.active, false)
+  f.scenes.requests[1].resolve({ id: 'hidden' })
+  await flush()
+  assert.equal(f.state.scene.id, 'first')
+  assert.equal(f.timers.size, 0)
+  f.document.setHidden(false)
+  await flush()
+  assert.equal(f.scenes.requests.length, 3)
+  assert.equal(viewer.active, true)
+  f.unmount()
+  f.scenes.requests[2].resolve({ id: 'unmounted' })
+  await flush()
+  assert.equal(f.state.scene.id, 'first')
+  assert.equal(f.listeners.size, 0)
+  assert.equal(f.timers.size, 0)
+  assert.equal(viewer.disposed, true)
+})
+
+test('3D off/on during scene and layout awaits retains one flight and rejects stale results', async t => {
+  const f = await threeFixture(t)
+  await f.activate(true)
+  for (let i = 0; i < 3; i++) { await f.activate(false); await f.activate(true) }
+  assert.equal(f.scenes.requests.length, 1)
+  f.scenes.requests[0].resolve({ id: 'old-scene' })
+  await flush()
+  assert.equal(f.state.scene, null)
+  assert.equal(f.layouts.requests.length, 0)
+  assert.equal(f.scenes.requests.length, 2)
+  f.scenes.requests[1].resolve({ id: 'old-layout-scene' })
+  await flush()
+  assert.equal(f.layouts.requests.length, 1)
+  await f.activate(false)
+  await f.activate(true)
+  assert.equal(f.scenes.requests.length, 2)
+  f.layouts.requests[0].resolve({ id: 'old-layout' })
+  await flush()
+  assert.equal(f.state.scene, null)
+  assert.equal(f.state.layout, null)
+  assert.equal(f.scenes.requests.length, 3)
+  await completeScene(f, { id: 'current' }, { id: 'current-layout' })
+  assert.equal(f.state.scene.id, 'current')
+  assert.equal(f.state.layout.id, 'current-layout')
+  assert.equal(f.viewers[0].updates.at(-1).scene.id, 'current')
+  assert.equal(f.timers.size, 1)
+  await f.advance(65)
+  assert.equal(f.scenes.requests.length, 3)
+  await f.advance(1)
+  assert.equal(f.scenes.requests.length, 4)
+  f.scenes.requests[3].reject(new Error('offline'))
+  await flush()
+  assert.equal(f.state.scene.id, 'current')
+  assert.equal(f.timers.size, 1)
+  await f.advance(66)
+  assert.equal(f.scenes.requests.length, 5)
+  assert.equal(f.scenes.maxPending(), 1)
+  assert.equal(f.layouts.maxPending(), 1)
+})
+
+test('3D teardown while layout is pending discards both snapshots and cannot restart polling', async t => {
+  const f = await threeFixture(t)
+  await f.activate(true)
+  f.scenes.requests[0].resolve({ id: 'pending-layout' })
+  await flush()
+  f.unmount()
+  f.layouts.requests[0].resolve({ id: 'late-layout' })
+  await flush()
+  assert.equal(f.state.scene, null)
+  assert.equal(f.state.layout, null)
+  assert.equal(f.timers.size, 0)
+  assert.equal(f.listeners.size, 0)
+})
+
+test('3D retries a failed layout without overlapping requests, and visibility invalidates pending layout', async t => {
+  const f = await threeFixture(t)
+  await f.activate(true)
+  f.scenes.requests[0].resolve({ id: 'first' })
+  await flush()
+  f.layouts.requests[0].reject(new Error('layout unavailable'))
+  await flush()
+  assert.equal(f.timers.size, 1)
+  await f.advance(66)
+  f.scenes.requests[1].resolve({ id: 'second' })
+  await flush()
+  f.document.setHidden(true)
+  f.document.setHidden(false)
+  assert.equal(f.scenes.requests.length, 2)
+  f.layouts.requests[1].resolve({ id: 'stale-layout' })
+  await flush()
+  assert.equal(f.state.layout, null)
+  assert.equal(f.scenes.requests.length, 3)
+  await completeScene(f, { id: 'current' }, { id: 'current-layout' })
+  assert.equal(f.state.layout.id, 'current-layout')
+  assert.equal(f.layouts.maxPending(), 1)
+  assert.equal(f.timers.size, 1)
+})
+
+async function logsFixture(t, initiallyActive = false) {
+  const env = environment(t)
+  const logs = network()
+  const view = await mountView(t, 'LogsView', {
+    '../api/config': { configApi: { getLogs: count => {
+      assert.equal(count, 200)
+      return logs.request()
+    } } },
+    './ConfirmButton.vue': {},
+  }, initiallyActive)
+  return { ...env, ...view, logs }
+}
+const logResponse = message => ({ logs: [{ Message: message, Type: 'Log', Timestamp: 1, StackTrace: '' }] })
+
+test('logs poll only while visible and keep a single flight across activation, slow requests and errors', async t => {
+  const f = await logsFixture(t)
+  assert.equal(f.logs.requests.length, 0)
+  await f.activate(true)
+  assert.equal(f.logs.requests.length, 1)
+  await f.advance(20_000)
+  assert.equal(f.logs.requests.length, 1)
+  await f.activate(false)
+  await f.activate(true)
+  await f.activate(false)
+  await f.activate(true)
+  assert.equal(f.logs.requests.length, 1)
+  f.logs.requests[0].resolve(logResponse('stale'))
+  await flush()
+  assert.deepEqual(f.state.logs, [])
+  assert.equal(f.logs.requests.length, 2)
+  f.logs.requests[1].reject(new Error('offline'))
+  await flush()
+  assert.equal(f.state.error, 'offline')
+  assert.equal(f.state.loading, false)
+  assert.equal(f.timers.size, 1)
+  await f.advance(1999)
+  assert.equal(f.logs.requests.length, 2)
+  await f.advance(1)
+  assert.equal(f.logs.requests.length, 3)
+  f.logs.requests[2].resolve(logResponse('current'))
+  await flush()
+  assert.equal(f.state.logs[0].Message, 'current')
+  assert.equal(f.state.error, null)
+  f.document.setHidden(true)
+  assert.equal(f.timers.size, 0)
+  await f.advance(20_000)
+  assert.equal(f.logs.requests.length, 3)
+  assert.equal(f.state.logs[0].Message, 'current')
+  f.document.setHidden(false)
+  assert.equal(f.logs.requests.length, 4)
+  await f.activate(false)
+  f.logs.requests[3].reject(new Error('stale failure'))
+  await flush()
+  assert.equal(f.state.error, null)
+  assert.equal(f.timers.size, 0)
+  await f.activate(true)
+  assert.equal(f.logs.requests.length, 5)
+  f.unmount()
+  f.logs.requests[4].resolve(logResponse('unmounted'))
+  await flush()
+  assert.equal(f.state.logs[0].Message, 'current')
+  assert.equal(f.logs.maxPending(), 1)
+  assert.equal(f.timers.size, 0)
+  assert.equal(f.listeners.size, 0)
+})
+
+test('logs preserve the two-second start cadence and skip ticks during slow requests', async t => {
+  const f = await logsFixture(t, true)
+  assert.equal(f.logs.requests.length, 1) // t=0
+  await f.advance(1500)
+  f.logs.requests[0].resolve(logResponse('first'))
+  await flush()
+  await f.advance(499)
+  assert.equal(f.logs.requests.length, 1)
+  await f.advance(1)
+  assert.equal(f.logs.requests.length, 2) // t=2000, not 3500
+
+  await f.advance(4500) // t=6500: skip the 4000 and 6000 ticks
+  assert.equal(f.logs.requests.length, 2)
+  f.logs.requests[1].resolve(logResponse('slow'))
+  await flush()
+  assert.equal(f.timers.size, 1)
+  await f.advance(1499)
+  assert.equal(f.logs.requests.length, 2)
+  await f.advance(1)
+  assert.equal(f.logs.requests.length, 3) // t=8000, no catch-up burst
+
+  await f.advance(500)
+  f.logs.requests[2].reject(new Error('offline'))
+  await flush()
+  await f.advance(1500)
+  assert.equal(f.logs.requests.length, 4) // t=10000; failures keep the same cadence
+  assert.equal(f.logs.maxPending(), 1)
+  f.unmount()
+  f.logs.requests[3].resolve(logResponse('unmounted'))
+  await flush()
+  assert.equal(f.timers.size, 0)
+})
+
+test('logs do not reuse a deadline after fractional timeout rounding and a fast error', async t => {
+  const f = await logsFixture(t, true)
+  await f.advance(1500.5)
+  f.logs.requests[0].resolve(logResponse('first'))
+  await flush()
+  await f.advance(499)
+  assert.equal(f.logs.requests.length, 1, 'round the fractional wait upward')
+  await f.advance(1) // t=2000.5
+  assert.equal(f.logs.requests.length, 2)
+  f.logs.requests[1].reject(new Error('fast failure'))
+  await flush()
+  await f.advance(1)
+  assert.equal(f.logs.requests.length, 2, 'do not poll the same boundary twice')
+  await f.advance(1999) // t=4000.5
+  assert.equal(f.logs.requests.length, 3)
+  assert.equal(f.logs.maxPending(), 1)
+  f.unmount()
+  f.logs.requests[2].resolve(logResponse('unmounted'))
+  await flush()
+  assert.equal(f.timers.size, 0)
+})
+
+test('logs unmounted during initial load ignore a late rejection and install no timer', async t => {
+  const f = await logsFixture(t, true)
+  assert.equal(f.logs.requests.length, 1)
+  f.unmount()
+  f.logs.requests[0].reject(new Error('late failure'))
+  await flush()
+  assert.equal(f.state.error, null)
+  assert.equal(f.timers.size, 0)
+  assert.equal(f.listeners.size, 0)
+})
+
+test('SceneViewer pauses RAF, resumes one loop, resizes and retains orbit state until disposal', async t => {
+  const frames = new Map()
+  let nextFrame = 0, renders = 0, controlsUpdates = 0, removed = false, disconnected = false
+  const sizes = []
+  globals(t, {
+    window: { devicePixelRatio: 1 },
+    requestAnimationFrame: fn => { frames.set(++nextFrame, fn); return nextFrame },
+    cancelAnimationFrame: id => frames.delete(id),
+    ResizeObserver: class { observe() {} disconnect() { disconnected = true } },
+  })
+  class WebGLRenderer {
+    domElement = { remove() { removed = true } }
+    setPixelRatio() {}
+    setSize(...size) { sizes.push(size) }
+    render() { renders++ }
+    dispose() {}
+  }
+  class OrbitControls {
+    target = new THREE.Vector3()
+    update() { controlsUpdates++ }
+    addEventListener(name, callback) { this[name] = callback }
+    dispose() {}
+  }
+  const { SceneViewer } = compile(await read('three/SceneViewer.ts'), {
+    three: { ...THREE, WebGLRenderer },
+    'three/examples/jsm/controls/OrbitControls.js': { OrbitControls },
+    './aprilTag36h11': { TAG_CELLS: 10 },
+    './fieldModels': {},
+    './mountMath': mountMath,
+    './robotModel': { RobotModel: THREE.Group },
+    './questModel': { makeQuestModel: () => new THREE.Group() },
+  })
+  const container = { clientWidth: 800, clientHeight: 600, appendChild() {} }
+  const viewer = new SceneViewer(container)
+  assert.equal(frames.size, 0)
+  assert.equal(renders, 0)
+  const frame = () => {
+    for (const [id, callback] of [...frames]) { frames.delete(id); callback() }
+  }
+  viewer.setActive(true)
+  viewer.setActive(true)
+  assert.equal(frames.size, 1)
+  const updatesBeforeFrames = controlsUpdates
+  for (let i = 0; i < 5; i++) frame()
+  assert.equal(renders, 5)
+  assert.equal(controlsUpdates - updatesBeforeFrames, 5, 'damping updates on each active frame')
+  viewer.controls.start()
+  viewer.camera.position.set(3, 4, 5)
+  viewer.controls.target.set(1, 2, 3)
+  viewer.setActive(false)
+  viewer.setActive(false)
+  const pausedUpdates = controlsUpdates
+  assert.equal(frames.size, 0)
+  assert.equal(viewer.controls.enabled, false)
+  for (let i = 0; i < 5; i++) frame()
+  assert.equal(renders, 5)
+  assert.equal(controlsUpdates, pausedUpdates)
+  container.clientWidth = 1200
+  viewer.setActive(true)
+  viewer.setActive(true)
+  assert.equal(frames.size, 1)
+  assert.deepEqual(sizes.at(-1), [1200, 600, false])
+  assert.equal(viewer.camera.aspect, 2)
+  assert.deepEqual(viewer.camera.position.toArray(), [3, 4, 5])
+  assert.deepEqual(viewer.controls.target.toArray(), [1, 2, 3])
+  frame()
+  assert.equal(renders, 6)
+  viewer.dispose()
+  viewer.setActive(true)
+  frame()
+  assert.equal(renders, 6)
+  assert.equal(frames.size, 0)
+  assert.equal(removed, true)
+  assert.equal(disconnected, true)
+})

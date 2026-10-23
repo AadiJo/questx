@@ -6,4 +6,6 @@ Compiles the production `LatestOnlyWorker` with a collecting logger in place of 
 
 It also compiles production `FrameCadence` and checks 24 FPS pacing on 30/60/120 Hz input, 30 FPS on 60 Hz input, input slower than the requested rate, mode resets, and recovery after a long stall without catch-up bursts.
 
+Replacement counts exclude stop-time discards and rejected posts. A gated producer/consumer case checks the preview scheduling policy: a discarded pending capture does not consume the surviving frame's preview opportunity when cadence is evaluated by the consumer. This uses the production worker and cadence helper; the Unity manager's wiring is covered by compilation and review.
+
 These checks do not exercise GPU readback, Unity callbacks, native detectors, or on-device frame rate.

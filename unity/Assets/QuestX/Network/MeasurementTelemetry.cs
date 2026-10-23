@@ -82,7 +82,8 @@ namespace QuestX.Network
             }
         }
 
-        // The connection owns and reuses the arrays; all callbacks run on Unity's main thread.
+        // VIO owns and reuses this array on Unity's main thread. AprilTag publishing instead
+        // passes an owned snapshot directly to Publish; the worker never updates this state.
         // AprilTag telemetry reads the v3 layout (MeasurementWireFormat.AprilTagV3HeaderLength).
         public void Update(double[] value, Pose3d capturedPose)
         {
@@ -90,7 +91,10 @@ namespace QuestX.Network
             pose = capturedPose;
         }
 
-        public void Publish(long nowMicros, ulong publishCount)
+        public void Publish(long nowMicros, ulong publishCount) =>
+            Publish(nowMicros, publishCount, measurement, pose);
+
+        public void Publish(long nowMicros, ulong publishCount, double[] measurement, Pose3d pose)
         {
             hasMeasurementPublisher.Set(measurement != null);
             publishCountPublisher.Set(unchecked((long)publishCount));
