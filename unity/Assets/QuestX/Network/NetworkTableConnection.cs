@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using QuestX.Config;
 using QuestX.Core;
 using QuestX.Native.NTCore;
@@ -564,11 +565,39 @@ namespace QuestX.Network
         private readonly ProtobufQuestXAprilTagData aprilTagData = new();
 
         /// <summary>
-        /// The AprilTag detector publishes from its capture thread while VIO and the slow loop
-        /// publish telemetry from the main thread; this serializes the AprilTag and Limelight
-        /// state they share.
+        /// Serializes worker publications and their reusable protocol buffers. Main-thread
+        /// telemetry reads a completed snapshot and never acquires this publication lock.
         /// </summary>
         private readonly object aprilTagLock = new object();
+        private readonly object aprilTagDiagnosticsLock = new object();
+        private AprilTagTelemetrySnapshot aprilTagSnapshot;
+
+        private sealed class AprilTagTelemetrySnapshot
+        {
+            public readonly double[] Measurement;
+            public readonly Pose3d Pose;
+            public readonly ulong PublishCount;
+            public readonly long CaptureMicros;
+            public readonly int FirstId;
+
+            public AprilTagTelemetrySnapshot(
+                double[] measurement,
+                Pose3d pose,
+                ulong publishCount,
+                long captureMicros,
+                int firstId
+            )
+            {
+                // Only this snapshot owns the copy; the worker reuses its v3 buffer.
+                // One object and 26 + 2 * tagCount doubles per measurement, not per VIO tick.
+                Measurement = (double[])measurement.Clone();
+                Pose = pose; // Pose3d and its translation/rotation are immutable.
+                PublishCount = publishCount;
+                CaptureMicros = captureMicros;
+                FirstId = firstId;
+            }
+        }
+
         private readonly ProtobufQuestXPoseStdDevs aprilTagPoseStdDevs = new();
         private ulong nextAprilTagSequenceId;
 
@@ -795,13 +824,26 @@ namespace QuestX.Network
                     );
                 }
             }
-            aprilTagTelemetry.Update(aprilTagV3, pose);
             limelightTelemetry.Update(measurement, captureTimestampMicros, now);
+            // Exchange all diagnostic state together, including when v4 Set returns false.
+            // No reusable buffer or worker-owned mutable state escapes to the main thread.
+            Volatile.Write(
+                ref aprilTagSnapshot,
+                new AprilTagTelemetrySnapshot(
+                    aprilTagV3,
+                    pose,
+                    AprilTagPublishCount,
+                    captureTimestampMicros,
+                    measurement.Observations.Length > 0 ? measurement.Observations[0].Id : -1
+                )
+            );
         }
 
         public void PublishAprilTagDiagnostics(AprilTagDiagnosticsSnapshot diagnostics)
         {
-            lock (aprilTagLock)
+            // Diagnostics have separate topics and no measurement state. Keep concurrent
+            // diagnostic batches serialized without waiting for worker publications.
+            lock (aprilTagDiagnosticsLock)
             {
                 limelightTelemetry.Diagnostics(diagnostics);
             }
@@ -814,11 +856,14 @@ namespace QuestX.Network
                 return;
             nextTelemetryMicros = now + 100_000;
             vioTelemetry.Publish(now, VioPublishCount);
-            lock (aprilTagLock)
-            {
-                aprilTagTelemetry.Publish(now, AprilTagPublishCount);
-                limelightTelemetry.Publish(now);
-            }
+            var snapshot = Volatile.Read(ref aprilTagSnapshot);
+            aprilTagTelemetry.Publish(
+                now,
+                snapshot?.PublishCount ?? 0,
+                snapshot?.Measurement,
+                snapshot?.Pose
+            );
+            limelightTelemetry.Publish(now, snapshot?.CaptureMicros ?? 0, snapshot?.FirstId ?? -1);
         }
 
         /// <summary>
