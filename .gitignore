@@ -22,3 +22,7 @@ unity/Assets/StreamingAssets/RuntimeActionBindings.*
 unity/ProjectSettings/ProjectSettings.asset
 /.docs
 /docs/static/api
+
+# Restored from the pinned napa-vision wheels (keep Unity importer .meta files).
+/unity/Assets/Plugins/napa/**/*.so
+/unity/Assets/Plugins/napa/**/*.dll

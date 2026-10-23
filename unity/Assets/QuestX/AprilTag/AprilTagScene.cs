@@ -37,10 +37,18 @@ namespace QuestX.QuestX.AprilTag
         }
 
         // Ownership transfers here: the frame and its tags must not be mutated afterwards.
-        public void Publish(AprilTagSceneFrame next)
+        /// <param name="isCurrent">
+        /// Checked under the same lock as <see cref="Clear"/>, so a producer that invalidates
+        /// its frames and then clears can never have an old frame restored afterwards.
+        /// </param>
+        public void Publish(AprilTagSceneFrame next, Func<bool> isCurrent = null)
         {
             lock (sync)
             {
+                if (isCurrent != null && !isCurrent())
+                {
+                    return;
+                }
                 frame = next;
             }
         }

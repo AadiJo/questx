@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
@@ -13,13 +14,18 @@ using QuestX.Native.Napa;
 using QuestX.Native.PoseLib;
 using QuestX.QuestX.Geometry;
 using QuestX.Utils;
-using Unity.Collections;
-using Unity.Collections.LowLevel.Unsafe;
 using UnityEngine;
 using TagDetectorBackend = QuestX.Config.Config.TagDetectorBackend;
 
 namespace QuestX.QuestX.AprilTag
 {
+    /// <summary>
+    /// Runs AprilTag localization off the Unity main thread. The main thread only decides which
+    /// camera frames to use and starts a non-blocking GPU readback of each; a dedicated worker
+    /// converts, detects, solves and builds the measurement; the main thread then publishes it.
+    /// Rendering therefore never waits on the GPU copy or the detector, and detection runs at the
+    /// camera's rate rather than being capped by (and slowing) the app's frame rate.
+    /// </summary>
     public class AprilTagManager
     {
         /// <summary>
@@ -28,9 +34,14 @@ namespace QuestX.QuestX.AprilTag
         private const string CameraArbiterRequesterId = "AprilTagManager";
 
         /// <summary>
-        /// Main thread synchronization context for marshalling Unity API calls.
+        /// Frames in flight at once: one the worker is processing, one waiting for it, and one
+        /// being read back. The third lets a newer frame replace the waiting one instead of
+        /// the worker always taking a frame that aged while it was busy.
         /// </summary>
-        private readonly SynchronizationContext mainThreadContext;
+        private const int FrameSlotCount = 3;
+
+        /// <summary>How long disable waits for the worker to finish its current frame.</summary>
+        private static readonly TimeSpan WorkerStopTimeout = TimeSpan.FromSeconds(2);
 
         private readonly AprilTagFieldLayout aprilTagFieldLayout;
         private readonly Func<long> captureTimestampProvider;
@@ -38,18 +49,44 @@ namespace QuestX.QuestX.AprilTag
         private readonly CameraResourceManager cameraArbiter;
         private readonly IConfigManager configManager;
 
-        // The detector is re-allocated on each enable (and on a backend change while enabled).
-        // It is nullable because the disable path tears it down completely.
+        // Owned by the worker thread while it runs: created on enable before the worker starts,
+        // swapped by the worker on a backend change, and disposed after the worker stops.
         private ITagDetector tagDetector;
         private TagDetectorBackend detectorBackend = TagDetectorBackend.NAPA;
 
-        /// <summary>Reused per frame; filled by <see cref="ITagDetector.Detect"/>.</summary>
+        /// <summary>Backend the worker should run; it swaps detectors before its next frame.</summary>
+        private volatile int requestedBackend = (int)TagDetectorBackend.NAPA;
+        private TagDetectorBackend runningBackend;
+
+        /// <summary>Worker-owned; filled by <see cref="ITagDetector.Detect"/>.</summary>
         private readonly List<TagDetection> detections = new List<TagDetection>();
 
+        /// <summary>Worker-owned. Intrinsics come from each frame (see <see cref="FrameSlot"/>).</summary>
         private readonly PoseLibSolver poseLibSolver;
+        private int appliedIntrinsicsVersion = -1;
+
         private readonly MonoBehaviour coroutineHost;
         private Coroutine captureCoroutine;
         private float frameDelaySeconds;
+
+        private readonly FrameSlot[] frameSlots = new FrameSlot[FrameSlotCount];
+        private readonly object slotLock = new object();
+        private LatestOnlyWorker<FrameSlot> worker;
+
+        /// <summary>
+        /// Changes on every enable and disable, so callbacks and results from an old run are
+        /// ignored. Written on the main thread; the worker reads it to drop stale frames.
+        /// </summary>
+        private int pipelineGeneration;
+
+        /// <summary>
+        /// Measurements from the worker with the run that produced them, published by the main
+        /// thread.
+        /// </summary>
+        private readonly ConcurrentQueue<(
+            int Generation,
+            AprilTagMeasurement Measurement
+        )> completedMeasurements = new ConcurrentQueue<(int, AprilTagMeasurement)>();
 
         /// <summary>Exposure time, in seconds, of the next frame to process.</summary>
         private double nextFrameExposureSeconds;
@@ -59,10 +96,18 @@ namespace QuestX.QuestX.AprilTag
         /// camera period, which absorbs timestamp jitter without taking the frame before.
         /// </summary>
         private const double FrameScheduleToleranceSeconds = 0.004;
+
+        /// <summary>Worker-owned preview encoder and rotation scratch buffer.</summary>
         private LJTCompressor overlayCompressor;
+        private byte[] overlayRotationBuffer;
+
         private int overlayQuality = 75;
         private double overlayFrameIntervalMs = 1000.0 / 24;
         private double nextOverlayFrameAt;
+
+        // Main-thread informational logging is sampled; diagnostics still record every measurement.
+        private double nextMeasurementLogAtMs;
+        private bool debugLogging;
 
         /// <summary>
         /// How the stream is rotated. The preview and tag angles follow it; poses never do.
@@ -78,7 +123,8 @@ namespace QuestX.QuestX.AprilTag
 
         /// <summary>
         /// Set of tag IDs to drop from each frame's detections (blacklist). Empty = detect every tag.
-        /// Rebuilt from <c>Config.AprilTagDetectorMode.IgnoredIds</c> on every config change.
+        /// Rebuilt from <c>Config.AprilTagDetectorMode.IgnoredIds</c> on every config change and
+        /// never mutated afterwards, so frames on the worker can share it.
         /// </summary>
         private HashSet<int> ignoredIdSet = new HashSet<int>();
         private double maxDistance;
@@ -97,6 +143,8 @@ namespace QuestX.QuestX.AprilTag
         /// </summary>
         private bool intrinsicsStale = true;
         private Vector2Int cachedIntrinsicsResolution;
+        private PassthroughCameraAccess.CameraIntrinsics cachedIntrinsics;
+        private int cachedIntrinsicsVersion;
 
         private readonly object diagnosticsLock = new object();
         private long cameraFrameCount;
@@ -115,15 +163,32 @@ namespace QuestX.QuestX.AprilTag
         private double lastAmbiguity;
         private double lastReprojectionErrorPixels;
         private string detectorName = "";
-        private double lastDetectMilliseconds;
-        private double averageDetectMilliseconds;
+        private RunningAverage detectTime;
+        private RunningAverage readbackTime;
+        private RunningAverage solveTime;
+        private RunningAverage previewTime;
+        private RunningAverage latency;
+        private double overlayRetryAtMs;
         private string lastOutcome = "Not started";
         private string lastReason = "";
 
+        // Frame-rate counters. Camera updates and busy skips are counted on the main thread,
+        // processed frames on the worker; rates are refreshed about once per second.
+        private long cameraUpdateCount;
+        private long busyFrameCount;
+        private long processedFrameCount;
+        private long rateWindowStart = Stopwatch.GetTimestamp();
+        private long rateWindowCameraUpdates;
+        private long rateWindowProcessed;
+        private long rateWindowMeasurements;
+        private double cameraFramesPerSecond;
+        private double processedFramesPerSecond;
+        private double measurementsPerSecond;
+
         /// <summary>
-        /// Raised when PoseLib produces a field-relative AprilTag measurement that
-        /// passes the Quest's detector-level validity checks. No sensor fusion has
-        /// been applied to this measurement.
+        /// Raised on the main thread when PoseLib produces a field-relative AprilTag measurement
+        /// that passes the Quest's detector-level validity checks. No sensor fusion has been
+        /// applied to this measurement.
         /// </summary>
         public event Action<AprilTagMeasurement> MeasurementAvailable;
 
@@ -141,9 +206,6 @@ namespace QuestX.QuestX.AprilTag
             Func<long> captureTimestampProvider
         )
         {
-            // Capture main thread context for marshalling Unity API calls
-            mainThreadContext = SynchronizationContext.Current;
-
             this.cameraAccess = cameraAccess;
             this.cameraArbiter = cameraArbiter;
             this.captureTimestampProvider =
@@ -153,6 +215,10 @@ namespace QuestX.QuestX.AprilTag
             this.aprilTagFieldLayout = aprilTagFieldLayout;
             this.coroutineHost = coroutineHost;
             poseLibSolver = new PoseLibSolver(aprilTagFieldLayout, cameraAccess.Intrinsics);
+            for (int i = 0; i < frameSlots.Length; i++)
+            {
+                frameSlots[i] = new FrameSlot();
+            }
 
             configManager.OnEnableAprilTagDetectorChanged += OnEnableAprilTagDetectorChanged;
             configManager.OnAprilTagDetectorModeChanged += OnAprilTagDetectorModeChanged;
@@ -160,6 +226,7 @@ namespace QuestX.QuestX.AprilTag
             configManager.OnPassthroughStreamModeChanged += OnOverlayStreamModeChanged;
             configManager.OnEnablePassthroughStreamChanged += OnOverlayStreamEnabledChanged;
             configManager.OnCameraOrientationChanged += OnCameraOrientationChanged;
+            configManager.OnEnableDebugLoggingChanged += OnEnableDebugLoggingChanged;
 
             // Refresh PoseLib's cached intrinsics whenever the camera arbiter changes
             // the effective resolution. Meta SDK exposes per-resolution intrinsics
@@ -170,6 +237,60 @@ namespace QuestX.QuestX.AprilTag
 
             QueuedLogger.Log("Initialized AprilTagManager");
         }
+
+        /// <summary>
+        /// One camera frame on its way through the pipeline: a readback buffer plus everything
+        /// the worker needs, captured on the main thread when the frame was chosen so the worker
+        /// never reads Unity, SDK or config state.
+        /// </summary>
+        private sealed class FrameSlot
+        {
+            public readonly CameraFrameReadback Readback = new CameraFrameReadback();
+            public SlotState State;
+            public int Generation;
+
+            public long RequestedAt;
+            public long CaptureTimestampMicros;
+            public double CaptureAppTimestamp;
+
+            /// <summary>Exposure time on <see cref="AprilTagOverlay.MonotonicMilliseconds"/>.</summary>
+            public double CapturedAtMs;
+            public int Width;
+            public int Height;
+            public PassthroughCameraAccess.CameraIntrinsics Intrinsics;
+            public int IntrinsicsVersion;
+            public Pose LensOffset;
+            public HashSet<int> IgnoredIds;
+            public double MaxDistance;
+            public int MinimumNumberOfTags;
+            public CameraOrientation Orientation;
+            public bool BuildOverlay;
+            public int OverlayQuality;
+            public bool BuildScene;
+        }
+
+        private enum SlotState
+        {
+            Free,
+            ReadingBack,
+            Processing,
+        }
+
+        /// <summary>Exponential moving average (alpha 0.05) plus the latest sample.</summary>
+        private struct RunningAverage
+        {
+            public double Last;
+            public double Average;
+
+            public void Add(double value)
+            {
+                Last = value;
+                Average = Average <= 0 ? value : Average + 0.05 * (value - Average);
+            }
+        }
+
+        private static double ElapsedMilliseconds(long start) =>
+            (Stopwatch.GetTimestamp() - start) * 1000.0 / Stopwatch.Frequency;
 
         /// <summary>
         /// Called when the camera arbiter applies a new effective resolution. The Meta SDK's
@@ -192,12 +313,15 @@ namespace QuestX.QuestX.AprilTag
         {
             try
             {
-                if (cameraAccess?.Intrinsics == null || poseLibSolver == null)
+                if (cameraAccess == null)
                 {
                     return false;
                 }
 
-                poseLibSolver.RefreshIntrinsics(cameraAccess.Intrinsics);
+                // The worker applies these to PoseLib before solving the next frame that
+                // carries this version.
+                cachedIntrinsics = cameraAccess.Intrinsics;
+                cachedIntrinsicsVersion++;
                 cachedIntrinsicsResolution = new Vector2Int(targetWidth, targetHeight);
                 intrinsicsStale = false;
                 QueuedLogger.Log($"PoseLib intrinsics refreshed for {targetWidth}x{targetHeight}");
@@ -241,21 +365,31 @@ namespace QuestX.QuestX.AprilTag
                     return;
                 }
 
+                // A previous worker that did not stop in time may still hold the detector and a
+                // frame buffer; starting another would share them. Free them if it has exited.
+                if (!StopWorker(TimeSpan.Zero))
+                {
+                    QueuedLogger.LogError(
+                        "AprilTag detector enable requested while the previous detection worker is still running; ignoring."
+                    );
+                    return;
+                }
+
                 try
                 {
-                    SetDetector(CreateDetector(detectorBackend));
+                    SetDetector(CreateDetector(detectorBackend), detectorBackend);
                 }
                 catch (Exception ex)
                 {
                     QueuedLogger.LogError($"Failed to allocate tag detector: {ex.Message}");
-                    SetDetector(null);
+                    SetDetector(null, detectorBackend);
                     return;
                 }
 
                 // Reserve the camera at high priority. The arbiter will downgrade the
                 // passthrough stream's reservation if it conflicts. Reserve is async
                 // (posts to main thread); the coroutine waits for cameraAccess.enabled
-                // before calling GetColors so the early frames before the arbiter has
+                // before reading frames so the early frames before the arbiter has
                 // applied the reservation are skipped instead of crashing.
                 cameraArbiter.Reserve(
                     CameraArbiterRequesterId,
@@ -265,6 +399,14 @@ namespace QuestX.QuestX.AprilTag
 
                 intrinsicsStale = true;
                 nextFrameExposureSeconds = 0;
+                nextMeasurementLogAtMs = 0;
+                Interlocked.Increment(ref pipelineGeneration);
+                requestedBackend = (int)detectorBackend;
+                worker = new LatestOnlyWorker<FrameSlot>(
+                    "AprilTag detection",
+                    ProcessFrameOnWorker,
+                    ReleaseSlot
+                );
                 detectorActive = true;
                 Overlay.SetEnabled(true);
                 captureCoroutine = coroutineHost.StartCoroutine(AprilTagFrameCaptureCoroutine());
@@ -281,13 +423,12 @@ namespace QuestX.QuestX.AprilTag
                     return;
                 }
 
-                // Flip the active flag FIRST so the coroutine breaks cleanly on its
-                // next iteration without touching the detector or family.
+                // Flip the active flag FIRST so the coroutine and readback callbacks stop
+                // feeding the worker.
                 detectorActive = false;
+                Interlocked.Increment(ref pipelineGeneration);
                 Overlay.SetEnabled(false);
                 Scene.Clear();
-                overlayCompressor?.Dispose();
-                overlayCompressor = null;
 
                 if (captureCoroutine != null)
                 {
@@ -306,20 +447,87 @@ namespace QuestX.QuestX.AprilTag
                     );
                 }
 
-                try
-                {
-                    tagDetector?.Dispose();
-                }
-                catch (Exception ex)
-                {
-                    QueuedLogger.LogError(
-                        $"AprilTag detector disable: detector dispose failed: {ex.Message}"
-                    );
-                }
-                SetDetector(null);
+                StopWorker(WorkerStopTimeout);
                 RecordOutcome("Detector disabled", "");
                 QueuedLogger.Log("AprilTagDetector Disabled");
             }
+        }
+
+        /// <summary>
+        /// Stops the detector and frees everything it holds. Call when the app shuts down.
+        /// </summary>
+        public void Shutdown()
+        {
+            if (detectorActive)
+            {
+                OnEnableAprilTagDetectorChanged(false);
+            }
+            else
+            {
+                StopWorker(WorkerStopTimeout);
+            }
+        }
+
+        /// <summary>
+        /// Stops the worker after its current frame, then frees the detector, the preview encoder
+        /// and the frame buffers. If the worker is stuck in native code, its resources are left
+        /// allocated rather than freed underneath it, and a later call retries. Returns whether
+        /// no worker remains.
+        /// </summary>
+        private bool StopWorker(TimeSpan timeout)
+        {
+            if (worker == null)
+            {
+                return true;
+            }
+            if (!worker.Stop(timeout))
+            {
+                if (timeout > TimeSpan.Zero)
+                {
+                    QueuedLogger.LogError(
+                        $"AprilTag detection worker did not stop within {timeout.TotalSeconds:F0} s; "
+                            + "leaving its detector and frame buffers allocated."
+                    );
+                }
+                return false;
+            }
+            worker = null;
+
+            // The worker can no longer publish, so anything it produced for the stopped run
+            // goes now: queued measurements and a scene or preview frame published after
+            // disable cleared them.
+            while (completedMeasurements.TryDequeue(out _)) { }
+            if (!detectorActive)
+            {
+                Scene.Clear();
+                Overlay.Clear();
+            }
+
+            try
+            {
+                tagDetector?.Dispose();
+            }
+            catch (Exception ex)
+            {
+                QueuedLogger.LogError(
+                    $"AprilTag detector disable: detector dispose failed: {ex.Message}"
+                );
+            }
+            SetDetector(null, detectorBackend);
+            overlayCompressor?.Dispose();
+            overlayCompressor = null;
+            overlayRotationBuffer = null;
+
+            lock (slotLock)
+            {
+                foreach (var slot in frameSlots)
+                {
+                    // Waits for any copy still in flight, since the GPU writes into the buffer.
+                    slot.Readback.Dispose();
+                    slot.State = SlotState.Free;
+                }
+            }
+            return true;
         }
 
         /// <summary>
@@ -352,27 +560,36 @@ namespace QuestX.QuestX.AprilTag
             return new LibAprilTagDetector();
         }
 
-        private void SetDetector(ITagDetector detector)
+        private void SetDetector(ITagDetector detector, TagDetectorBackend backend)
         {
             tagDetector = detector;
+            runningBackend = backend;
             lock (diagnosticsLock)
             {
                 detectorName = detector?.Name ?? "";
-                lastDetectMilliseconds = 0;
-                averageDetectMilliseconds = 0;
+                detectTime = default;
             }
         }
 
         private void OnAprilTagDetectorBackendChanged(TagDetectorBackend backend)
         {
             detectorBackend = backend;
-            if (!detectorActive || tagDetector == null)
+            // The worker owns the detector while it runs; it swaps before its next frame.
+            requestedBackend = (int)backend;
+        }
+
+        /// <summary>
+        /// Worker thread. Switches to the requested backend; keeps the current one if the new
+        /// one cannot be allocated.
+        /// </summary>
+        private void ApplyRequestedBackend()
+        {
+            var backend = (TagDetectorBackend)requestedBackend;
+            if (tagDetector != null && backend == runningBackend)
             {
                 return;
             }
 
-            // Config events and the capture coroutine both run on the Unity main thread, so
-            // the swap cannot interleave with a Detect call.
             ITagDetector replacement;
             try
             {
@@ -381,17 +598,18 @@ namespace QuestX.QuestX.AprilTag
             catch (Exception ex)
             {
                 QueuedLogger.LogError(
-                    $"Failed to allocate {backend} tag detector; keeping {tagDetector.Name}. {ex.Message}"
+                    $"Failed to allocate {backend} tag detector; keeping {tagDetector?.Name ?? "none"}. {ex.Message}"
                 );
+                runningBackend = backend;
                 return;
             }
 
             var previous = tagDetector;
-            SetDetector(replacement);
+            SetDetector(replacement, backend);
             Overlay.Clear();
             try
             {
-                previous.Dispose();
+                previous?.Dispose();
             }
             catch (Exception ex)
             {
@@ -434,10 +652,8 @@ namespace QuestX.QuestX.AprilTag
             }
 
             frameDelaySeconds = 1.0f / configuration.Framerate;
-            // Rebuild the ignore set on each config change. The capture coroutine reads
-            // ignoredIdSet on every frame; replacing the reference atomically is safe
-            // because both reads and writes happen on the Unity main thread (the coroutine
-            // and this event handler are both main-thread).
+            // Replace, never mutate: frames already handed to the worker keep the set they
+            // were captured with.
             ignoredIdSet =
                 configuration.IgnoredIds == null
                     ? new HashSet<int>()
@@ -475,8 +691,16 @@ namespace QuestX.QuestX.AprilTag
                     LastAmbiguity = lastAmbiguity,
                     LastReprojectionErrorPixels = lastReprojectionErrorPixels,
                     DetectorName = detectorName,
-                    LastDetectMilliseconds = lastDetectMilliseconds,
-                    AverageDetectMilliseconds = averageDetectMilliseconds,
+                    LastDetectMilliseconds = detectTime.Last,
+                    AverageDetectMilliseconds = detectTime.Average,
+                    AverageReadbackMilliseconds = readbackTime.Average,
+                    AverageSolveMilliseconds = solveTime.Average,
+                    AveragePreviewMilliseconds = previewTime.Average,
+                    AverageLatencyMilliseconds = latency.Average,
+                    CameraFramesPerSecond = cameraFramesPerSecond,
+                    ProcessedFramesPerSecond = processedFramesPerSecond,
+                    MeasurementsPerSecond = measurementsPerSecond,
+                    BusyFrameCount = busyFrameCount,
                 };
             }
         }
@@ -487,19 +711,21 @@ namespace QuestX.QuestX.AprilTag
         /// sleeping a full period after the work instead landed on every second or third
         /// frame (about 23 Hz). The schedule advances by whole periods so rates that don't
         /// divide the camera's (24 Hz) still average out, and re-anchors on this frame after a
-        /// stall or a timestamp jump. Returns whether the frame should be processed.
+        /// stall or a timestamp jump.
         /// </summary>
         private bool IsFrameDue(double exposureSeconds)
         {
+            double early = nextFrameExposureSeconds - exposureSeconds;
+            return !(early > FrameScheduleToleranceSeconds && early <= frameDelaySeconds);
+        }
+
+        /// <summary>Advances the schedule past a frame that <see cref="IsFrameDue"/> accepted.</summary>
+        private void TakeFrame(double exposureSeconds)
+        {
             double period = frameDelaySeconds;
             double early = nextFrameExposureSeconds - exposureSeconds;
-            if (early > FrameScheduleToleranceSeconds && early <= period)
-            {
-                return false;
-            }
             nextFrameExposureSeconds =
                 (Math.Abs(early) > period ? exposureSeconds : nextFrameExposureSeconds) + period;
-            return true;
         }
 
         private void RecordOutcome(string outcome, string reason)
@@ -511,14 +737,79 @@ namespace QuestX.QuestX.AprilTag
             }
         }
 
+        private void RecordCameraFailure(string reason, double appTimestamp)
+        {
+            lock (diagnosticsLock)
+            {
+                cameraFailureCount++;
+            }
+            RecordOutcome("Camera capture failed", reason);
+            Overlay.Clear();
+
+            // Camera access can transiently fail after a resolution change, cable
+            // disturbance, or Meta service hiccup. Keep the detector alive and
+            // periodically reassert the arbiter's winning reservation.
+            if (appTimestamp - lastCameraRecoveryAppTimestamp >= 5.0)
+            {
+                lastCameraRecoveryAppTimestamp = appTimestamp;
+                QueuedLogger.LogError(
+                    $"AprilTag camera capture failed; retrying and reapplying camera configuration. {reason}"
+                );
+                cameraArbiter.ReapplyCurrentResolution();
+            }
+        }
+
+        private FrameSlot TakeFreeSlot()
+        {
+            lock (slotLock)
+            {
+                foreach (var slot in frameSlots)
+                {
+                    if (slot.State == SlotState.Free && !slot.Readback.InFlight)
+                    {
+                        slot.State = SlotState.ReadingBack;
+                        return slot;
+                    }
+                }
+            }
+            return null;
+        }
+
+        private bool HasFreeSlot()
+        {
+            lock (slotLock)
+            {
+                foreach (var slot in frameSlots)
+                {
+                    if (slot.State == SlotState.Free && !slot.Readback.InFlight)
+                    {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        /// <summary>Returns a frame's buffer to the pool. Any thread.</summary>
+        private void ReleaseSlot(FrameSlot slot)
+        {
+            lock (slotLock)
+            {
+                slot.State = SlotState.Free;
+            }
+        }
+
         private IEnumerator AprilTagFrameCaptureCoroutine()
         {
             while (true)
             {
-                // Bail out cleanly if the detector was disabled between iterations. Checked
-                // BEFORE any cameraAccess / detector access so a torn-down detector cannot
-                // be touched on a coroutine that is mid-iteration when disable runs.
-                if (!detectorActive || tagDetector == null)
+                // Publish what the worker finished since the last frame, on the main thread
+                // where subscribers expect it.
+                PublishCompletedMeasurements();
+                UpdateRates();
+
+                // Bail out cleanly if the detector was disabled between iterations.
+                if (!detectorActive || worker == null)
                 {
                     yield break;
                 }
@@ -526,34 +817,27 @@ namespace QuestX.QuestX.AprilTag
                 // The camera arbiter applies cameraAccess.enabled = true on a Post()-queued
                 // main-thread callback, but StartCoroutine runs the first MoveNext()
                 // synchronously. If the very first iteration runs before the arbiter has
-                // dispatched, the camera is still off; skip the iteration instead of feeding
-                // an uninitialized GetColors() result into the native detector.
+                // dispatched, the camera is still off; skip the iteration.
                 if (!cameraAccess.enabled)
                 {
                     yield return new WaitForSeconds(frameDelaySeconds);
                     continue;
                 }
 
-                // Skip iterations where the SDK has not yet delivered a new frame this
-                // Unity Update. Calling GetColors() anyway would re-trigger an
-                // AsyncGPUReadback against the same texture and pile work onto the
-                // render thread, which causes the Meta SDK's
-                // "MRUK Shared: PCA: previous command buffer is still executing"
-                // warning. Detection rate is therefore implicitly capped at the
-                // camera's actual delivery rate (~60 Hz on Quest 3), which is what
-                // we want.
+                // Only a new camera image is worth reading back; one readback per image also
+                // keeps GPU copies from piling onto the render thread.
                 if (!cameraAccess.IsUpdatedThisFrame)
                 {
                     yield return null;
                     continue;
                 }
+                cameraUpdateCount++;
 
                 // The camera timestamp is the hardware exposure time in UTC. Convert its
                 // age into both app-time and NT-time domains so the robot receives the
-                // measurement time rather than the later Unity processing time. Clamp the
+                // measurement time rather than the later processing time. Clamp the
                 // age because the wall clock can step and a bad timestamp should not poison
                 // the robot estimator's history buffer.
-                double overlayCaptureTime = AprilTagOverlay.MonotonicMilliseconds();
                 double exposureAgeSeconds = (DateTime.UtcNow - cameraAccess.Timestamp).TotalSeconds;
                 if (exposureAgeSeconds < -0.01 || exposureAgeSeconds > 0.5)
                 {
@@ -565,90 +849,37 @@ namespace QuestX.QuestX.AprilTag
                     continue;
                 }
                 exposureAgeSeconds = Math.Max(0.0, exposureAgeSeconds);
-                if (!IsFrameDue(cameraAccess.Timestamp.Ticks / (double)TimeSpan.TicksPerSecond))
+                double exposureSeconds =
+                    cameraAccess.Timestamp.Ticks / (double)TimeSpan.TicksPerSecond;
+                if (!IsFrameDue(exposureSeconds))
                 {
                     yield return null;
                     continue;
                 }
+
+                // Both buffers are still being read back or detected. Drop this frame without
+                // advancing the schedule, so the next camera frame is taken once one frees.
+                if (!HasFreeSlot())
+                {
+                    busyFrameCount++;
+                    yield return null;
+                    continue;
+                }
+
                 double captureAppTimestamp = Math.Max(0.0, Time.timeAsDouble - exposureAgeSeconds);
                 long captureTimestampMicros =
                     captureTimestampProvider() - (long)Math.Round(exposureAgeSeconds * 1_000_000.0);
-                NativeArray<Color32> colors = default;
-                string captureFailureReason = null;
+                double capturedAtMs =
+                    AprilTagOverlay.MonotonicMilliseconds() - exposureAgeSeconds * 1000.0;
 
-                try
-                {
-                    colors = cameraAccess.GetColors();
-                }
-                catch (Exception ex)
-                {
-                    captureFailureReason = ex.Message;
-                    lock (diagnosticsLock)
-                    {
-                        cameraFailureCount++;
-                    }
-                    RecordOutcome("Camera capture failed", ex.Message);
-                    Overlay.Clear();
-
-                    // Camera access can transiently fail after a resolution change, cable
-                    // disturbance, or Meta service hiccup. Keep the detector alive and
-                    // periodically reassert the arbiter's winning reservation.
-                    if (captureAppTimestamp - lastCameraRecoveryAppTimestamp >= 5.0)
-                    {
-                        lastCameraRecoveryAppTimestamp = captureAppTimestamp;
-                        QueuedLogger.LogError(
-                            $"AprilTag camera capture failed; retrying and reapplying camera configuration. {ex.Message}"
-                        );
-                        cameraArbiter.ReapplyCurrentResolution();
-                    }
-                }
-
-                if (captureFailureReason != null)
-                {
-                    yield return new WaitForSeconds(frameDelaySeconds);
-                    continue;
-                }
-
-                // Validate that we got a frame at all.
-                if (!colors.IsCreated || colors.Length == 0)
-                {
-                    RecordOutcome("Camera frame unavailable", "Camera returned an empty buffer");
-                    yield return new WaitForSeconds(frameDelaySeconds);
-                    continue;
-                }
-
-                lock (diagnosticsLock)
-                {
-                    cameraFrameCount++;
-                }
-
-                // The image is CurrentResolution.x by CurrentResolution.y pixels.
-                //
-                // Note: colors.Length is intentionally NOT used to derive the image
-                // size. The Meta SDK over-allocates the readback buffer by 4x (see
-                // PassthroughCameraAccess.GetColors at SDK v6d21b459: it allocates
-                // CurrentResolution.x * CurrentResolution.y * 4 Color32 elements
-                // instead of CurrentResolution.x * CurrentResolution.y). Only the
-                // first CurrentResolution.x * CurrentResolution.y elements contain
-                // valid image data; the rest is uninitialized GPU memory. Treating
-                // the whole buffer as a larger image (e.g. 2560x2560 for a 1280x1280
-                // request) causes the AprilTag detector to produce false-positive
-                // decodings from the garbage region, which then poison PoseLib with
-                // a phantom second tag and tank the RANSAC inlier ratio.
+                // The texture is CurrentResolution.x by CurrentResolution.y pixels; the
+                // readback is checked against it so a frame from before a mode change is
+                // never solved with the new intrinsics.
                 Vector2Int currentRes = cameraAccess.CurrentResolution;
                 int actualW = currentRes.x;
                 int actualH = currentRes.y;
                 if (actualW <= 0 || actualH <= 0)
                 {
-                    yield return new WaitForSeconds(frameDelaySeconds);
-                    continue;
-                }
-                if (colors.Length < actualW * actualH)
-                {
-                    QueuedLogger.LogWarning(
-                        $"PassthroughCamera frame buffer too small: colors.Length={colors.Length} "
-                            + $"< {actualW}x{actualH}={actualW * actualH}. Skipping frame."
-                    );
                     yield return new WaitForSeconds(frameDelaySeconds);
                     continue;
                 }
@@ -676,392 +907,622 @@ namespace QuestX.QuestX.AprilTag
                     continue;
                 }
 
-                // The backend converts the readback to grayscale (flipped to a top-left
-                // origin) and copies its results into managed TagDetections, so no native
-                // result memory outlives this call.
-                bool converted = false;
-                bool detectFailed = false;
-                long detectStart = Stopwatch.GetTimestamp();
+                Texture texture = null;
+                string captureFailureReason = null;
                 try
                 {
-                    converted = tagDetector.Detect(colors, actualW, actualH, detections);
+                    texture = cameraAccess.GetTexture();
                 }
                 catch (Exception ex)
                 {
-                    QueuedLogger.LogError($"{tagDetector.Name} tag detector threw: {ex.Message}");
-                    detectFailed = true;
+                    captureFailureReason = ex.Message;
                 }
-                if (detectFailed)
+                if (texture == null || texture.width != actualW || texture.height != actualH)
                 {
-                    Overlay.Clear();
-                    RecordOutcome(
-                        "Detection failed",
-                        $"{tagDetector.Name} detector did not return results"
-                    );
-                    yield return new WaitForSeconds(frameDelaySeconds);
-                    continue;
-                }
-
-                // A null/empty readback (e.g. the camera was just enabled and hasn't produced
-                // a frame yet) is skipped cleanly.
-                if (!converted)
-                {
-                    yield return new WaitForSeconds(frameDelaySeconds);
-                    continue;
-                }
-
-                // Grayscale conversion plus detection, for the status page.
-                double detectMilliseconds =
-                    (Stopwatch.GetTimestamp() - detectStart) * 1000.0 / Stopwatch.Frequency;
-                lock (diagnosticsLock)
-                {
-                    lastDetectMilliseconds = detectMilliseconds;
-                    averageDetectMilliseconds =
-                        averageDetectMilliseconds <= 0
-                            ? detectMilliseconds
-                            : averageDetectMilliseconds
-                                + 0.05 * (detectMilliseconds - averageDetectMilliseconds);
-                }
-
-                // Apply two filters before counting / solving:
-                //   1) User's ignored-IDs blacklist (empty set keeps every detection).
-                //   2) Drop detections whose ID is not in the loaded field layout.
-                //      tag36h11 readily produces false positives at high resolution
-                //      (e.g. lab logs show ID 554 decoding from random texture). Feeding
-                //      such an ID to PoseLib mismatches the 2D/3D corner buffer lengths
-                //      (8 push, 0 push) and produces a garbage pose tens of meters out,
-                //      which the estimator then has to reject as a position jump.
-                var kept = new List<TagDetection>(detections.Count);
-                var overlayTags =
-                    Overlay.IsRequested
-                    && AprilTagOverlay.MonotonicMilliseconds() >= nextOverlayFrameAt
-                        ? new AprilTagOverlayTag[detections.Count]
-                        : null;
-                int overlayIndex = 0;
-                int ignoredCount = 0;
-                int unknownIdCount = 0;
-                var rawIds = new List<int>();
-                var sceneTags = Scene.IsRequested
-                    ? new List<AprilTagSceneTag>(detections.Count)
-                    : null;
-                foreach (var detection in detections)
-                {
-                    rawIds.Add(detection.Id);
-                    // Copy raw detections, including ignored/unknown IDs, before pose
-                    // filtering. An outline means "detected", not "accepted pose".
-                    // The preview encodes the detector's own image, so corners need no flip,
-                    // only the same upright rotation as the image.
-                    if (overlayTags != null)
-                    {
-                        overlayTags[overlayIndex++] = new AprilTagOverlayTag(
-                            detection.Id,
-                            ToOverlayPoint(detection.CornerBottomRight0, actualW, actualH),
-                            ToOverlayPoint(detection.CornerBottomLeft1, actualW, actualH),
-                            ToOverlayPoint(detection.CornerUpperLeft2, actualW, actualH),
-                            ToOverlayPoint(detection.CornerUpperRight3, actualW, actualH)
-                        );
-                    }
-                    var status =
-                        ignoredIdSet.Contains(detection.Id) ? AprilTagSceneTagStatus.Ignored
-                        : aprilTagFieldLayout.ContainsId(detection.Id) ? AprilTagSceneTagStatus.Used
-                        : AprilTagSceneTagStatus.Unknown;
-                    sceneTags?.Add(BuildSceneTag(detection, status));
-                    if (status == AprilTagSceneTagStatus.Ignored)
-                    {
-                        ignoredCount++;
-                        continue;
-                    }
-                    if (status == AprilTagSceneTagStatus.Unknown)
-                    {
-                        unknownIdCount++;
-                        continue;
-                    }
-                    kept.Add(detection);
-                }
-
-                lock (diagnosticsLock)
-                    detectedIds = rawIds.ToArray();
-
-                if (sceneTags != null)
-                {
-                    var lensOffset = cameraAccess.Intrinsics.LensOffset;
-                    Scene.Publish(
-                        new AprilTagSceneFrame(
-                            overlayCaptureTime - exposureAgeSeconds * 1000.0,
-                            actualW,
-                            actualH,
-                            new[]
-                            {
-                                poseLibSolver.Intrinsics[0],
-                                poseLibSolver.Intrinsics[1],
-                                poseLibSolver.Intrinsics[2],
-                                poseLibSolver.Intrinsics[3],
-                            },
-                            new Pose3d(
-                                Conversions.UnityToFrc3d(lensOffset.position, lensOffset.rotation)
+                    RecordCameraFailure(
+                        captureFailureReason
+                            ?? (
+                                texture == null
+                                    ? "The camera returned no texture"
+                                    : $"Camera texture is {texture.width}x{texture.height}, expected {actualW}x{actualH}"
                             ),
-                            sceneTags.ToArray()
-                        )
+                        captureAppTimestamp
                     );
+                    yield return new WaitForSeconds(frameDelaySeconds);
+                    continue;
                 }
 
-                if (overlayTags != null)
+                var slot = TakeFreeSlot();
+                if (slot == null)
                 {
-                    PublishOverlayFrame(
-                        tagDetector.Image,
-                        overlayCaptureTime - exposureAgeSeconds * 1000.0,
-                        overlayTags
-                    );
-                }
-
-                if (!aprilTagFieldLayout.IsLoaded)
-                {
-                    RecordOutcome("Field layout unavailable", aprilTagFieldLayout.LoadError);
+                    busyFrameCount++;
                     yield return null;
                     continue;
                 }
-
-                if (kept.Count >= minimumNumberOfTags)
+                TakeFrame(exposureSeconds);
+                slot.Generation = Volatile.Read(ref pipelineGeneration);
+                slot.RequestedAt = Stopwatch.GetTimestamp();
+                slot.CaptureTimestampMicros = captureTimestampMicros;
+                slot.CaptureAppTimestamp = captureAppTimestamp;
+                slot.CapturedAtMs = capturedAtMs;
+                slot.Width = actualW;
+                slot.Height = actualH;
+                slot.Intrinsics = cachedIntrinsics;
+                slot.IntrinsicsVersion = cachedIntrinsicsVersion;
+                slot.LensOffset = cameraAccess.Intrinsics.LensOffset;
+                slot.IgnoredIds = ignoredIdSet;
+                slot.MaxDistance = maxDistance;
+                slot.MinimumNumberOfTags = minimumNumberOfTags;
+                slot.Orientation = orientation;
+                slot.BuildScene = Scene.IsRequested;
+                slot.OverlayQuality = overlayQuality;
+                double now = AprilTagOverlay.MonotonicMilliseconds();
+                double overlayRetryAt;
+                lock (diagnosticsLock)
                 {
-                    QueuedLogger.Log(
-                        $"{kept.Count} usable tag(s) detected "
-                            + $"(ignore-set hides {ignoredCount}, "
-                            + $"unknown-IDs dropped {unknownIdCount})"
-                    );
-
-                    var poseLibResult = poseLibSolver.PoseLibSolve(kept);
-
-                    lock (diagnosticsLock)
-                    {
-                        solveCount++;
-                    }
-
-                    if (poseLibResult != null)
-                    {
-                        var (frcPos, frcRot) = Conversions.CvToFrc(poseLibResult.CameraPose);
-                        var measuredRotation = new Rotation3d(
-                            new Geometry.Quaternion(frcRot.w, frcRot.x, frcRot.y, frcRot.z)
-                        );
-
-                        var cameraPose = new Pose3d(
-                            new Translation3d(frcPos.x, frcPos.y, frcPos.z),
-                            measuredRotation
-                        );
-                        if (
-                            !AprilTagPoseValidation.TryValidate(
-                                cameraPose,
-                                aprilTagFieldLayout.Field,
-                                poseLibResult.AcceptedPoints,
-                                poseLibResult.TotalPoints,
-                                out string rejectedReason
-                            )
-                        )
-                        {
-                            RecordOutcome("Measurement rejected locally", rejectedReason);
-                            yield return null;
-                            continue;
-                        }
-                        // Keep the native point counts above for the original robust-fit gate.
-                        // Every later tag-based check and published observation uses exactly the
-                        // complete tags that contributed quality and covariance at that pose.
-                        var accepted = new List<TagDetection>(
-                            poseLibResult.AcceptedTagIndices.Count
-                        );
-                        foreach (int index in poseLibResult.AcceptedTagIndices)
-                        {
-                            accepted.Add(kept[index]);
-                        }
-                        kept = accepted;
-                        if (kept.Count < Math.Max(1, minimumNumberOfTags))
-                        {
-                            RecordOutcome(
-                                "Measurement rejected locally",
-                                $"Only {kept.Count} complete tag(s) pass the solved pose's reprojection threshold; "
-                                    + $"require {Math.Max(1, minimumNumberOfTags)}"
-                            );
-                            yield return null;
-                            continue;
-                        }
-                        bool facesCamera = true;
-                        foreach (var detection in kept)
-                        {
-                            if (
-                                !AprilTagPoseValidation.IsFacingCamera(
-                                    cameraPose,
-                                    aprilTagFieldLayout.GetTagPose(detection.Id)
-                                )
-                            )
-                            {
-                                facesCamera = false;
-                                break;
-                            }
-                        }
-                        if (!facesCamera)
-                        {
-                            RecordOutcome(
-                                "Measurement rejected locally",
-                                "Tag is behind the solved camera or the camera is behind the printed tag face"
-                            );
-                            yield return null;
-                            continue;
-                        }
-                        var quality = poseLibResult.Quality;
-                        if (!double.IsFinite(quality.ReprojectionErrorPixels))
-                        {
-                            RecordOutcome(
-                                "Measurement rejected locally",
-                                "Solved pose places an observed corner behind the camera"
-                            );
-                            yield return null;
-                            continue;
-                        }
-                        if (poseLibResult.Covariance == null)
-                        {
-                            RecordOutcome(
-                                "Measurement rejected locally",
-                                "Pose covariance is undefined for these tag corners"
-                            );
-                            yield return null;
-                            continue;
-                        }
-                        var headsetPose = AprilTagPoseValidation.CameraToHeadset(
-                            cameraPose,
-                            cameraAccess.Intrinsics.LensOffset
-                        );
-                        var headsetCovariance = AprilTagPoseValidation.CameraToHeadset(
-                            poseLibResult.Covariance,
-                            cameraAccess.Intrinsics.LensOffset
-                        );
-
-                        int tagCount = kept.Count;
-                        double inlierRatio =
-                            (poseLibResult.TotalPoints > 0)
-                                ? poseLibResult.AcceptedPoints / poseLibResult.TotalPoints
-                                : 0.0;
-
-                        // avgTagDistance is the mean camera-to-tag distance, not the camera's
-                        // distance from the field origin, so the maxDistance gate means what
-                        // the web UI says.
-                        var observations = BuildObservations(
-                            kept,
-                            quality.TagAmbiguities,
-                            cameraPose,
-                            headsetPose,
-                            actualW,
-                            actualH
-                        );
-                        double avgTagDistance = 0.0;
-                        foreach (var observation in observations)
-                        {
-                            avgTagDistance +=
-                                observation.CameraDistanceMeters / observations.Length;
-                        }
-
-                        if (avgTagDistance > maxDistance)
-                        {
-                            RecordOutcome(
-                                "Measurement rejected locally",
-                                $"Average tag distance {avgTagDistance:F2}m exceeds {maxDistance:F2}m"
-                            );
-                            QueuedLogger.Log(
-                                $"AprilTag observation rejected: avgTagDistance={avgTagDistance:F2}m "
-                                    + $"> maxDistance={maxDistance:F2}m"
-                            );
-                            yield return null;
-                            continue;
-                        }
-
-                        var tagIds = new int[kept.Count];
-                        for (int i = 0; i < kept.Count; i++)
-                        {
-                            tagIds[i] = kept[i].Id;
-                        }
-
-                        // Uncertainty comes from Napa's covariance model: the corners' geometry
-                        // (distance, viewing angle, tag count and spread), widened where the
-                        // planar mirror solution also fits. See AprilTagCovariance.
-                        var measurement = new AprilTagMeasurement(
-                            captureTimestampMicros,
-                            captureAppTimestamp,
-                            headsetPose,
-                            headsetCovariance,
-                            tagIds,
-                            // Native fit diagnostics retain all candidate corners. Tag IDs,
-                            // quality, distances and observations describe contributing tags.
-                            (int)poseLibResult.AcceptedPoints,
-                            poseLibResult.TotalPoints,
-                            inlierRatio,
-                            avgTagDistance,
-                            quality.Ambiguity,
-                            quality.ReprojectionErrorPixels,
-                            observations
-                        );
-
-                        try
-                        {
-                            MeasurementAvailable?.Invoke(measurement);
-                            lock (diagnosticsLock)
-                            {
-                                measurementCount++;
-                                lastMeasurementAppTimestamp = captureAppTimestamp;
-                                lastTagIds = tagIds;
-                                lastInlierCount = measurement.InlierCount;
-                                lastCornerCount = measurement.CornerCount;
-                                lastInlierRatio = inlierRatio;
-                                lastAverageTagDistanceMeters = avgTagDistance;
-                                lastLinearStdDevMeters = Math.Max(
-                                    measurement.XStdDevMeters,
-                                    measurement.YStdDevMeters
-                                );
-                                lastAmbiguity = quality.Ambiguity;
-                                lastReprojectionErrorPixels = quality.ReprojectionErrorPixels;
-                                lastOutcome = "Measurement published";
-                                lastReason = "";
-                            }
-
-                            QueuedLogger.Log(
-                                $"AprilTag measurement published: Pos({frcPos.x:F3}, {frcPos.y:F3}, {frcPos.z:F3}) "
-                                    + $"tags={tagCount} inliers={poseLibResult.AcceptedPoints}/{poseLibResult.TotalPoints} "
-                                    + $"ratio={inlierRatio:F2} dist={avgTagDistance:F2}m "
-                                    + $"stdDev=({measurement.XStdDevMeters:F4}, {measurement.YStdDevMeters:F4})m "
-                                    + $"yaw={measurement.YawStdDevRadians:F4}rad "
-                                    + $"ambiguity={quality.Ambiguity:F3} reprojection={quality.ReprojectionErrorPixels:F2}px"
-                            );
-                        }
-                        catch (Exception ex)
-                        {
-                            RecordOutcome("Measurement publish failed", ex.Message);
-                            QueuedLogger.LogError(
-                                $"AprilTag measurement subscriber threw: {ex.Message}"
-                            );
-                        }
-                    }
-                    else
-                    {
-                        RecordOutcome("Pose solve failed", "PoseLib returned no camera pose");
-                    }
+                    overlayRetryAt = overlayRetryAtMs;
                 }
-                else
+                slot.BuildOverlay =
+                    Overlay.IsRequested
+                    && now >= overlayRetryAt
+                    && FrameCadence.TryTake(now, overlayFrameIntervalMs, ref nextOverlayFrameAt);
+
+                if (
+                    !slot.Readback.TryRequest(
+                        texture,
+                        succeeded => OnReadbackCompleted(slot, succeeded),
+                        out string requestFailure
+                    )
+                )
                 {
-                    RecordOutcome(
-                        "Insufficient tags",
-                        $"Raw IDs [{string.Join(",", rawIds)}], usable {kept.Count}, unknown {unknownIdCount}, "
-                            + $"ignored {ignoredCount}, minimum {minimumNumberOfTags}, layout {aprilTagFieldLayout.LoadedFile}"
-                    );
+                    ReleaseSlot(slot);
+                    RecordCameraFailure(requestFailure, captureAppTimestamp);
+                    yield return new WaitForSeconds(frameDelaySeconds);
+                    continue;
                 }
 
                 yield return null;
             }
         }
 
-        private AprilTagOverlayPoint ToOverlayPoint(Point2D point, int width, int height)
+        /// <summary>Main thread, when a frame's GPU copy finishes.</summary>
+        private void OnReadbackCompleted(FrameSlot slot, bool succeeded)
+        {
+            if (
+                !detectorActive
+                || slot.Generation != Volatile.Read(ref pipelineGeneration)
+                || worker == null
+            )
+            {
+                ReleaseSlot(slot);
+                return;
+            }
+            if (!succeeded)
+            {
+                ReleaseSlot(slot);
+                RecordCameraFailure(
+                    "The GPU readback of the camera frame failed",
+                    Time.timeAsDouble
+                );
+                return;
+            }
+
+            lock (diagnosticsLock)
+            {
+                cameraFrameCount++;
+                readbackTime.Add(ElapsedMilliseconds(slot.RequestedAt));
+            }
+            lock (slotLock)
+            {
+                slot.State = SlotState.Processing;
+            }
+            // A frame still waiting for the worker is replaced: the newest one is worth more.
+            worker.Post(slot);
+        }
+
+        /// <summary>Raises <see cref="MeasurementAvailable"/> for measurements the worker built.</summary>
+        private void PublishCompletedMeasurements()
+        {
+            while (completedMeasurements.TryDequeue(out var completed))
+            {
+                // A worker that outlived its run (see StopWorker) must not publish into a new one.
+                if (completed.Generation != Volatile.Read(ref pipelineGeneration))
+                {
+                    continue;
+                }
+                var measurement = completed.Measurement;
+                double ageMilliseconds = (Time.timeAsDouble - measurement.AppTimestamp) * 1000.0;
+                try
+                {
+                    MeasurementAvailable?.Invoke(measurement);
+                    lock (diagnosticsLock)
+                    {
+                        measurementCount++;
+                        latency.Add(ageMilliseconds);
+                        lastMeasurementAppTimestamp = measurement.AppTimestamp;
+                        lastTagIds = measurement.TagIds;
+                        lastInlierCount = measurement.InlierCount;
+                        lastCornerCount = measurement.CornerCount;
+                        lastInlierRatio = measurement.InlierRatio;
+                        lastAverageTagDistanceMeters = measurement.AverageTagDistanceMeters;
+                        lastLinearStdDevMeters = Math.Max(
+                            measurement.XStdDevMeters,
+                            measurement.YStdDevMeters
+                        );
+                        lastAmbiguity = measurement.Ambiguity;
+                        lastReprojectionErrorPixels = measurement.ReprojectionErrorPixels;
+                        lastOutcome = "Measurement published";
+                        lastReason = "";
+                    }
+
+                    double nowMs = AprilTagOverlay.MonotonicMilliseconds();
+                    if (debugLogging || nowMs >= nextMeasurementLogAtMs)
+                    {
+                        nextMeasurementLogAtMs = nowMs + 1000.0;
+                        var position = measurement.Pose.Translation;
+                        QueuedLogger.Log(
+                            $"AprilTag measurement published: headset ({position.X:F3}, {position.Y:F3}, {position.Z:F3}) "
+                                + $"tags={measurement.TagIds.Length} inliers={measurement.InlierCount}/{measurement.CornerCount} "
+                                + $"ratio={measurement.InlierRatio:F2} dist={measurement.AverageTagDistanceMeters:F2}m "
+                                + $"stdDev=({measurement.XStdDevMeters:F4}, {measurement.YStdDevMeters:F4})m "
+                                + $"yaw={measurement.YawStdDevRadians:F4}rad "
+                                + $"ambiguity={measurement.Ambiguity:F3} reprojection={measurement.ReprojectionErrorPixels:F2}px "
+                                + $"latency={ageMilliseconds:F0}ms"
+                        );
+                    }
+                }
+                catch (Exception ex)
+                {
+                    RecordOutcome("Measurement publish failed", ex.Message);
+                    QueuedLogger.LogError($"AprilTag measurement subscriber threw: {ex.Message}");
+                }
+            }
+        }
+
+        /// <summary>Main thread. Refreshes the per-second rates about once per second.</summary>
+        private void UpdateRates()
+        {
+            double seconds = ElapsedMilliseconds(rateWindowStart) / 1000.0;
+            if (seconds < 1.0)
+            {
+                return;
+            }
+            long processed = Interlocked.Read(ref processedFrameCount);
+            lock (diagnosticsLock)
+            {
+                cameraFramesPerSecond = (cameraUpdateCount - rateWindowCameraUpdates) / seconds;
+                processedFramesPerSecond = (processed - rateWindowProcessed) / seconds;
+                measurementsPerSecond = (measurementCount - rateWindowMeasurements) / seconds;
+                rateWindowMeasurements = measurementCount;
+            }
+            rateWindowCameraUpdates = cameraUpdateCount;
+            rateWindowProcessed = processed;
+            rateWindowStart = Stopwatch.GetTimestamp();
+        }
+
+        /// <summary>Worker thread: one frame from readback to measurement.</summary>
+        private void ProcessFrameOnWorker(FrameSlot slot)
+        {
+            try
+            {
+                ProcessFrame(slot);
+            }
+            catch (Exception ex)
+            {
+                Overlay.Clear();
+                RecordOutcome("Detection failed", ex.Message);
+                QueuedLogger.LogError($"AprilTag frame processing failed: {ex}");
+            }
+            finally
+            {
+                Interlocked.Increment(ref processedFrameCount);
+                ReleaseSlot(slot);
+            }
+        }
+
+        /// <summary>Worker thread. Whether the detector was disabled or restarted since this frame.</summary>
+        private bool IsStale(FrameSlot slot) =>
+            slot.Generation != Volatile.Read(ref pipelineGeneration);
+
+        private void ProcessFrame(FrameSlot slot)
+        {
+            if (IsStale(slot))
+            {
+                return;
+            }
+            ApplyRequestedBackend();
+            if (tagDetector == null)
+            {
+                RecordOutcome("Detection failed", "No tag detector is allocated");
+                return;
+            }
+            if (slot.IntrinsicsVersion != appliedIntrinsicsVersion)
+            {
+                poseLibSolver.RefreshIntrinsics(slot.Intrinsics);
+                appliedIntrinsicsVersion = slot.IntrinsicsVersion;
+            }
+
+            int actualW = slot.Width;
+            int actualH = slot.Height;
+            var readback = slot.Readback;
+
+            // The backend converts the readback to grayscale (flipped to a top-left
+            // origin) and copies its results into managed TagDetections, so no native
+            // result memory outlives this call.
+            long detectStart = Stopwatch.GetTimestamp();
+            bool converted;
+            try
+            {
+                converted = tagDetector.Detect(
+                    readback.Data,
+                    readback.ByteCount,
+                    actualW,
+                    actualH,
+                    detections
+                );
+            }
+            catch (Exception ex)
+            {
+                QueuedLogger.LogError($"{tagDetector.Name} tag detector threw: {ex.Message}");
+                Overlay.Clear();
+                RecordOutcome(
+                    "Detection failed",
+                    $"{tagDetector.Name} detector did not return results"
+                );
+                return;
+            }
+
+            // A readback that is not a whole frame is skipped cleanly.
+            if (!converted)
+            {
+                return;
+            }
+
+            // Grayscale conversion plus detection, for the status page.
+            double detectMilliseconds = ElapsedMilliseconds(detectStart);
+            lock (diagnosticsLock)
+            {
+                detectTime.Add(detectMilliseconds);
+            }
+
+            // Apply two filters before counting / solving:
+            //   1) User's ignored-IDs blacklist (empty set keeps every detection).
+            //   2) Drop detections whose ID is not in the loaded field layout.
+            //      tag36h11 readily produces false positives at high resolution
+            //      (e.g. lab logs show ID 554 decoding from random texture). Feeding
+            //      such an ID to PoseLib mismatches the 2D/3D corner buffer lengths
+            //      (8 push, 0 push) and produces a garbage pose tens of meters out,
+            //      which the estimator then has to reject as a position jump.
+            var kept = new List<TagDetection>(detections.Count);
+            int ignoredCount = 0;
+            int unknownIdCount = 0;
+            var rawIds = new int[detections.Count];
+            for (int i = 0; i < detections.Count; i++)
+            {
+                var detection = detections[i];
+                rawIds[i] = detection.Id;
+                var status =
+                    slot.IgnoredIds.Contains(detection.Id) ? AprilTagSceneTagStatus.Ignored
+                    : aprilTagFieldLayout.ContainsId(detection.Id) ? AprilTagSceneTagStatus.Used
+                    : AprilTagSceneTagStatus.Unknown;
+                if (status == AprilTagSceneTagStatus.Ignored)
+                {
+                    ignoredCount++;
+                    continue;
+                }
+                if (status == AprilTagSceneTagStatus.Unknown)
+                {
+                    unknownIdCount++;
+                    continue;
+                }
+                kept.Add(detection);
+            }
+
+            lock (diagnosticsLock)
+                detectedIds = rawIds;
+
+            // Queue the robot measurement before single-tag display solves and JPEG encoding.
+            // Both views still use these exact detections and this frame's grayscale buffer.
+            try
+            {
+                ProcessMeasurement(slot, kept, rawIds, unknownIdCount, ignoredCount);
+            }
+            catch (Exception ex)
+            {
+                // Keep the raw detections visible when localization fails, just as for a
+                // rejected pose. Display work uses the original detections, not solve output.
+                RecordOutcome("Pose solve failed", ex.Message);
+                QueuedLogger.LogError($"AprilTag measurement processing failed: {ex}");
+            }
+            try
+            {
+                PublishFrameViews(slot);
+            }
+            catch (Exception ex)
+            {
+                // Display failures must not relabel a valid localization result as a detector
+                // failure. The measurement is already queued and remains publishable.
+                Scene.Clear();
+                Overlay.Clear();
+                QueuedLogger.LogError($"AprilTag preview processing failed: {ex.Message}");
+            }
+        }
+
+        private void ProcessMeasurement(
+            FrameSlot slot,
+            List<TagDetection> kept,
+            int[] rawIds,
+            int unknownIdCount,
+            int ignoredCount
+        )
+        {
+            if (IsStale(slot))
+            {
+                return;
+            }
+            if (!aprilTagFieldLayout.IsLoaded)
+            {
+                RecordOutcome("Field layout unavailable", aprilTagFieldLayout.LoadError);
+                return;
+            }
+
+            if (kept.Count < slot.MinimumNumberOfTags)
+            {
+                RecordOutcome(
+                    "Insufficient tags",
+                    $"Raw IDs [{string.Join(",", rawIds)}], usable {kept.Count}, unknown {unknownIdCount}, "
+                        + $"ignored {ignoredCount}, minimum {slot.MinimumNumberOfTags}, layout {aprilTagFieldLayout.LoadedFile}"
+                );
+                return;
+            }
+
+            long solveStart = Stopwatch.GetTimestamp();
+            var measurement = Solve(slot, kept, out string outcome, out string reason);
+            lock (diagnosticsLock)
+            {
+                solveTime.Add(ElapsedMilliseconds(solveStart));
+            }
+            if (measurement == null)
+            {
+                RecordOutcome(outcome, reason);
+                return;
+            }
+            completedMeasurements.Enqueue((slot.Generation, measurement));
+        }
+
+        /// <summary>Optional display work, after the measurement is ready for publication.</summary>
+        private void PublishFrameViews(FrameSlot slot)
+        {
+            if (IsStale(slot))
+            {
+                return;
+            }
+            // The viewer lease may have expired while this frame waited for the worker.
+            var sceneTags =
+                slot.BuildScene && Scene.IsRequested
+                    ? new AprilTagSceneTag[detections.Count]
+                    : null;
+            var overlayTags =
+                slot.BuildOverlay && Overlay.IsRequested
+                    ? new AprilTagOverlayTag[detections.Count]
+                    : null;
+            for (int i = 0; i < detections.Count; i++)
+            {
+                var detection = detections[i];
+                // Keep ignored and unknown tags visible even if this frame had no usable pose.
+                if (sceneTags != null)
+                {
+                    var status =
+                        slot.IgnoredIds.Contains(detection.Id) ? AprilTagSceneTagStatus.Ignored
+                        : aprilTagFieldLayout.ContainsId(detection.Id) ? AprilTagSceneTagStatus.Used
+                        : AprilTagSceneTagStatus.Unknown;
+                    sceneTags[i] = BuildSceneTag(detection, status);
+                }
+                if (overlayTags != null)
+                {
+                    overlayTags[i] = new AprilTagOverlayTag(
+                        detection.Id,
+                        ToOverlayPoint(detection.CornerBottomRight0, slot),
+                        ToOverlayPoint(detection.CornerBottomLeft1, slot),
+                        ToOverlayPoint(detection.CornerUpperLeft2, slot),
+                        ToOverlayPoint(detection.CornerUpperRight3, slot)
+                    );
+                }
+            }
+            // Disable invalidates the generation, then clears the scene and preview; a frame
+            // from before then must not refill them. Both check under their own lock.
+            if (sceneTags != null)
+            {
+                Scene.Publish(
+                    new AprilTagSceneFrame(
+                        slot.CapturedAtMs,
+                        slot.Width,
+                        slot.Height,
+                        new[]
+                        {
+                            poseLibSolver.Intrinsics[0],
+                            poseLibSolver.Intrinsics[1],
+                            poseLibSolver.Intrinsics[2],
+                            poseLibSolver.Intrinsics[3],
+                        },
+                        new Pose3d(
+                            Conversions.UnityToFrc3d(
+                                slot.LensOffset.position,
+                                slot.LensOffset.rotation
+                            )
+                        ),
+                        sceneTags
+                    ),
+                    () => !IsStale(slot)
+                );
+            }
+
+            if (overlayTags != null && !IsStale(slot))
+            {
+                PublishOverlayFrame(tagDetector.Image, slot, overlayTags);
+            }
+        }
+
+        /// <summary>
+        /// Worker thread. Solves the field pose from the usable tags and applies the local
+        /// validity checks. Returns null, with the outcome to report, when the frame yields no
+        /// measurement.
+        /// </summary>
+        private AprilTagMeasurement Solve(
+            FrameSlot slot,
+            List<TagDetection> kept,
+            out string outcome,
+            out string reason
+        )
+        {
+            outcome = "Measurement rejected locally";
+            var poseLibResult = poseLibSolver.PoseLibSolve(kept);
+
+            lock (diagnosticsLock)
+            {
+                solveCount++;
+            }
+
+            if (poseLibResult == null)
+            {
+                outcome = "Pose solve failed";
+                reason = "PoseLib returned no camera pose";
+                return null;
+            }
+
+            var (frcPos, frcRot) = Conversions.CvToFrc(poseLibResult.CameraPose);
+            var measuredRotation = new Rotation3d(
+                new Geometry.Quaternion(frcRot.w, frcRot.x, frcRot.y, frcRot.z)
+            );
+
+            var cameraPose = new Pose3d(
+                new Translation3d(frcPos.x, frcPos.y, frcPos.z),
+                measuredRotation
+            );
+            if (
+                !AprilTagPoseValidation.TryValidate(
+                    cameraPose,
+                    aprilTagFieldLayout.Field,
+                    poseLibResult.AcceptedPoints,
+                    poseLibResult.TotalPoints,
+                    out reason
+                )
+            )
+            {
+                return null;
+            }
+            // Keep the native point counts above for the original robust-fit gate.
+            // Every later tag-based check and published observation uses exactly the
+            // complete tags that contributed quality and covariance at that pose.
+            var accepted = new List<TagDetection>(poseLibResult.AcceptedTagIndices.Count);
+            foreach (int index in poseLibResult.AcceptedTagIndices)
+            {
+                accepted.Add(kept[index]);
+            }
+            kept = accepted;
+            int requiredTags = Math.Max(1, slot.MinimumNumberOfTags);
+            if (kept.Count < requiredTags)
+            {
+                reason =
+                    $"Only {kept.Count} complete tag(s) pass the solved pose's reprojection threshold; "
+                    + $"require {requiredTags}";
+                return null;
+            }
+            foreach (var detection in kept)
+            {
+                if (
+                    !AprilTagPoseValidation.IsFacingCamera(
+                        cameraPose,
+                        aprilTagFieldLayout.GetTagPose(detection.Id)
+                    )
+                )
+                {
+                    reason =
+                        "Tag is behind the solved camera or the camera is behind the printed tag face";
+                    return null;
+                }
+            }
+            var quality = poseLibResult.Quality;
+            if (!double.IsFinite(quality.ReprojectionErrorPixels))
+            {
+                reason = "Solved pose places an observed corner behind the camera";
+                return null;
+            }
+            if (poseLibResult.Covariance == null)
+            {
+                reason = "Pose covariance is undefined for these tag corners";
+                return null;
+            }
+            var headsetPose = AprilTagPoseValidation.CameraToHeadset(cameraPose, slot.LensOffset);
+            var headsetCovariance = AprilTagPoseValidation.CameraToHeadset(
+                poseLibResult.Covariance,
+                slot.LensOffset
+            );
+
+            double inlierRatio =
+                (poseLibResult.TotalPoints > 0)
+                    ? poseLibResult.AcceptedPoints / poseLibResult.TotalPoints
+                    : 0.0;
+
+            // avgTagDistance is the mean camera-to-tag distance, not the camera's
+            // distance from the field origin, so the maxDistance gate means what
+            // the web UI says.
+            var observations = BuildObservations(
+                kept,
+                quality.TagAmbiguities,
+                cameraPose,
+                headsetPose,
+                slot
+            );
+            double avgTagDistance = 0.0;
+            foreach (var observation in observations)
+            {
+                avgTagDistance += observation.CameraDistanceMeters / observations.Length;
+            }
+
+            if (avgTagDistance > slot.MaxDistance)
+            {
+                reason =
+                    $"Average tag distance {avgTagDistance:F2}m exceeds {slot.MaxDistance:F2}m";
+                return null;
+            }
+
+            var tagIds = new int[kept.Count];
+            for (int i = 0; i < kept.Count; i++)
+            {
+                tagIds[i] = kept[i].Id;
+            }
+
+            // Uncertainty comes from Napa's covariance model: the corners' geometry
+            // (distance, viewing angle, tag count and spread), widened where the
+            // planar mirror solution also fits. See AprilTagCovariance.
+            reason = "";
+            return new AprilTagMeasurement(
+                slot.CaptureTimestampMicros,
+                slot.CaptureAppTimestamp,
+                headsetPose,
+                headsetCovariance,
+                tagIds,
+                // Native fit diagnostics retain all candidate corners. Tag IDs,
+                // quality, distances and observations describe contributing tags.
+                (int)poseLibResult.AcceptedPoints,
+                poseLibResult.TotalPoints,
+                inlierRatio,
+                avgTagDistance,
+                quality.Ambiguity,
+                quality.ReprojectionErrorPixels,
+                observations
+            );
+        }
+
+        private static AprilTagOverlayPoint ToOverlayPoint(Point2D point, FrameSlot slot)
         {
             CameraOrientationMath.RotatePoint(
-                orientation,
+                slot.Orientation,
                 point.x,
                 point.y,
-                width,
-                height,
+                slot.Width,
+                slot.Height,
                 out double x,
                 out double y
             );
@@ -1110,7 +1571,7 @@ namespace QuestX.QuestX.AprilTag
 
         /// <summary>
         /// Describes each solved tag in detector order. Pixel coordinates have a top-left origin
-        /// (ImageU8 flips the readback), so "up" is decreasing y. Angles are then rotated to
+        /// (the detectors flip the readback), so "up" is decreasing y. Angles are then rotated to
         /// match the upright image for the configured orientation.
         /// </summary>
         private AprilTagObservation[] BuildObservations(
@@ -1118,8 +1579,7 @@ namespace QuestX.QuestX.AprilTag
             double[] ambiguities,
             Pose3d cameraPose,
             Pose3d headsetPose,
-            int imageWidth,
-            int imageHeight
+            FrameSlot slot
         )
         {
             var intrinsics = poseLibSolver.Intrinsics;
@@ -1141,7 +1601,7 @@ namespace QuestX.QuestX.AprilTag
                 }
                 var tagTranslation = aprilTagFieldLayout.GetTagPose(detection.Id).Translation;
                 CameraOrientationMath.RotateAngles(
-                    orientation,
+                    slot.Orientation,
                     Math.Atan2(detection.Center.x - cx, fx) * DegreesPerRadian,
                     Math.Atan2(cy - detection.Center.y, fy) * DegreesPerRadian,
                     out double tx,
@@ -1152,7 +1612,7 @@ namespace QuestX.QuestX.AprilTag
                     ambiguities[i],
                     tx,
                     ty,
-                    100.0 * Math.Abs(doubledArea) / 2.0 / ((double)imageWidth * imageHeight),
+                    100.0 * Math.Abs(doubledArea) / 2.0 / ((double)slot.Width * slot.Height),
                     tagTranslation.GetDistance(cameraPose.Translation),
                     tagTranslation.GetDistance(headsetPose.Translation)
                 );
@@ -1170,6 +1630,8 @@ namespace QuestX.QuestX.AprilTag
             Overlay.Clear();
         }
 
+        private void OnEnableDebugLoggingChanged(bool enabled) => debugLogging = enabled;
+
         private void OnCameraOrientationChanged(CameraOrientation value)
         {
             orientation = value;
@@ -1178,34 +1640,32 @@ namespace QuestX.QuestX.AprilTag
 
         private void OnOverlayStreamEnabledChanged(bool enabled)
         {
+            // The worker owns the preview encoder; it is freed when the detector stops.
             Overlay.SetStreamEnabled(enabled);
-            if (!enabled)
-            {
-                overlayCompressor?.Dispose();
-                overlayCompressor = null;
-            }
         }
 
+        /// <summary>
+        /// Worker thread. Encodes the exact luma image the detector read, top-down and 1 byte
+        /// per pixel, before the detector reuses its buffer for the next frame.
+        /// </summary>
         private unsafe void PublishOverlayFrame(
             GrayImage image,
-            double capturedAt,
+            FrameSlot slot,
             AprilTagOverlayTag[] tags
         )
         {
-            // Encode the exact luma image the detector read, top-down and 1 byte per
-            // pixel, before any coroutine yield: the detector reuses the buffer next frame.
-            nextOverlayFrameAt = AprilTagOverlay.MonotonicMilliseconds() + overlayFrameIntervalMs;
             if (!image.IsValid)
             {
                 return;
             }
+            long start = Stopwatch.GetTimestamp();
             try
             {
                 int width = image.Width;
                 int height = image.Height;
                 overlayCompressor ??= new LJTCompressor();
                 byte[] jpeg;
-                if (orientation == CameraOrientation.NORMAL)
+                if (slot.Orientation == CameraOrientation.NORMAL)
                 {
                     jpeg = overlayCompressor.Compress(
                         image.Buffer,
@@ -1214,52 +1674,53 @@ namespace QuestX.QuestX.AprilTag
                         height,
                         LJTPixelFormat.Gray,
                         LJTSubsamplingOption.Gray,
-                        overlayQuality,
+                        slot.OverlayQuality,
                         LJTFlags.None
                     );
                 }
                 else
                 {
-                    var source = NativeArrayUnsafeUtility.ConvertExistingDataToNativeArray<byte>(
-                        (void*)image.Buffer,
-                        height * image.Stride,
-                        Allocator.None
-                    );
-#if ENABLE_UNITY_COLLECTIONS_CHECKS
-                    NativeArrayUnsafeUtility.SetAtomicSafetyHandle(
-                        ref source,
-                        AtomicSafetyHandle.GetTempMemoryHandle()
-                    );
-#endif
-                    using var rotated = ImageRotationJob.Rotate(
-                        source,
-                        width,
-                        height,
-                        image.Stride,
-                        1,
-                        sourceBottomUp: false,
-                        orientation,
-                        Allocator.TempJob
-                    );
+                    int bytes = width * height;
+                    if (overlayRotationBuffer == null || overlayRotationBuffer.Length != bytes)
+                    {
+                        overlayRotationBuffer = new byte[bytes];
+                    }
                     CameraOrientationMath.RotateSize(
-                        orientation,
+                        slot.Orientation,
                         image.Width,
                         image.Height,
                         out width,
                         out height
                     );
-                    jpeg = overlayCompressor.Compress(
-                        (IntPtr)NativeArrayUnsafeUtility.GetUnsafeReadOnlyPtr(rotated),
-                        width,
-                        width,
-                        height,
-                        LJTPixelFormat.Gray,
-                        LJTSubsamplingOption.Gray,
-                        overlayQuality,
-                        LJTFlags.None
-                    );
+                    fixed (byte* rotated = overlayRotationBuffer)
+                    {
+                        ImageRotation.Rotate(
+                            (byte*)image.Buffer,
+                            image.Width,
+                            image.Height,
+                            image.Stride,
+                            1,
+                            0,
+                            slot.Orientation,
+                            rotated
+                        );
+                        jpeg = overlayCompressor.Compress(
+                            (IntPtr)rotated,
+                            width,
+                            width,
+                            height,
+                            LJTPixelFormat.Gray,
+                            LJTSubsamplingOption.Gray,
+                            slot.OverlayQuality,
+                            LJTFlags.None
+                        );
+                    }
                 }
-                Overlay.Publish(width, height, capturedAt, tags, jpeg);
+                Overlay.Publish(width, height, slot.CapturedAtMs, tags, jpeg);
+                lock (diagnosticsLock)
+                {
+                    previewTime.Add(ElapsedMilliseconds(start));
+                }
             }
             catch (Exception ex)
             {
@@ -1267,24 +1728,11 @@ namespace QuestX.QuestX.AprilTag
                 Overlay.Clear();
                 overlayCompressor?.Dispose();
                 overlayCompressor = null;
-                nextOverlayFrameAt = AprilTagOverlay.MonotonicMilliseconds() + 1000;
+                lock (diagnosticsLock)
+                {
+                    overlayRetryAtMs = AprilTagOverlay.MonotonicMilliseconds() + 1000;
+                }
                 QueuedLogger.LogWarning($"Synchronized AprilTag preview failed: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Invokes an action on the main thread using the captured SynchronizationContext.
-        /// Falls back to direct invocation if no context was captured.
-        /// </summary>
-        private void InvokeOnMainThread(Action action)
-        {
-            if (mainThreadContext == null)
-            {
-                action();
-            }
-            else
-            {
-                mainThreadContext.Post(_ => action(), null);
             }
         }
     }

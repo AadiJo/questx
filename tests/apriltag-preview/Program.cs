@@ -52,7 +52,7 @@ var packetA = await pendingA;
 var a = await Decode(packetA);
 long aId = (long)a.Meta["frameId"];
 Check((int)a.Meta["tags"][0]["id"] == a.Jpeg[2], "Frame A contains its own tag data");
-Check(!preview.IsRequested, "No more encoding until a viewer asks for another frame");
+Check(preview.IsRequested, "Viewer lease keeps encoding while the browser transfers/decodes its frame");
 
 // Two viewers share one encode; a slow viewer skips to the latest complete frame.
 var viewers = Enumerable.Range(0, 8).Select(_ => Read(aId)).ToArray();
@@ -65,7 +65,14 @@ foreach (var packet in await Task.WhenAll(viewers))
 }
 var b = await Decode(await Read(aId));
 long bId = (long)b.Meta["frameId"];
-Check(b.Jpeg[2] == 9 && bId != aId && !preview.IsRequested, "Slow reader gets latest without another encode");
+Check(b.Jpeg[2] == 9 && bId != aId && preview.IsRequested, "Slow reader gets latest and keeps the bounded viewer lease");
+// No waiting browser request: intermediate frames replace one another rather than queueing.
+Publish(20);
+Publish(21);
+var skipped = await Decode(await Read(bId));
+Check(skipped.Jpeg[2] == 21 && (int)skipped.Meta["tags"][0]["id"] == 21,
+    "Slow browser receives only the newest complete image and matching detections");
+bId = (long)skipped.Meta["frameId"];
 var next = Read(bId);
 Publish(11);
 await next;

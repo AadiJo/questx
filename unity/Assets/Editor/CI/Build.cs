@@ -14,6 +14,7 @@ namespace CI
     {
         private const string TurboJpegApkEntry = "lib/arm64-v8a/libturbojpeg.so";
         private const string SqliteApkEntry = "lib/arm64-v8a/libe_sqlite3.so";
+        private const string NapaApkEntry = "lib/arm64-v8a/libnapa.so";
 
         public static void PerformAndroid()
         {
@@ -216,7 +217,7 @@ namespace CI
         {
             using var apkStream = File.OpenRead(apkPath);
             using var archive = new ZipArchive(apkStream, ZipArchiveMode.Read);
-            string[] requiredEntries = { TurboJpegApkEntry, SqliteApkEntry };
+            string[] requiredEntries = { TurboJpegApkEntry, SqliteApkEntry, NapaApkEntry };
             foreach (string requiredEntry in requiredEntries)
             {
                 ZipArchiveEntry nativeLibrary = archive.GetEntry(requiredEntry);

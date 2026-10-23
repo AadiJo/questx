@@ -8,7 +8,13 @@ on:
       - 'protos/**'
       - 'questx-lib/**'
       - 'tests/measurement-checks/**'
+      - 'tests/frame-worker/**'
+      - 'tests/poselib-packing-checks/**'
+      - 'tests/apriltag-preview/**'
       - 'tests/native-localization/**'
+      - 'tests/napa-detector/**'
+      - 'native/napa/**'
+      - 'unity/Assets/Plugins/napa/**'
       - 'unity/Assets/QuestX/**'
   push:
     branches: [main]
@@ -17,7 +23,13 @@ on:
       - 'protos/**'
       - 'questx-lib/**'
       - 'tests/measurement-checks/**'
+      - 'tests/frame-worker/**'
+      - 'tests/poselib-packing-checks/**'
+      - 'tests/apriltag-preview/**'
       - 'tests/native-localization/**'
+      - 'tests/napa-detector/**'
+      - 'native/napa/**'
+      - 'unity/Assets/Plugins/napa/**'
       - 'unity/Assets/QuestX/**'
 
 permissions:
@@ -47,6 +59,9 @@ jobs:
           sparse-checkout: |
             questx-lib
             tests/measurement-checks
+            tests/frame-worker
+            tests/poselib-packing-checks
+            tests/apriltag-preview
             unity/Assets/QuestX
 
       - uses: actions/setup-dotnet@v4
@@ -77,6 +92,12 @@ jobs:
       - name: Check covariance and regenerate wire fixtures with the C# encoder
         run: dotnet run --configuration Release --project tests/measurement-checks/MeasurementChecks.csproj -- --export-fixtures
 
+      - name: Check frame worker, preview handoff, and solver input packing
+        run: |
+          dotnet run --configuration Release --project tests/frame-worker/FrameWorkerChecks.csproj
+          dotnet run --configuration Release --project tests/apriltag-preview/PreviewChecks.csproj
+          dotnet run --configuration Release --project tests/poselib-packing-checks/PoseLibPackingChecks.csproj
+
       - name: Decode freshly generated fixtures and check the WPILib update
         working-directory: questx-lib
         run: gradle spotlessCheck test --no-daemon
@@ -106,3 +127,43 @@ jobs:
 
       - name: Check synthetic NT4 server and client capture
         run: python -m unittest discover -s tests/native-localization -p test_nt_loopback.py -v
+
+  napa-dependency:
+    name: Published NAPA dependency and detector checks
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          lfs: true
+          sparse-checkout: |
+            native/napa
+            tests/napa-detector
+            unity/Assets/QuestX
+            unity/Assets/Plugins/napa
+            unity/Assets/Plugins/apriltag
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.x'
+
+      - name: Check dependency restore integrity and failure handling
+        run: python -m unittest discover -s native/napa -p test_restore.py -v
+
+      - name: Restore and verify the published native packages
+        run: |
+          python native/napa/restore.py
+          python native/napa/restore.py --check
+
+      - name: Compare NAPA and AprilTag through the production C# adapters
+        if: runner.os == 'Windows'
+        run: dotnet run --configuration Release --project tests/napa-detector/NapaDetectorChecks.csproj

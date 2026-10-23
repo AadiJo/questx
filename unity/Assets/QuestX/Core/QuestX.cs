@@ -379,6 +379,9 @@ namespace QuestX.Core
 
             // Set Oculus display frequency
             OVRPlugin.systemDisplayFrequency = QuestXConstants.Display.DISPLAY_FREQUENCY;
+            // Tag detection, stream encoding and the 120 Hz loop share the CPU. Ask for sustained
+            // high clocks; the power manager may still lower them when the headset runs hot.
+            OVRManager.suggestedCpuPerfLevel = OVRManager.ProcessorPerformanceLevel.SustainedHigh;
             // Schedule "SlowUpdate" loop for non loop critical applications
             InvokeRepeating(nameof(SlowUpdate), 0, 1f / QuestXConstants.Timing.SLOW_UPDATE_HZ);
             InvokeRepeating(nameof(MainUpdate), 0, 1f / QuestXConstants.Timing.MAIN_UPDATE_HZ);
@@ -528,7 +531,10 @@ namespace QuestX.Core
             if (aprilTagManager != null)
             {
                 aprilTagManager.MeasurementAvailable -= OnAprilTagMeasurementAvailable;
+                // Stops the detection worker and frees its detector and frame buffers.
+                aprilTagManager.Shutdown();
             }
+            passthroughFrameSource?.Shutdown();
             configManager.CloseAsync();
             webServerManager?.Shutdown();
             mdnsResponder?.Dispose();

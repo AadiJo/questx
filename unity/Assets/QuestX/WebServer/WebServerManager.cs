@@ -101,6 +101,16 @@ namespace QuestX.WebServer
         private string cachedDebugIpOverride = "";
         private string cachedRobotIpAddress = "";
 
+        /// <summary>How often the local IP address is looked up again.</summary>
+        private const double IpAddressRefreshSeconds = 5.0;
+        private string cachedIpAddress;
+        private double nextIpAddressRefreshAt;
+
+        // App FPS is averaged over the frames since the previous status update rather than
+        // taken from a single frame's deltaTime, which jumps with every slow frame.
+        private int fpsWindowFrameCount = -1;
+        private double fpsWindowStart;
+
         public WebServerManager(
             IConfigManager configManager,
             INetworkTableConnection networkTableConnection,
@@ -247,8 +257,21 @@ namespace QuestX.WebServer
             AprilTagDiagnosticsSnapshot aprilTagDiagnostics
         )
         {
-            string ipAddress = GetLocalIPAddress();
-            float currentFps = 1f / Time.deltaTime;
+            double now = Time.realtimeSinceStartupAsDouble;
+            if (cachedIpAddress == null || now >= nextIpAddressRefreshAt)
+            {
+                cachedIpAddress = GetLocalIPAddress();
+                nextIpAddressRefreshAt = now + IpAddressRefreshSeconds;
+            }
+            string ipAddress = cachedIpAddress;
+
+            int frameCount = Time.frameCount;
+            float currentFps =
+                fpsWindowFrameCount >= 0 && now > fpsWindowStart
+                    ? (float)((frameCount - fpsWindowFrameCount) / (now - fpsWindowStart))
+                    : 1f / Time.deltaTime;
+            fpsWindowFrameCount = frameCount;
+            fpsWindowStart = now;
 
             statusProvider?.UpdateStatus(
                 position,
@@ -262,7 +285,7 @@ namespace QuestX.WebServer
                 cachedTeamNumber,
                 cachedRobotIpAddress,
                 currentFps,
-                Time.frameCount
+                frameCount
             );
             statusProvider?.UpdateMeasurementStatus(
                 trackingEpoch,

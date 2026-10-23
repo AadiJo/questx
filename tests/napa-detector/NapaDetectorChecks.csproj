@@ -8,7 +8,7 @@
     <NuGetAudit>false</NuGetAudit>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="../../unity/Assets/QuestX/Camera/GrayscaleConversionJob.cs" Link="Linked/GrayscaleConversionJob.cs" />
+    <Compile Include="../../unity/Assets/QuestX/Camera/GrayscaleConversion.cs" Link="Linked/GrayscaleConversion.cs" />
     <Compile Include="../../unity/Assets/QuestX/Native/AprilTag/AprilTagDetection.cs" Link="Linked/AprilTagDetection.cs" />
     <Compile Include="../../unity/Assets/QuestX/Native/AprilTag/AprilTagDetectionResults.cs" Link="Linked/AprilTagDetectionResults.cs" />
     <Compile Include="../../unity/Assets/QuestX/Native/AprilTag/AprilTagDetector.cs" Link="Linked/AprilTagDetector.cs" />
@@ -24,6 +24,7 @@
   <!-- The same Editor binaries Unity loads; the checks run on Windows x64. -->
   <ItemGroup>
     <None Include="../../unity/Assets/Plugins/napa/Windows/x64/napa.dll" Link="napa.dll" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../unity/Assets/Plugins/napa/Windows/x64/vcruntime*.dll" Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../unity/Assets/Plugins/apriltag/Windows/x64/apriltag.dll" Link="apriltag.dll" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

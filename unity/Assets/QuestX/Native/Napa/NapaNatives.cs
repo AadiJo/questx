@@ -4,7 +4,8 @@ using System.Runtime.InteropServices;
 namespace QuestX.Native.Napa
 {
     /// <summary>
-    /// Mirrors <c>napa_params</c> in <c>native/napa/src/napa_core.h</c>.
+    /// Mirrors <c>napa_params</c> in the published napa-vision native ABI.
+    /// The package version and binary checksums are pinned in native/napa/dependency.lock.json.
     /// </summary>
     [StructLayout(LayoutKind.Sequential)]
     public struct NapaParamsNative

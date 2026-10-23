@@ -52,6 +52,16 @@
         <template v-if="tag.detector">
           <dt>Detect time</dt>
           <dd :title="`Last frame ${(tag.lastDetectMs ?? 0).toFixed(1)} ms`">{{ tag.detector }} · {{ (tag.averageDetectMs ?? 0).toFixed(1) }} ms avg</dd>
+          <dt>Detection rate</dt>
+          <dd :title="`Frames detected of camera frames delivered; ${(tag.busyFrameCount ?? 0).toLocaleString()} dropped while detection was busy`">{{ (tag.processedFps ?? 0).toFixed(0) }} / {{ (tag.cameraFps ?? 0).toFixed(0) }} fps</dd>
+          <dt>Publish rate</dt><dd>{{ (tag.measurementFps ?? 0).toFixed(0) }}/s</dd>
+          <dt>Readback</dt><dd>{{ (tag.averageReadbackMs ?? 0).toFixed(1) }} ms</dd>
+          <dt>Solve</dt><dd>{{ (tag.averageSolveMs ?? 0).toFixed(1) }} ms</dd>
+          <template v-if="tag.averagePreviewMs">
+            <dt>Preview encode</dt><dd>{{ tag.averagePreviewMs.toFixed(1) }} ms</dd>
+          </template>
+          <dt>Latency</dt>
+          <dd title="Camera exposure to measurement publish">{{ (tag.averageLatencyMs ?? 0).toFixed(0) }} ms</dd>
         </template>
         <dt>Last outcome</dt><dd class="text">{{ tag.lastOutcome || 'n/a' }}</dd>
         <template v-if="tag.lastReason">

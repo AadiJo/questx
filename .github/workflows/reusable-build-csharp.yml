@@ -43,8 +43,16 @@ jobs:
           sparse-checkout: |
             unity
             .github
+            native/napa
           sparse-checkout-cone-mode: false
           lfs: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Restore NAPA native dependency
+        run: python native/napa/restore.py
 
       - name: Free Disk Space
         uses: ./.github/actions/quest-windows-free-disk-space

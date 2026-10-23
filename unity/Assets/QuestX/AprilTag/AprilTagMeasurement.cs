@@ -200,6 +200,32 @@ namespace QuestX.QuestX.AprilTag
         /// <summary>Exponential moving average (alpha 0.05) of <see cref="LastDetectMilliseconds"/>.</summary>
         public double AverageDetectMilliseconds { get; set; }
 
+        // Pipeline stages, each an exponential moving average (alpha 0.05) in milliseconds.
+
+        /// <summary>From requesting a frame's GPU copy to the copy arriving in CPU memory.</summary>
+        public double AverageReadbackMilliseconds { get; set; }
+
+        /// <summary>PoseLib solve, ambiguity, covariance and local validation.</summary>
+        public double AverageSolveMilliseconds { get; set; }
+
+        /// <summary>Encoding the synchronized detection preview, when a viewer is open.</summary>
+        public double AveragePreviewMilliseconds { get; set; }
+
+        /// <summary>From camera exposure to the measurement being handed to the publisher.</summary>
+        public double AverageLatencyMilliseconds { get; set; }
+
+        /// <summary>New camera images per second while the detector runs.</summary>
+        public double CameraFramesPerSecond { get; set; }
+
+        /// <summary>Frames the detector processed per second.</summary>
+        public double ProcessedFramesPerSecond { get; set; }
+
+        /// <summary>Measurements published per second.</summary>
+        public double MeasurementsPerSecond { get; set; }
+
+        /// <summary>Due camera frames dropped because the detector was still busy.</summary>
+        public long BusyFrameCount { get; set; }
+
         public AprilTagDiagnosticsSnapshot(
             bool detectorActive,
             long cameraFrameCount,
