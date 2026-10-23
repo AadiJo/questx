@@ -17,7 +17,8 @@
         <img v-else :src="streamUrl" alt="Passthrough camera stream" class="mjpeg" @error="streamFailed = true" />
         <span v-if="!detectorEnabled && streamFailed" class="stream-message">Camera stream unavailable. Turn the stream off and on to reconnect.</span>
         <div v-if="detectorEnabled && stats" class="hud mono">
-          <template v-if="stats.fps > 0">{{ stats.fps.toFixed(1) }} fps · </template>{{ Math.round(stats.ageMs) }} ms
+          <!-- The preview runs at the stream's frame rate; detection runs on every camera frame. -->
+          <template v-if="detectionFps > 0">detect {{ detectionFps.toFixed(0) }} Hz · </template><template v-if="stats.fps > 0">preview {{ stats.fps.toFixed(1) }} fps · </template>{{ Math.round(stats.ageMs) }} ms
         </div>
         <button class="fs-btn" :title="isFullscreen ? 'Exit fullscreen' : 'Fullscreen'" :aria-label="isFullscreen ? 'Exit fullscreen' : 'Fullscreen'" @click="toggleFullscreen">
           <Minimize2 v-if="isFullscreen" :size="15" :stroke-width="2" aria-hidden="true" />
@@ -69,6 +70,7 @@ const stats = ref<{ fps: number; ageMs: number; tags: number } | null>(null)
 
 const streamEnabled = computed(() => configStore.config?.enablePassthroughStream ?? false)
 const detectorEnabled = computed(() => configStore.config?.enableAprilTagDetector ?? false)
+const detectionFps = computed(() => status.value?.aprilTag.processedFps ?? 0)
 const orientation = computed(() => configStore.config?.cameraOrientation ?? CameraOrientation.Normal)
 
 // A new stream mode or orientation restarts the MJPEG request and the preview.
