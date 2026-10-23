@@ -61,6 +61,11 @@ namespace QuestX.Camera
         private Vector2Int? desiredResolution;
 
         /// <summary>
+        /// The camera <see cref="cameraAccess"/> opens on its next apply.
+        /// </summary>
+        private PassthroughCameraAccess.CameraPositionType desiredPosition;
+
+        /// <summary>
         /// Monotonically increasing token used to invalidate queued main-thread callbacks
         /// after the reservation set changes.
         /// </summary>
@@ -91,6 +96,56 @@ namespace QuestX.Camera
         {
             this.cameraAccess = cameraAccess;
             mainThreadContext = SynchronizationContext.Current;
+            desiredPosition = cameraAccess.CameraPosition;
+        }
+
+        /// <summary>
+        /// Chooses which physical camera <see cref="PassthroughCameraAccess"/> opens. The
+        /// AprilTag detector's own Camera2 client takes the left camera and moves Meta's access
+        /// to the right one, since Camera2 gives each camera to one client at a time. Reopens
+        /// the camera on the new side if a reservation holds it open; otherwise closes it.
+        /// Main thread only.
+        /// </summary>
+        public void SetCameraPosition(PassthroughCameraAccess.CameraPositionType position)
+        {
+            bool reopen;
+            lock (stateLock)
+            {
+                desiredPosition = position;
+                reopen = reservations.Count > 0;
+                if (!reopen)
+                {
+                    // Nobody needs Meta's camera, so it can close now (the scene starts it).
+                    if (cameraAccess.enabled && cameraAccess.CameraPosition != position)
+                    {
+                        cameraAccess.enabled = false;
+                    }
+                    if (!cameraAccess.enabled)
+                    {
+                        cameraAccess.CameraPosition = position;
+                    }
+                }
+            }
+            if (reopen && cameraAccess.CameraPosition != position)
+            {
+                ReapplyCurrentResolution();
+            }
+        }
+
+        /// <summary>
+        /// Whether <see cref="PassthroughCameraAccess"/> has the camera at
+        /// <paramref name="position"/> open, or may still open it from a queued apply.
+        /// Main thread only.
+        /// </summary>
+        public bool IsUsingCamera(PassthroughCameraAccess.CameraPositionType position)
+        {
+            lock (stateLock)
+            {
+                return (cameraAccess.enabled && cameraAccess.CameraPosition == position)
+                    || (
+                        applyScheduled && desiredResolution.HasValue && desiredPosition == position
+                    );
+            }
         }
 
         /// <summary>
@@ -305,6 +360,7 @@ namespace QuestX.Camera
                         if (target.HasValue)
                         {
                             cameraAccess.enabled = false;
+                            cameraAccess.CameraPosition = desiredPosition;
                             cameraAccess.RequestedResolution = target.Value;
                             cameraAccess.enabled = true;
                         }
