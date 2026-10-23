@@ -1,3 +1,4 @@
+using System.Threading;
 using Meta.XR;
 using QuestX.Camera;
 using QuestX.Commands;
@@ -168,6 +169,12 @@ namespace QuestX.Core
         private PassthroughCameraAccess cameraAccess;
 
         /// <summary>
+        /// The Unity main thread, for work the AprilTag capture thread hands back to it.
+        /// </summary>
+        private SynchronizationContext mainThreadContext;
+        private int mainThreadId;
+
+        /// <summary>
         /// The current pose of the HMD
         /// </summary>
         private Pose3d pose;
@@ -272,6 +279,8 @@ namespace QuestX.Core
         /// </summary>
         private async void Awake()
         {
+            mainThreadContext = SynchronizationContext.Current;
+            mainThreadId = Thread.CurrentThread.ManagedThreadId;
             QueuedLogger.Initialize();
             FileManager.Initialize();
             // Disable stack traces for Log-level logging
@@ -766,6 +775,20 @@ namespace QuestX.Core
         {
             var robotMeasurement = measurement.ForRobot(robotMount.HeadsetToRobot);
             networkTableConnection.PublishAprilTagData(robotMeasurement);
+            // The detector can run on its own capture thread. Field alignment and the 3D scene
+            // belong to the main thread, and the robot's sample is already on its way.
+            if (mainThreadContext == null || Thread.CurrentThread.ManagedThreadId == mainThreadId)
+            {
+                ApplyAprilTagMeasurement(robotMeasurement);
+            }
+            else
+            {
+                mainThreadContext.Post(_ => ApplyAprilTagMeasurement(robotMeasurement), null);
+            }
+        }
+
+        private void ApplyAprilTagMeasurement(AprilTagMeasurement robotMeasurement)
+        {
             fieldAlignment.Align(robotMeasurement.AppTimestamp, robotMeasurement.Pose, out _);
             sceneProvider?.UpdateMeasurement(robotMeasurement);
         }

@@ -1,6 +1,5 @@
 using System;
 using System.Collections;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
@@ -22,9 +21,10 @@ namespace QuestX.QuestX.AprilTag
     /// <summary>
     /// Runs AprilTag localization off the Unity main thread. The main thread only decides which
     /// camera frames to use and starts a non-blocking GPU readback of each; a dedicated worker
-    /// converts, detects, solves and builds the measurement; the main thread then publishes it.
-    /// Rendering therefore never waits on the GPU copy or the detector, and detection runs at the
-    /// camera's rate rather than being capped by (and slowing) the app's frame rate.
+    /// converts, detects, solves, and publishes the measurement as soon as it is built.
+    /// Rendering therefore never waits on the GPU copy or the detector, detection runs at the
+    /// camera's rate rather than being capped by (and slowing) the app's frame rate, and the
+    /// robot's sample does not wait for the next Unity frame.
     /// </summary>
     public class AprilTagManager
     {
@@ -79,15 +79,6 @@ namespace QuestX.QuestX.AprilTag
         /// </summary>
         private int pipelineGeneration;
 
-        /// <summary>
-        /// Measurements from the worker with the run that produced them, published by the main
-        /// thread.
-        /// </summary>
-        private readonly ConcurrentQueue<(
-            int Generation,
-            AprilTagMeasurement Measurement
-        )> completedMeasurements = new ConcurrentQueue<(int, AprilTagMeasurement)>();
-
         /// <summary>Exposure time, in seconds, of the next frame to process.</summary>
         private double nextFrameExposureSeconds;
 
@@ -105,9 +96,10 @@ namespace QuestX.QuestX.AprilTag
         private double overlayFrameIntervalMs = 1000.0 / 24;
         private double nextOverlayFrameAt;
 
-        // Main-thread informational logging is sampled; diagnostics still record every measurement.
+        // Informational logging is sampled; diagnostics still record every measurement.
+        // nextMeasurementLogAtMs belongs to the worker.
         private double nextMeasurementLogAtMs;
-        private bool debugLogging;
+        private volatile bool debugLogging;
 
         /// <summary>
         /// How the stream is rotated. The preview and tag angles follow it; poses never do.
@@ -186,9 +178,10 @@ namespace QuestX.QuestX.AprilTag
         private double measurementsPerSecond;
 
         /// <summary>
-        /// Raised on the main thread when PoseLib produces a field-relative AprilTag measurement
-        /// that passes the Quest's detector-level validity checks. No sensor fusion has been
-        /// applied to this measurement.
+        /// Raised on the detection worker, as soon as PoseLib produces a field-relative AprilTag
+        /// measurement that passes the Quest's detector-level validity checks. Subscribers that
+        /// touch Unity state must hand off to the main thread. No sensor fusion has been applied
+        /// to this measurement.
         /// </summary>
         public event Action<AprilTagMeasurement> MeasurementAvailable;
 
@@ -250,6 +243,9 @@ namespace QuestX.QuestX.AprilTag
             public int Generation;
 
             public long RequestedAt;
+
+            /// <summary>Exposure time as UTC <see cref="DateTime.Ticks"/>, for latency.</summary>
+            public long ExposureUtcTicks;
             public long CaptureTimestampMicros;
             public double CaptureAppTimestamp;
 
@@ -493,10 +489,8 @@ namespace QuestX.QuestX.AprilTag
             }
             worker = null;
 
-            // The worker can no longer publish, so anything it produced for the stopped run
-            // goes now: queued measurements and a scene or preview frame published after
-            // disable cleared them.
-            while (completedMeasurements.TryDequeue(out _)) { }
+            // The worker can no longer publish, so a scene or preview frame it published after
+            // disable cleared them goes now.
             if (!detectorActive)
             {
                 Scene.Clear();
@@ -803,9 +797,6 @@ namespace QuestX.QuestX.AprilTag
         {
             while (true)
             {
-                // Publish what the worker finished since the last frame, on the main thread
-                // where subscribers expect it.
-                PublishCompletedMeasurements();
                 UpdateRates();
 
                 // Bail out cleanly if the detector was disabled between iterations.
@@ -942,6 +933,7 @@ namespace QuestX.QuestX.AprilTag
                 TakeFrame(exposureSeconds);
                 slot.Generation = Volatile.Read(ref pipelineGeneration);
                 slot.RequestedAt = Stopwatch.GetTimestamp();
+                slot.ExposureUtcTicks = cameraAccess.Timestamp.Ticks;
                 slot.CaptureTimestampMicros = captureTimestampMicros;
                 slot.CaptureAppTimestamp = captureAppTimestamp;
                 slot.CapturedAtMs = capturedAtMs;
@@ -1020,62 +1012,63 @@ namespace QuestX.QuestX.AprilTag
             worker.Post(slot);
         }
 
-        /// <summary>Raises <see cref="MeasurementAvailable"/> for measurements the worker built.</summary>
-        private void PublishCompletedMeasurements()
+        /// <summary>
+        /// Worker thread. Raises <see cref="MeasurementAvailable"/> right away, so the robot's
+        /// sample does not wait for the next Unity frame.
+        /// </summary>
+        private void PublishMeasurement(FrameSlot slot, AprilTagMeasurement measurement)
         {
-            while (completedMeasurements.TryDequeue(out var completed))
+            // A worker that outlived its run (see StopWorker) must not publish into a new one.
+            if (IsStale(slot))
             {
-                // A worker that outlived its run (see StopWorker) must not publish into a new one.
-                if (completed.Generation != Volatile.Read(ref pipelineGeneration))
+                return;
+            }
+            try
+            {
+                MeasurementAvailable?.Invoke(measurement);
+                double ageMilliseconds =
+                    (DateTime.UtcNow.Ticks - slot.ExposureUtcTicks)
+                    / (double)TimeSpan.TicksPerMillisecond;
+                lock (diagnosticsLock)
                 {
-                    continue;
+                    measurementCount++;
+                    latency.Add(ageMilliseconds);
+                    lastMeasurementAppTimestamp = measurement.AppTimestamp;
+                    lastTagIds = measurement.TagIds;
+                    lastInlierCount = measurement.InlierCount;
+                    lastCornerCount = measurement.CornerCount;
+                    lastInlierRatio = measurement.InlierRatio;
+                    lastAverageTagDistanceMeters = measurement.AverageTagDistanceMeters;
+                    lastLinearStdDevMeters = Math.Max(
+                        measurement.XStdDevMeters,
+                        measurement.YStdDevMeters
+                    );
+                    lastAmbiguity = measurement.Ambiguity;
+                    lastReprojectionErrorPixels = measurement.ReprojectionErrorPixels;
+                    lastOutcome = "Measurement published";
+                    lastReason = "";
                 }
-                var measurement = completed.Measurement;
-                double ageMilliseconds = (Time.timeAsDouble - measurement.AppTimestamp) * 1000.0;
-                try
-                {
-                    MeasurementAvailable?.Invoke(measurement);
-                    lock (diagnosticsLock)
-                    {
-                        measurementCount++;
-                        latency.Add(ageMilliseconds);
-                        lastMeasurementAppTimestamp = measurement.AppTimestamp;
-                        lastTagIds = measurement.TagIds;
-                        lastInlierCount = measurement.InlierCount;
-                        lastCornerCount = measurement.CornerCount;
-                        lastInlierRatio = measurement.InlierRatio;
-                        lastAverageTagDistanceMeters = measurement.AverageTagDistanceMeters;
-                        lastLinearStdDevMeters = Math.Max(
-                            measurement.XStdDevMeters,
-                            measurement.YStdDevMeters
-                        );
-                        lastAmbiguity = measurement.Ambiguity;
-                        lastReprojectionErrorPixels = measurement.ReprojectionErrorPixels;
-                        lastOutcome = "Measurement published";
-                        lastReason = "";
-                    }
 
-                    double nowMs = AprilTagOverlay.MonotonicMilliseconds();
-                    if (debugLogging || nowMs >= nextMeasurementLogAtMs)
-                    {
-                        nextMeasurementLogAtMs = nowMs + 1000.0;
-                        var position = measurement.Pose.Translation;
-                        QueuedLogger.Log(
-                            $"AprilTag measurement published: headset ({position.X:F3}, {position.Y:F3}, {position.Z:F3}) "
-                                + $"tags={measurement.TagIds.Length} inliers={measurement.InlierCount}/{measurement.CornerCount} "
-                                + $"ratio={measurement.InlierRatio:F2} dist={measurement.AverageTagDistanceMeters:F2}m "
-                                + $"stdDev=({measurement.XStdDevMeters:F4}, {measurement.YStdDevMeters:F4})m "
-                                + $"yaw={measurement.YawStdDevRadians:F4}rad "
-                                + $"ambiguity={measurement.Ambiguity:F3} reprojection={measurement.ReprojectionErrorPixels:F2}px "
-                                + $"latency={ageMilliseconds:F0}ms"
-                        );
-                    }
-                }
-                catch (Exception ex)
+                double nowMs = AprilTagOverlay.MonotonicMilliseconds();
+                if (debugLogging || nowMs >= nextMeasurementLogAtMs)
                 {
-                    RecordOutcome("Measurement publish failed", ex.Message);
-                    QueuedLogger.LogError($"AprilTag measurement subscriber threw: {ex.Message}");
+                    nextMeasurementLogAtMs = nowMs + 1000.0;
+                    var position = measurement.Pose.Translation;
+                    QueuedLogger.Log(
+                        $"AprilTag measurement published: headset ({position.X:F3}, {position.Y:F3}, {position.Z:F3}) "
+                            + $"tags={measurement.TagIds.Length} inliers={measurement.InlierCount}/{measurement.CornerCount} "
+                            + $"ratio={measurement.InlierRatio:F2} dist={measurement.AverageTagDistanceMeters:F2}m "
+                            + $"stdDev=({measurement.XStdDevMeters:F4}, {measurement.YStdDevMeters:F4})m "
+                            + $"yaw={measurement.YawStdDevRadians:F4}rad "
+                            + $"ambiguity={measurement.Ambiguity:F3} reprojection={measurement.ReprojectionErrorPixels:F2}px "
+                            + $"latency={ageMilliseconds:F0}ms"
+                    );
                 }
+            }
+            catch (Exception ex)
+            {
+                RecordOutcome("Measurement publish failed", ex.Message);
+                QueuedLogger.LogError($"AprilTag measurement subscriber threw: {ex.Message}");
             }
         }
 
@@ -1221,7 +1214,7 @@ namespace QuestX.QuestX.AprilTag
             lock (diagnosticsLock)
                 detectedIds = rawIds;
 
-            // Queue the robot measurement before single-tag display solves and JPEG encoding.
+            // Publish the robot measurement before single-tag display solves and JPEG encoding.
             // Both views still use these exact detections and this frame's grayscale buffer.
             try
             {
@@ -1241,7 +1234,7 @@ namespace QuestX.QuestX.AprilTag
             catch (Exception ex)
             {
                 // Display failures must not relabel a valid localization result as a detector
-                // failure. The measurement is already queued and remains publishable.
+                // failure. The measurement has already been published.
                 Scene.Clear();
                 Overlay.Clear();
                 QueuedLogger.LogError($"AprilTag preview processing failed: {ex.Message}");
@@ -1287,7 +1280,7 @@ namespace QuestX.QuestX.AprilTag
                 RecordOutcome(outcome, reason);
                 return;
             }
-            completedMeasurements.Enqueue((slot.Generation, measurement));
+            PublishMeasurement(slot, measurement);
         }
 
         /// <summary>Optional display work, after the measurement is ready for publication.</summary>

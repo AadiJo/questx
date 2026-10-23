@@ -559,6 +559,13 @@ namespace QuestX.Network
         /// Reusable AprilTag message, uncertainty message, and next sequence ID.
         /// </summary>
         private readonly ProtobufQuestXAprilTagData aprilTagData = new();
+
+        /// <summary>
+        /// The AprilTag detector publishes from its capture thread while VIO and the slow loop
+        /// publish telemetry from the main thread; this serializes the AprilTag and Limelight
+        /// state they share.
+        /// </summary>
+        private readonly object aprilTagLock = new object();
         private readonly ProtobufQuestXPoseStdDevs aprilTagPoseStdDevs = new();
         private ulong nextAprilTagSequenceId;
 
@@ -638,6 +645,16 @@ namespace QuestX.Network
 
         /// <inheritdoc />
         public void PublishAprilTagData(AprilTagMeasurement measurement)
+        {
+            lock (aprilTagLock)
+            {
+                PublishAprilTagDataLocked(measurement);
+            }
+            // Send now rather than at ntcore's next periodic send.
+            ntInstance.Flush();
+        }
+
+        private void PublishAprilTagDataLocked(AprilTagMeasurement measurement)
         {
             long captureTimestampMicros = measurement.CaptureTimestampMicros;
             double appTimestamp = measurement.AppTimestamp;
@@ -777,11 +794,15 @@ namespace QuestX.Network
             }
             aprilTagTelemetry.Update(aprilTagV3, pose);
             limelightTelemetry.Update(measurement, captureTimestampMicros, now);
-            ntInstance.Flush();
         }
 
-        public void PublishAprilTagDiagnostics(AprilTagDiagnosticsSnapshot diagnostics) =>
-            limelightTelemetry.Diagnostics(diagnostics);
+        public void PublishAprilTagDiagnostics(AprilTagDiagnosticsSnapshot diagnostics)
+        {
+            lock (aprilTagLock)
+            {
+                limelightTelemetry.Diagnostics(diagnostics);
+            }
+        }
 
         private void PublishTelemetry()
         {
@@ -790,8 +811,11 @@ namespace QuestX.Network
                 return;
             nextTelemetryMicros = now + 100_000;
             vioTelemetry.Publish(now, VioPublishCount);
-            aprilTagTelemetry.Publish(now, AprilTagPublishCount);
-            limelightTelemetry.Publish(now);
+            lock (aprilTagLock)
+            {
+                aprilTagTelemetry.Publish(now, AprilTagPublishCount);
+                limelightTelemetry.Publish(now);
+            }
         }
 
         /// <summary>
