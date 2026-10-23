@@ -43,7 +43,10 @@ export function useDetectorDraft() {
     }
     const current = draft.value
     for (const key of Object.keys(next) as (keyof AprilTagDetectorMode)[]) {
-      if (same(current[key], previous[key])) Object.assign(current, { [key]: structuredClone(next[key]) })
+      if (same(current[key], previous[key])) {
+        // ignoredIds is a Vue proxy; the remaining mode fields are primitives.
+        Object.assign(current, { [key]: key === 'ignoredIds' ? [...next.ignoredIds] : next[key] })
+      }
     }
   })
 
