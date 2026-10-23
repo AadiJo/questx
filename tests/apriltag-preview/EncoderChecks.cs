@@ -42,6 +42,43 @@ static unsafe class EncoderChecks
         public void Dispose() { }
     }
 
+    // Independent output-order reference checks orientation, box boundaries and rounding.
+    private static void CheckResampling()
+    {
+        var random = new Random(719);
+        foreach (var (width, height) in new[] { (32, 48), (80, 60), (1280, 960) })
+        foreach (int factor in new[] { 1, 2, 4, 8, 16 })
+        {
+            if (width % factor != 0 || height % factor != 0) continue;
+            var input = new byte[width * height];
+            foreach (int pattern in new[] { 0, 1, 2, 3 })
+            {
+                for (int i = 0; i < input.Length; i++)
+                    input[i] = pattern == 0 ? (byte)0 : pattern == 1 ? (byte)255
+                        : pattern == 2 ? (byte)(i % 2) : (byte)random.Next(256);
+                foreach (CameraOrientation orientation in Enum.GetValues(typeof(CameraOrientation)))
+                {
+                    int sw = width / factor, sh = height / factor;
+                    CameraOrientationMath.RotateSize(orientation, sw, sh, out int ow, out int oh);
+                    var actual = new byte[ow * oh];
+                    AprilTagPreviewEncoder.Resample(input, width, height, factor, orientation, actual);
+                    bool equal = true;
+                    for (int y = 0; y < oh; y++)
+                    for (int x = 0; x < ow; x++)
+                    {
+                        CameraOrientationMath.SourcePixel(orientation, x, y, sw, sh, out int sx, out int sy);
+                        int sum = 0;
+                        for (int by = 0; by < factor; by++)
+                        for (int bx = 0; bx < factor; bx++)
+                            sum += input[(sy * factor + by) * width + sx * factor + bx];
+                        equal &= actual[y * ow + x] == (sum + factor * factor / 2) / (factor * factor);
+                    }
+                    Check(equal, $"Exact resample {width}x{height}/{factor} {orientation} pattern {pattern}");
+                }
+            }
+        }
+    }
+
     public static int Run()
     {
         // Scale choices at the Quest's sizes, with and without the 640x480 standard cap.
@@ -70,6 +107,8 @@ static unsafe class EncoderChecks
                 }
             }
         }
+
+        CheckResampling();
 
         // 2x2 box averages, rounded.
         var src = new byte[] { 0, 2, 10, 20, 4, 6, 30, 41, 100, 100, 7, 7, 100, 101, 7, 8 };

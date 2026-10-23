@@ -331,33 +331,44 @@ namespace QuestX.QuestX.AprilTag
         {
             int scaledWidth = width / factor;
             int scaledHeight = height / factor;
-            CameraOrientationMath.RotateSize(
-                orientation,
-                scaledWidth,
-                scaledHeight,
-                out int outWidth,
-                out int outHeight
-            );
+            int start,
+                stepX,
+                stepY;
+            // Walk source blocks in row order; orientation only changes destination increments.
+            switch (orientation)
+            {
+                case CameraOrientation.UPSIDE_DOWN:
+                    start = scaledWidth * scaledHeight - 1;
+                    stepX = -1;
+                    stepY = -scaledWidth;
+                    break;
+                case CameraOrientation.LEFT:
+                    start = (scaledWidth - 1) * scaledHeight;
+                    stepX = -scaledHeight;
+                    stepY = 1;
+                    break;
+                case CameraOrientation.RIGHT:
+                    start = scaledHeight - 1;
+                    stepX = scaledHeight;
+                    stepY = -1;
+                    break;
+                default:
+                    start = 0;
+                    stepX = 1;
+                    stepY = scaledWidth;
+                    break;
+            }
             int area = factor * factor;
             fixed (
                 byte* src = source,
                     dst = destination
             )
             {
-                for (int ry = 0; ry < outHeight; ry++)
+                for (int y = 0; y < scaledHeight; y++)
                 {
-                    byte* row = dst + (long)ry * outWidth;
-                    for (int rx = 0; rx < outWidth; rx++)
+                    int destinationIndex = start + y * stepY;
+                    for (int x = 0; x < scaledWidth; x++, destinationIndex += stepX)
                     {
-                        CameraOrientationMath.SourcePixel(
-                            orientation,
-                            rx,
-                            ry,
-                            scaledWidth,
-                            scaledHeight,
-                            out int x,
-                            out int y
-                        );
                         byte* block = src + (long)y * factor * width + x * factor;
                         int sum = 0;
                         for (int by = 0; by < factor; by++)
@@ -368,7 +379,7 @@ namespace QuestX.QuestX.AprilTag
                                 sum += line[bx];
                             }
                         }
-                        row[rx] = (byte)((sum + area / 2) / area);
+                        dst[destinationIndex] = (byte)((sum + area / 2) / area);
                     }
                 }
             }
