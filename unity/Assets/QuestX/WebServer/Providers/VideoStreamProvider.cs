@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Buffers.Text;
 using System.IO;
 using System.Text;
 using System.Threading;
@@ -59,33 +58,6 @@ namespace QuestX.WebServer
         #region Fields
 
         /// <summary>
-        /// MIME boundary string for multipart responses.
-        /// </summary>
-        private const string Boundary = "frame";
-
-        /// <summary>
-        /// Initial buffer size for frame data.
-        /// </summary>
-        private const int InitialBufferSize = 32 * 1024;
-
-        /// <summary>
-        /// UTF-8 encoding for header strings.
-        /// </summary>
-        private static readonly Encoding DefaultEncoding = Encoding.UTF8;
-
-        /// <summary>
-        /// Pre-encoded header start bytes for MJPEG frames.
-        /// </summary>
-        private static readonly byte[] HeaderStartBytes = DefaultEncoding.GetBytes(
-            "\r\n--" + Boundary + "\r\n" + "Content-Type: image/jpeg\r\n" + "Content-Length: "
-        );
-
-        /// <summary>
-        /// Pre-encoded header end bytes.
-        /// </summary>
-        private static readonly byte[] HeaderEndBytes = DefaultEncoding.GetBytes("\r\n\r\n");
-
-        /// <summary>
         /// Source providing encoded video frames.
         /// </summary>
         private readonly IFrameSource frameSource;
@@ -108,11 +80,6 @@ namespace QuestX.WebServer
         /// Maximum framerate from the frame source, defaults to 15 fps.
         /// </summary>
         private int MaxFrameRate => Math.Max(1, frameSource?.MaxFrameRate ?? 15);
-
-        /// <summary>
-        /// Delay between frames based on max framerate.
-        /// </summary>
-        private TimeSpan FrameDelay => TimeSpan.FromSeconds(1.0f / MaxFrameRate);
 
         /// <summary>
         /// Gets the number of clients currently registered with the MJPEG stream.
@@ -215,8 +182,9 @@ namespace QuestX.WebServer
 
                 context.Response.StatusCode = 200;
                 // The boundary parameter names the token itself. The required leading
-                // "--" is added only to each multipart delimiter in HeaderStartBytes.
-                context.Response.ContentType = "multipart/x-mixed-replace; boundary=" + Boundary;
+                // "--" is added only to each multipart delimiter written by MjpegStream.
+                context.Response.ContentType =
+                    "multipart/x-mixed-replace; boundary=" + MjpegStream.Boundary;
                 context.Response.SendChunked = true;
 
                 Debug.Log(
@@ -224,41 +192,14 @@ namespace QuestX.WebServer
                 );
 
                 using (Stream responseStream = context.OpenResponseStream(preferCompression: false))
-                using (MemoryStream memStream = new MemoryStream(InitialBufferSize))
                 {
-                    int lastFrame = 0;
-
-                    while (
-                        !context.CancellationToken.IsCancellationRequested
-                        && frameSource.IsAvailable
-                    )
-                    {
-                        var frame = frameSource.CurrentFrame;
-                        if (lastFrame < frame.frameNumber)
-                        {
-                            try
-                            {
-                                // Reset the content of memStream
-                                memStream.SetLength(0);
-                                WriteFrame(memStream, frame.frameData);
-
-                                // Copy the buffer into the response stream
-                                memStream.Position = 0;
-                                memStream.CopyTo(responseStream);
-                                responseStream.Flush();
-
-                                // Don't re-send the same frame
-                                lastFrame = frame.frameNumber;
-                            }
-                            catch (IOException)
-                            {
-                                // Failed to write back to the client client, it probably disconnected - exit gracefully
-                                break;
-                            }
-                        }
-
-                        await Task.Delay(FrameDelay, context.CancellationToken);
-                    }
+                    await MjpegStream.StreamAsync(
+                        responseStream,
+                        () => frameSource.CurrentFrame,
+                        () => frameSource.IsAvailable,
+                        () => MaxFrameRate,
+                        context.CancellationToken
+                    );
                 }
             }
             finally
@@ -334,29 +275,6 @@ namespace QuestX.WebServer
                     return remaining;
                 }
             }
-        }
-
-        /// <summary>
-        /// Writes a single MJPEG frame to the stream.
-        /// </summary>
-        /// <param name="stream">Output stream.</param>
-        /// <param name="jpegData">JPEG encoded image data.</param>
-        private static void WriteFrame(Stream stream, byte[] jpegData)
-        {
-            // Use Utf8Formatter to avoid memory allocations each frame for ToString() and GetBytes()
-            Span<byte> lengthBuffer = stackalloc byte[9];
-            if (!Utf8Formatter.TryFormat(jpegData.Length, lengthBuffer, out int strLen))
-            {
-                Debug.Log("[VideoStreamProvider] Returned false");
-                return;
-            }
-
-            stream.Write(HeaderStartBytes);
-            // Write the string representation of the ContentLength to the stream
-            stream.Write(lengthBuffer[..strLen]);
-            stream.Write(HeaderEndBytes);
-            stream.Write(jpegData);
-            stream.Flush();
         }
 
         #endregion
