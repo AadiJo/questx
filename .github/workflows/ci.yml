@@ -31,6 +31,7 @@ jobs:
               - 'questx-lib/**/*.gradle'
               - '.github/**'
             csharp:
+              - 'native/napa/**'
               - 'unity/**/*.cs'
               - 'unity/**/*.json'
               - 'unity/**/*.unity'

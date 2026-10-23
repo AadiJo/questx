@@ -74,7 +74,7 @@ QuestX uses four native C/C++ libraries accessed via P/Invoke (`[DllImport]`). A
 
 | Library | Source | Purpose | Platform Files |
 |---------|--------|---------|----------------|
-| **libnapa** | Napa, vendored in `native/napa` | Default tag36h11 detector | `libnapa.so` (Quest), `napa.dll` (Editor) |
+| **libnapa** | `napa-vision==0.4.1`, restored from PyPI | Default tag36h11 detector | `libnapa.so` (Quest), `napa.dll` (Editor) |
 | **libapriltag** | University of Michigan | Alternative tag detector; tag bitmaps for checks | `libapriltag.so` (Quest), `apriltag.dll` (Editor) |
 | **libposelib** | PoseLib project | Multi-tag PnP pose estimation | `libposelib.so` (Quest), `poselib.dll` (Editor) |
 | **libntcore** | WPILib | NetworkTables 4 protocol | `libntcore.so` + deps (Quest), `ntcore.dll` + deps (Editor) |
@@ -110,7 +110,7 @@ Three functions, wrapped by `NapaCore` and `NapaTagDetector`:
 | `napa_create()` / `napa_destroy()` | Detector handle with reusable buffers (one per camera stream, not thread-safe) |
 | `napa_detect(det, img, w, h, stride, params, out, max_out)` | Detect into a caller-owned `napa_detection[]`; returns the count or a negative error |
 
-Napa reports corners in OpenCV order with pixel (0, 0)'s center at (0, 0). `NapaCore` converts them to libapriltag's conventions: libapriltag corner `i` is Napa corner `{1, 0, 3, 2}[i]`, shifted by +0.5 px, and the center is the intersection of the diagonals. Rebuild the binaries with `native/napa/build.sh`, check them with `dotnet run -c Release --project tests/napa-detector`, and check them on a headset with `tests/native-localization/napa_android_check.c`.
+Napa reports corners in OpenCV order with pixel (0, 0)'s center at (0, 0). `NapaCore` converts them to libapriltag's conventions: libapriltag corner `i` is Napa corner `{1, 0, 3, 2}[i]`, shifted by +0.5 px, and the center is the intersection of the diagonals. Restore the published binaries with `python native/napa/restore.py`, check them with `dotnet run -c Release --project tests/napa-detector`, and check them on a headset with `tests/native-localization/napa_android_check.c`.
 
 ### PoseLib Solver (libposelib)
 

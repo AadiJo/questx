@@ -1,11 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 using QuestX.Camera;
 using QuestX.Native.AprilTag;
-using Unity.Collections;
-using Unity.Collections.LowLevel.Unsafe;
-using Unity.Jobs;
-using UnityEngine;
 
 namespace QuestX.Native.Napa
 {
@@ -17,7 +14,8 @@ namespace QuestX.Native.Napa
     public sealed unsafe class NapaTagDetector : ITagDetector
     {
         private NapaCore core;
-        private NativeArray<byte> gray;
+        private byte* gray;
+        private int grayLength;
 
         public NapaTagDetector(int minTagPixels, int maxHamming)
         {
@@ -29,7 +27,8 @@ namespace QuestX.Native.Napa
         public GrayImage Image { get; private set; }
 
         public bool Detect(
-            NativeArray<Color32> colors,
+            IntPtr rgba,
+            long byteCount,
             int width,
             int height,
             List<TagDetection> detections
@@ -39,37 +38,31 @@ namespace QuestX.Native.Napa
                 throw new ObjectDisposedException(nameof(NapaTagDetector));
             detections.Clear();
             Image = default;
-            if (!colors.IsCreated || width <= 0 || height <= 0 || colors.Length < width * height)
+            if (!LibAprilTagDetector.IsReadable(rgba, byteCount, width, height))
                 return false;
 
             int pixels = width * height;
-            if (!gray.IsCreated || gray.Length != pixels)
+            if (gray == null || grayLength != pixels)
             {
-                if (gray.IsCreated)
-                    gray.Dispose();
-                gray = new NativeArray<byte>(
-                    pixels,
-                    Allocator.Persistent,
-                    NativeArrayOptions.UninitializedMemory
-                );
+                FreeGray();
+                gray = (byte*)Marshal.AllocHGlobal(pixels);
+                grayLength = pixels;
             }
 
-            new GrayscaleConversionJob
-            {
-                Source = colors.Reinterpret<byte>(4),
-                Destination = gray,
-                Width = width,
-                Height = height,
-                Stride = width,
-                FlipVertically = true,
-            }
-                .Schedule(height, 32)
-                .Complete();
-
-            var buffer = (byte*)gray.GetUnsafeReadOnlyPtr();
-            core.Detect(buffer, width, height, width, detections);
-            Image = new GrayImage((IntPtr)buffer, width, height, width);
+            GrayscaleConversion.BottomUpRgbaToGray((byte*)rgba, gray, width, height, width);
+            core.Detect(gray, width, height, width, detections);
+            Image = new GrayImage((IntPtr)gray, width, height, width);
             return true;
+        }
+
+        private void FreeGray()
+        {
+            if (gray != null)
+            {
+                Marshal.FreeHGlobal((IntPtr)gray);
+                gray = null;
+                grayLength = 0;
+            }
         }
 
         public void Dispose()
@@ -77,8 +70,7 @@ namespace QuestX.Native.Napa
             core?.Dispose();
             core = null;
             Image = default;
-            if (gray.IsCreated)
-                gray.Dispose();
+            FreeGray();
         }
     }
 }

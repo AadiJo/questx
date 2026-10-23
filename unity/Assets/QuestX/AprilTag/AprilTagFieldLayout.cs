@@ -12,8 +12,20 @@ namespace QuestX.QuestX.AprilTag
 {
     public class AprilTagFieldLayout
     {
+        private List<AprilTagFieldEntry> tags;
+        private readonly Dictionary<int, (Pose3d Pose, Translation3d[] Corners)> cornerCache =
+            new Dictionary<int, (Pose3d, Translation3d[])>();
+
         [JsonProperty("tags")]
-        public List<AprilTagFieldEntry> Tags { get; set; }
+        public List<AprilTagFieldEntry> Tags
+        {
+            get => tags;
+            set
+            {
+                tags = value;
+                cornerCache.Clear();
+            }
+        }
 
         [JsonProperty("field")]
         public Field2d Field { get; set; }
@@ -211,12 +223,44 @@ namespace QuestX.QuestX.AprilTag
         /// <returns>An array containing four Translation3Ds of the corners</returns>
         public Translation3d[] GetTagCorners(int id)
         {
-            foreach (var tag in Tags)
-            {
-                if (tag.ID != id)
-                    continue;
+            var corners = GetCachedTagCorners(id);
+            // Preserve caller ownership of the public array. Translation3d is immutable.
+            return corners == null
+                ? Array.Empty<Translation3d>()
+                : (Translation3d[])corners.Clone();
+        }
 
-                var tagPose = tag.Pose;
+        /// <summary>
+        /// Copies cached field corners into a solve-owned packed XYZ buffer, without exposing
+        /// the cached array. Returns false for an unknown ID, leaving the buffer untouched.
+        /// </summary>
+        internal bool TryCopyTagCorners(int id, double[] destination, int offset)
+        {
+            var corners = GetCachedTagCorners(id);
+            if (corners == null)
+                return false;
+            for (int i = 0; i < corners.Length; i++)
+            {
+                destination[offset++] = corners[i].X;
+                destination[offset++] = corners[i].Y;
+                destination[offset++] = corners[i].Z;
+            }
+            return true;
+        }
+
+        private Translation3d[] GetCachedTagCorners(int id)
+        {
+            // Tags and its entries are publicly mutable. Resolve the current pose first so
+            // in-place edits (including ID changes, removals and reordering) cannot reuse
+            // stale geometry. Pose3d and its translation/rotation values are immutable.
+            var tagPose = GetTagPose(id);
+            if (tagPose != null)
+            {
+                if (
+                    cornerCache.TryGetValue(id, out var cached)
+                    && ReferenceEquals(cached.Pose, tagPose)
+                )
+                    return cached.Corners;
 
                 // Corners ordered to match the passthrough camera's clockwise detection order
                 // (BR, BL, UL, UR); the single-tag camera-frame solve shares this order.
@@ -229,13 +273,14 @@ namespace QuestX.QuestX.AprilTag
                         .Translation;
                 }
 
+                cornerCache[id] = (tagPose, fieldTransforms);
                 return fieldTransforms;
             }
             // ID does not exist in our list.
             QueuedLogger.LogWarning(
                 $"Attempted to get corners of non-existent ID in the current field layout! ID: {id}"
             );
-            return new Translation3d[] { };
+            return null;
         }
     }
 }

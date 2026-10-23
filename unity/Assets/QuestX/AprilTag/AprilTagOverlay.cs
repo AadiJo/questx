@@ -12,8 +12,9 @@ namespace QuestX.QuestX.AprilTag
 {
     /// <summary>
     /// Latest-frame-only handoff from the detector to HTTP viewers. Each frame owns
-    /// both its JPEG and detections. Viewers request another frame after consuming
-    /// the previous one; multiple viewers share the same encoded frame.
+    /// both its JPEG and detections. A short viewer lease permits capture to overlap HTTP
+    /// transfer and browser decoding; slow viewers skip to the latest complete frame.
+    /// Multiple viewers share the same encoded frame, with no per-viewer frame queue.
     /// </summary>
     public sealed class AprilTagOverlay
     {
@@ -23,7 +24,6 @@ namespace QuestX.QuestX.AprilTag
         private readonly Func<double> clock;
         private bool enabled;
         private bool streamEnabled;
-        private bool requested;
         private double requestedUntil;
         private long revision;
         private Frame frame;
@@ -46,7 +46,7 @@ namespace QuestX.QuestX.AprilTag
             {
                 lock (sync)
                 {
-                    return enabled && streamEnabled && requested && clock() < requestedUntil;
+                    return enabled && streamEnabled && clock() < requestedUntil;
                 }
             }
         }
@@ -108,12 +108,11 @@ namespace QuestX.QuestX.AprilTag
             }
             lock (sync)
             {
-                if (!enabled || !streamEnabled || !requested || clock() >= requestedUntil)
+                if (!enabled || !streamEnabled || clock() >= requestedUntil)
                 {
                     return;
                 }
                 frame = new Frame(++revision, width, height, capturedAt, detections, jpeg);
-                requested = false;
                 SignalLocked();
             }
         }
@@ -141,7 +140,6 @@ namespace QuestX.QuestX.AprilTag
                 requestedUntil = now + ViewerLeaseMs;
                 if (enabled && streamEnabled && !HasNewFrame(after, now))
                 {
-                    requested = true;
                     signal = changed.Task;
                 }
             }

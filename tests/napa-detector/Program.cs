@@ -13,6 +13,17 @@ using Unity.Collections;
 using UnityEngine;
 
 int assertions = 0;
+
+// Feeds a readback to a backend the way the headset's detection worker does: a pointer to
+// the bottom-up RGBA bytes and how many are readable.
+static unsafe bool Detect(ITagDetector detector, NativeArray<Color32> colors, int width, int height, List<TagDetection> found) =>
+    detector.Detect(
+        colors.IsCreated ? (IntPtr)Unity.Collections.LowLevel.Unsafe.NativeArrayUnsafeUtility.GetUnsafeReadOnlyPtr(colors) : IntPtr.Zero,
+        colors.IsCreated ? (long)colors.Length * 4 : 0,
+        width,
+        height,
+        found);
+
 void Check(bool condition, string message)
 {
     if (!condition)
@@ -221,8 +232,8 @@ for (int trial = 0; trial < trials; trial++)
         quad[k, 1] = cy + full * (ux * Math.Sin(angle) + uy * Math.Cos(angle));
     }
     var (colors, truth) = Render(width, height, new[] { (id, quad) }, random);
-    Check(napa.Detect(colors, width, height, napaDetections), "napa converted frame");
-    Check(aprilTag.Detect(colors, width, height, aprilTagDetections), "apriltag converted frame");
+    Check(Detect(napa, colors, width, height, napaDetections), "napa converted frame");
+    Check(Detect(aprilTag, colors, width, height, aprilTagDetections), "apriltag converted frame");
     if (trial < 5)
         Check(SameImage(napa.Image, aprilTag.Image, width, height), "both backends expose the same top-down grayscale image");
     colors.Dispose();
@@ -265,15 +276,15 @@ Check(centerDelta.Max() < 0.5, "napa center matches libapriltag's projective cen
 Check(Median(napaTruthError) < 0.25, "napa corners are accurate in libapriltag's pixel convention");
 
 // Lifecycle and edge cases.
-Check(!napa.Detect(default, 640, 480, napaDetections), "uncreated readback is skipped");
+Check(!Detect(napa, default, 640, 480, napaDetections), "uncreated readback is skipped");
 Check(!napa.Image.IsValid, "a skipped frame leaves no image to preview");
 var tiny = new NativeArray<Color32>(8 * 8, Allocator.Persistent);
-Check(napa.Detect(tiny, 8, 8, napaDetections) && napaDetections.Count == 0, "tiny frame yields nothing");
-Check(!napa.Detect(tiny, 640, 480, napaDetections), "short readback is skipped");
+Check(Detect(napa, tiny, 8, 8, napaDetections) && napaDetections.Count == 0, "tiny frame yields nothing");
+Check(!Detect(napa, tiny, 640, 480, napaDetections), "short readback is skipped");
 tiny.Dispose();
 
 // Several tags at Quest's default 1280x1280, timed through ITagDetector (grayscale + detect;
-// the stubbed conversion job is single-threaded and unbursted, unlike on the headset).
+// the conversion runs unbursted here, unlike on the headset).
 {
     const int width = 1280, height = 1280;
     var scene = new List<(int, double[,])>();
@@ -292,7 +303,7 @@ tiny.Dispose();
         for (int i = 0; i < 25; i++)
         {
             long start = Stopwatch.GetTimestamp();
-            detector.Detect(colors, width, height, found);
+            Detect(detector, colors, width, height, found);
             samples.Add((Stopwatch.GetTimestamp() - start) * 1000.0 / Stopwatch.Frequency);
         }
         Console.WriteLine($"{detector.Name,-8} 1280x1280: median {Median(samples):F2} ms, IDs [{string.Join(",", found.Select(d => d.Id).OrderBy(i => i))}] of [{string.Join(",", ids)}]");
@@ -310,12 +321,11 @@ Check(!napa.Image.IsValid && !aprilTag.Image.IsValid, "disposed detectors expose
 bool threw = false;
 try
 {
-    napa.Detect(default, 640, 480, napaDetections);
+    Detect(napa, default, 640, 480, napaDetections);
 }
 catch (ObjectDisposedException)
 {
     threw = true;
 }
 Check(threw, "disposed detector refuses to run");
-ImageU8.DisposeCache();
 Console.WriteLine($"napa-detector checks passed ({assertions} assertions)");

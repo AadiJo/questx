@@ -1,7 +1,5 @@
 using System;
 using System.Collections.Generic;
-using Unity.Collections;
-using UnityEngine;
 
 namespace QuestX.Native.AprilTag
 {
@@ -32,7 +30,8 @@ namespace QuestX.Native.AprilTag
     /// <summary>
     /// A tag36h11 detector that consumes the passthrough camera's RGBA readback directly, so
     /// each backend can convert the frame into whatever buffer its native library wants.
-    /// Instances hold native state: use one per camera stream, on one thread, and dispose them.
+    /// Instances hold native state: use one per camera stream, on one thread at a time (the
+    /// detection worker), and dispose them.
     /// </summary>
     public interface ITagDetector : IDisposable
     {
@@ -46,13 +45,15 @@ namespace QuestX.Native.AprilTag
         GrayImage Image { get; }
 
         /// <summary>
-        /// Detects tags in the first <paramref name="width"/> x <paramref name="height"/> pixels
-        /// of a bottom-up RGBA readback and replaces the contents of <paramref name="detections"/>.
-        /// Returns false when the frame could not be converted (skip it); throws when the native
-        /// detector fails.
+        /// Detects tags in a tightly packed, bottom-up RGBA readback of
+        /// <paramref name="width"/> x <paramref name="height"/> pixels and replaces the contents
+        /// of <paramref name="detections"/>. Returns false when the frame could not be converted
+        /// (skip it); throws when the native detector fails.
         /// </summary>
+        /// <param name="byteCount">Readable bytes at <paramref name="rgba"/>.</param>
         bool Detect(
-            NativeArray<Color32> colors,
+            IntPtr rgba,
+            long byteCount,
             int width,
             int height,
             List<TagDetection> detections
@@ -63,14 +64,24 @@ namespace QuestX.Native.AprilTag
     public sealed unsafe class LibAprilTagDetector : ITagDetector
     {
         private AprilTagDetector detector;
+        private ImageU8 image;
+
+        /// <summary>
+        /// libapriltag splits each frame across this many threads. Detection runs on its own
+        /// worker, so this leaves the remaining cores to Unity's main, render and job threads.
+        /// </summary>
+        public static int DefaultThreadCount => Math.Clamp(Environment.ProcessorCount / 2, 1, 4);
 
         public LibAprilTagDetector()
+            : this(DefaultThreadCount) { }
+
+        public LibAprilTagDetector(int threadCount)
         {
             // The detector takes ownership of the family and disposes it with itself.
             var family = new Tag36h11();
             try
             {
-                detector = new AprilTagDetector();
+                detector = new AprilTagDetector(threadCount);
                 detector.AddFamily(family);
             }
             catch
@@ -86,7 +97,8 @@ namespace QuestX.Native.AprilTag
         public GrayImage Image { get; private set; }
 
         public bool Detect(
-            NativeArray<Color32> colors,
+            IntPtr rgba,
+            long byteCount,
             int width,
             int height,
             List<TagDetection> detections
@@ -96,10 +108,10 @@ namespace QuestX.Native.AprilTag
                 throw new ObjectDisposedException(nameof(LibAprilTagDetector));
             detections.Clear();
             Image = default;
+            if (!IsReadable(rgba, byteCount, width, height))
+                return false;
 
-            // ImageU8 returns null when the readback is uninitialized or empty (e.g. the camera
-            // was just enabled and hasn't produced a frame yet).
-            var image = ImageU8.FromPassthroughCamera(colors, width, height);
+            image = ImageU8.FromBottomUpRgba(image, rgba, width, height);
             if (image == null)
                 return false;
             var native = image.Handle;
@@ -114,10 +126,16 @@ namespace QuestX.Native.AprilTag
             return true;
         }
 
+        /// <summary>Whether a readback holds a whole bottom-up RGBA frame.</summary>
+        internal static bool IsReadable(IntPtr rgba, long byteCount, int width, int height) =>
+            rgba != IntPtr.Zero && width > 0 && height > 0 && byteCount >= (long)width * height * 4;
+
         public void Dispose()
         {
             detector?.Dispose();
             detector = null;
+            image?.Dispose();
+            image = null;
             Image = default;
         }
     }

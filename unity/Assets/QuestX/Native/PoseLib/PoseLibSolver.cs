@@ -87,38 +87,34 @@ namespace QuestX.Native.PoseLib
                 return null;
             }
 
-            var corners2d = new List<double>(count * 8);
-            var corners3d = new List<double>(count * 12);
+            var points2d = new double[count * 8];
+            var points3d = new double[count * 12];
 
-            foreach (var detection in detections)
+            for (int i = 0; i < count; i++)
             {
-                corners2d.Add(detection.CornerBottomRight0.x);
-                corners2d.Add(detection.CornerBottomRight0.y);
+                var detection = detections[i];
+                int offset = i * 8;
+                points2d[offset] = detection.CornerBottomRight0.x;
+                points2d[offset + 1] = detection.CornerBottomRight0.y;
 
-                corners2d.Add(detection.CornerBottomLeft1.x);
-                corners2d.Add(detection.CornerBottomLeft1.y);
+                points2d[offset + 2] = detection.CornerBottomLeft1.x;
+                points2d[offset + 3] = detection.CornerBottomLeft1.y;
 
-                corners2d.Add(detection.CornerUpperLeft2.x);
-                corners2d.Add(detection.CornerUpperLeft2.y);
+                points2d[offset + 4] = detection.CornerUpperLeft2.x;
+                points2d[offset + 5] = detection.CornerUpperLeft2.y;
 
-                corners2d.Add(detection.CornerUpperRight3.x);
-                corners2d.Add(detection.CornerUpperRight3.y);
+                points2d[offset + 6] = detection.CornerUpperRight3.x;
+                points2d[offset + 7] = detection.CornerUpperRight3.y;
 
-                var corner3dTranslations = fieldLayout.GetTagCorners(detection.Id);
-                foreach (var corner3d in corner3dTranslations)
-                {
-                    corners3d.Add(corner3d.X);
-                    corners3d.Add(corner3d.Y);
-                    corners3d.Add(corner3d.Z);
-                }
+                // The manager filters unknown IDs. Also guard direct callers: native code
+                // reads exactly count * 4 correspondences, so every tag needs four 3D corners.
+                if (!fieldLayout.TryCopyTagCorners(detection.Id, points3d, i * 12))
+                    return null;
             }
 
-            double[] points2d = corners2d.ToArray();
-            double[] points3d = corners3d.ToArray();
-
-            // An earlier attempt to scale the RANSAC threshold with colors.Length was based
-            // on a misread of the Meta SDK's GetColors over-allocation; see AprilTagManager
-            // comment in AprilTagFrameCaptureCoroutine.
+            // An earlier attempt to scale the RANSAC threshold with the readback length was
+            // based on a misread of the Meta SDK's GetColors buffer, which is allocated 4x the
+            // image. Frames now come from CameraFrameReadback, sized exactly to the image.
             int status = PoseLibNatives.poselib_estimate_absolute_pose_simple(
                 points2d,
                 points3d,

@@ -8,8 +8,6 @@ using QuestX.Config;
 using QuestX.Network;
 using QuestX.Utils;
 using QuestX.WebServer;
-using Unity.Collections;
-using Unity.Collections.LowLevel.Unsafe;
 using UnityEngine;
 using static QuestX.Config.Config;
 using static QuestX.Core.QuestXConstants;
@@ -205,11 +203,6 @@ namespace QuestX.Camera
                     : new[] { $"mjpg:{BaseUrl}/video" };
             }
         }
-
-        /// <summary>
-        /// Delay between frame captures in seconds.
-        /// </summary>
-        private float FrameDelaySeconds => 1.0f / Math.Max(1, MaxFrameRate);
 
         /// <summary>
         /// Reference to the running frame capture coroutine.
@@ -635,6 +628,10 @@ namespace QuestX.Camera
                         frameCaptureCoroutine = null;
                     }
 
+                    // Drop any frame still being read back or encoded, and free the encoder.
+                    captureGeneration++;
+                    StopEncoder(EncoderStopTimeout);
+
                     // Release our camera reservation. If the AprilTag detector is also
                     // active and holding a high-priority reservation, the camera stays on
                     // at the AprilTag-pinned resolution; otherwise it shuts down.
@@ -648,12 +645,14 @@ namespace QuestX.Camera
         }
 
         /// <summary>
-        /// Captures frames from the passthrough camera at the requested frame rate and encodes them as JPEG.
+        /// Captures frames from the passthrough camera at the requested frame rate and encodes
+        /// them as JPEG. The main thread only starts a non-blocking GPU readback of each frame;
+        /// <see cref="encoder"/> compresses it on its own thread.
         /// </summary>
         public IEnumerator FrameCaptureCoroutine()
         {
             QueuedLogger.Log("Initializing LJPGT");
-            LJTCompressor compressor = null;
+            double nextFrameAtMs = 0;
 
             while (true)
             {
@@ -664,12 +663,14 @@ namespace QuestX.Camera
                 if (shouldBePaused && !isPaused)
                 {
                     isPaused = true;
+                    captureGeneration++;
                     CurrentFrame = default;
                     QueuedLogger.Log("Paused capture");
                 }
                 else if (!shouldBePaused && isPaused)
                 {
                     isPaused = false;
+                    nextFrameAtMs = 0;
                     Interlocked.Exchange(
                         ref lastCameraRecoveryTimestampMs,
                         DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
@@ -684,76 +685,209 @@ namespace QuestX.Camera
                     continue;
                 }
 
-                CaptureAttempt result = TryCaptureFrame(ref compressor);
-                yield return result == CaptureAttempt.NotReady
-                    ? null
-                    : new WaitForSeconds(FrameDelaySeconds);
+                double nowMs = Time.realtimeSinceStartupAsDouble * 1000.0;
+                double deadline = nextFrameAtMs;
+                if (FrameCadence.TryTake(nowMs, 1000.0 / MaxFrameRate, ref deadline))
+                {
+                    CaptureAttempt result = TryCaptureFrame();
+                    if (result != CaptureAttempt.NotReady)
+                    {
+                        // Preserve phase across the camera's frame grid. Only consume a
+                        // deadline when capture starts (or fails); busy frames can retry.
+                        nextFrameAtMs = deadline;
+                    }
+                }
+                yield return null;
             }
         }
 
         /// <summary>
-        /// Attempts to acquire and encode one frame. All SDK, texture readback, and
-        /// compressor failures are contained here so a transient fault cannot terminate
-        /// <see cref="FrameCaptureCoroutine"/>.
+        /// Starts the readback of one frame. All SDK and readback failures are contained here
+        /// so a transient fault cannot terminate <see cref="FrameCaptureCoroutine"/>.
         /// </summary>
-        private CaptureAttempt TryCaptureFrame(ref LJTCompressor compressor)
+        private CaptureAttempt TryCaptureFrame()
         {
             try
             {
+                // An encoder that outlived its stop still owns the buffers and would discard
+                // every frame. Replace it once it has finished.
+                if (encoderStopPending && !StopEncoder(TimeSpan.Zero))
+                {
+                    return CaptureAttempt.NotReady;
+                }
+
                 // The camera arbiter briefly disables the camera while applying a new
                 // resolution. Likewise, the SDK may need several frames before reporting
-                // an update after it is re-enabled. Neither condition is a failure.
-                if (!cameraAccess.enabled || !cameraAccess.IsUpdatedThisFrame)
+                // an update after it is re-enabled. Neither condition is a failure, and
+                // neither is the previous frame still being read back or encoded.
+                if (!cameraAccess.enabled || !cameraAccess.IsUpdatedThisFrame || captureBusy)
                 {
                     TryRecoverStalledCamera();
                     return CaptureAttempt.NotReady;
                 }
 
                 Texture texture = cameraAccess.GetTexture();
-                Texture2D texture2D = ResolveTexture2D(texture);
-                if (texture2D == null)
+                var frame = new StreamFrame
                 {
-                    RecordCaptureFailure("The camera returned no encodable texture");
+                    Generation = captureGeneration,
+                    FrameNumber = Time.frameCount,
+                    Orientation = orientation,
+                    Quality = compressionQuality,
+                };
+                captureBusy = true;
+                if (
+                    !streamReadback.TryRequest(
+                        texture,
+                        succeeded => OnStreamReadbackCompleted(frame, succeeded),
+                        out string failure
+                    )
+                )
+                {
+                    captureBusy = false;
+                    RecordCaptureFailure(failure);
                     TryRecoverStalledCamera();
                     return CaptureAttempt.Failed;
                 }
+                return CaptureAttempt.Succeeded;
+            }
+            catch (Exception ex)
+            {
+                if (!streamReadback.InFlight)
+                {
+                    captureBusy = false;
+                }
+                string permissionHint =
+                    ex is NullReferenceException
+                        ? " Verify that the 'Headset Cameras' app permission is enabled."
+                        : string.Empty;
+                RecordCaptureFailure($"Frame capture failed.{permissionHint}", ex);
+                TryRecoverStalledCamera();
+                return CaptureAttempt.Failed;
+            }
+        }
 
+        /// <summary>Main thread, when a frame's GPU copy finishes.</summary>
+        private void OnStreamReadbackCompleted(StreamFrame frame, bool succeeded)
+        {
+            if (frame.Generation != captureGeneration)
+            {
+                captureBusy = false;
+                return;
+            }
+            if (!succeeded)
+            {
+                captureBusy = false;
+                RecordCaptureFailure("The GPU readback of the camera frame failed");
+                return;
+            }
+            encoder ??= new LatestOnlyWorker<StreamFrame>(
+                "Passthrough stream encoder",
+                EncodeFrame,
+                _ => captureBusy = false
+            );
+            encoder.Post(frame);
+        }
+
+        /// <summary>
+        /// Encoder thread. Compresses the completed readback, then frees it for the next frame.
+        /// </summary>
+        private void EncodeFrame(StreamFrame frame)
+        {
+            try
+            {
+                if (frame.Generation != captureGeneration)
+                {
+                    return;
+                }
                 compressor ??= new LJTCompressor();
                 byte[] rawJpeg =
-                    orientation == CameraOrientation.NORMAL
-                        ? compressor.EncodeJPG(texture2D, compressionQuality)
-                        : EncodeRotatedJpeg(compressor, texture2D);
+                    frame.Orientation == CameraOrientation.NORMAL
+                        ? compressor.Compress(
+                            streamReadback.Data,
+                            streamReadback.Width * 4,
+                            streamReadback.Width,
+                            streamReadback.Height,
+                            LJTPixelFormat.RGBA,
+                            LJTSubsamplingOption.Chrominance420,
+                            frame.Quality,
+                            LJTFlags.BottomUp
+                        )
+                        : EncodeRotatedJpeg(frame);
                 if (rawJpeg == null || rawJpeg.Length == 0)
                 {
                     RecordCaptureFailure("The JPEG compressor returned an empty frame");
-                    compressor = null;
-                    TryRecoverStalledCamera();
-                    return CaptureAttempt.Failed;
+                    DropCompressor();
+                    return;
+                }
+                if (frame.Generation != captureGeneration)
+                {
+                    return;
                 }
 
-                CurrentFrame = new EncodedFrame(Time.frameCount, rawJpeg);
+                CurrentFrame = new EncodedFrame(frame.FrameNumber, rawJpeg);
                 Interlocked.Exchange(ref consecutiveCaptureFailures, 0);
                 Interlocked.Exchange(
                     ref lastSuccessfulFrameTimestampMs,
                     DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
                 );
-                lastWarnedTextureType = null;
-                return CaptureAttempt.Succeeded;
             }
             catch (Exception ex)
             {
-                // Recreate the compressor after any exception. This is harmless for
-                // camera/readback faults and avoids reusing native encoder state after an
-                // encoding failure.
-                compressor = null;
-                string permissionHint =
-                    ex is NullReferenceException
-                        ? " Verify that the 'Headset Cameras' app permission is enabled."
-                        : string.Empty;
-                RecordCaptureFailure($"Frame capture or JPEG encoding failed.{permissionHint}", ex);
-                TryRecoverStalledCamera();
-                return CaptureAttempt.Failed;
+                // Avoid reusing native encoder state after an encoding failure.
+                DropCompressor();
+                RecordCaptureFailure("JPEG encoding failed.", ex);
             }
+            finally
+            {
+                captureBusy = false;
+            }
+        }
+
+        private void DropCompressor()
+        {
+            compressor?.Dispose();
+            compressor = null;
+        }
+
+        /// <summary>Stops streaming and frees the encoder. Call when the app shuts down.</summary>
+        public void Shutdown()
+        {
+            if (frameCaptureCoroutine != null)
+            {
+                coroutineHost.StopCoroutine(frameCaptureCoroutine);
+                frameCaptureCoroutine = null;
+            }
+            captureGeneration++;
+            StopEncoder(EncoderStopTimeout);
+        }
+
+        /// <summary>
+        /// Main thread. Stops the encoder thread after its current frame, then frees the readback
+        /// buffer (waiting for a copy still in flight), the compressor and the scratch buffer. If
+        /// the encoder does not stop in time they stay allocated and capture retries before its
+        /// next frame (<see cref="encoderStopPending"/>). Returns whether the encoder is gone.
+        /// </summary>
+        private bool StopEncoder(TimeSpan timeout)
+        {
+            if (encoder != null && !encoder.Stop(timeout))
+            {
+                if (timeout > TimeSpan.Zero)
+                {
+                    QueuedLogger.LogError(
+                        $"Passthrough stream encoder did not stop within {timeout.TotalSeconds:F0} s; "
+                            + "leaving its buffers allocated until it finishes."
+                    );
+                }
+                encoderStopPending = true;
+                return false;
+            }
+            encoderStopPending = false;
+            encoder = null;
+            streamReadback.Dispose();
+            DropCompressor();
+            rotationBuffer = null;
+            captureBusy = false;
+            return true;
         }
 
         /// <summary>
@@ -825,73 +959,49 @@ namespace QuestX.Camera
         }
 
         /// <summary>
-        /// Rotates the bottom-up texture upright for <see cref="orientation"/> and encodes it.
+        /// Encoder thread. Rotates the bottom-up readback upright for the frame's orientation
+        /// and encodes it.
         /// </summary>
-        private unsafe byte[] EncodeRotatedJpeg(LJTCompressor compressor, Texture2D texture)
+        private unsafe byte[] EncodeRotatedJpeg(StreamFrame frame)
         {
-            LJTPixelFormat format;
-            int bytesPerPixel;
-            switch (texture.format)
+            const int bytesPerPixel = 4;
+            int width = streamReadback.Width;
+            int height = streamReadback.Height;
+            int bytes = width * height * bytesPerPixel;
+            if (rotationBuffer == null || rotationBuffer.Length != bytes)
             {
-                case TextureFormat.RGB24:
-                    format = LJTPixelFormat.RGB;
-                    bytesPerPixel = 3;
-                    break;
-                case TextureFormat.RGBA32:
-                    format = LJTPixelFormat.RGBA;
-                    bytesPerPixel = 4;
-                    break;
-                case TextureFormat.ARGB32:
-                    format = LJTPixelFormat.ARGB;
-                    bytesPerPixel = 4;
-                    break;
-                case TextureFormat.BGRA32:
-                    format = LJTPixelFormat.BGRA;
-                    bytesPerPixel = 4;
-                    break;
-                default:
-                    throw new NotSupportedException(
-                        $"Cannot rotate {texture.format} frames for the {orientation} orientation"
-                    );
+                rotationBuffer = new byte[bytes];
             }
-
-            int width = texture.width;
-            int height = texture.height;
-            var source = texture.GetRawTextureData<byte>();
-            if (source.Length < width * height * bytesPerPixel)
-            {
-                throw new InvalidOperationException(
-                    $"Texture data is {source.Length} bytes; expected {width * height * bytesPerPixel}"
-                );
-            }
-
-            using var rotated = ImageRotationJob.Rotate(
-                source,
-                width,
-                height,
-                width * bytesPerPixel,
-                bytesPerPixel,
-                sourceBottomUp: true,
-                orientation,
-                Allocator.TempJob
-            );
             CameraOrientationMath.RotateSize(
-                orientation,
+                frame.Orientation,
                 width,
                 height,
                 out int rotatedWidth,
                 out int rotatedHeight
             );
-            return compressor.Compress(
-                (IntPtr)NativeArrayUnsafeUtility.GetUnsafeReadOnlyPtr(rotated),
-                rotatedWidth * bytesPerPixel,
-                rotatedWidth,
-                rotatedHeight,
-                format,
-                LJTSubsamplingOption.Chrominance420,
-                compressionQuality,
-                LJTFlags.None
-            );
+            fixed (byte* rotated = rotationBuffer)
+            {
+                ImageRotation.Rotate(
+                    (byte*)streamReadback.Data,
+                    width,
+                    height,
+                    width * bytesPerPixel,
+                    bytesPerPixel,
+                    1,
+                    frame.Orientation,
+                    rotated
+                );
+                return compressor.Compress(
+                    (IntPtr)rotated,
+                    rotatedWidth * bytesPerPixel,
+                    rotatedWidth,
+                    rotatedHeight,
+                    LJTPixelFormat.RGBA,
+                    LJTSubsamplingOption.Chrominance420,
+                    frame.Quality,
+                    LJTFlags.None
+                );
+            }
         }
 
         private enum CaptureAttempt
@@ -901,90 +1011,41 @@ namespace QuestX.Camera
             Failed,
         }
 
-        /// <summary>
-        /// Cached Texture2D used as a readback target when <c>cameraAccess.GetTexture()</c>
-        /// returns a RenderTexture. Re-allocated only when the source RT dimensions change.
-        /// </summary>
-        private Texture2D rgbaReadbackCache;
-
-        /// <summary>
-        /// Tracks the last "unexpected texture type" name we logged so we only log once per
-        /// distinct type. Without this the coroutine would spam the log at frame rate when
-        /// the SDK steady-states on something we can't handle.
-        /// </summary>
-        private string lastWarnedTextureType;
-
-        /// <summary>
-        /// Resolves whatever <see cref="PassthroughCameraAccess.GetTexture"/> returned into a
-        /// Texture2D suitable for libjpeg-turbo encoding.
-        ///
-        /// The Meta SDK normally returns a Texture2D for the passthrough RGB camera, but on
-        /// the first frame or two after a camera bounce (especially via the
-        /// CameraResourceManager arbiter) it can transiently return a RenderTexture while
-        /// the underlying Android Camera2 pipeline initializes. Returning RenderTexture is
-        /// also the documented path for some YUV420 -> RGBA conversion modes added in v83.
-        ///
-        /// Returns null when the SDK gave us nothing usable; the coroutine treats that as
-        /// "skip this frame, try again next iteration".
-        /// </summary>
-        private Texture2D ResolveTexture2D(Texture source)
+        /// <summary>What the encoder needs about a frame, captured when its readback started.</summary>
+        private sealed class StreamFrame
         {
-            if (source == null)
-            {
-                return null;
-            }
-            if (source is Texture2D direct)
-            {
-                return direct;
-            }
-            if (source is RenderTexture rt)
-            {
-                if (
-                    rgbaReadbackCache == null
-                    || rgbaReadbackCache.width != rt.width
-                    || rgbaReadbackCache.height != rt.height
-                )
-                {
-                    if (rgbaReadbackCache != null)
-                    {
-                        UnityEngine.Object.Destroy(rgbaReadbackCache);
-                    }
-                    rgbaReadbackCache = new Texture2D(
-                        rt.width,
-                        rt.height,
-                        TextureFormat.RGBA32,
-                        mipChain: false
-                    );
-                }
-                var prev = RenderTexture.active;
-                try
-                {
-                    RenderTexture.active = rt;
-                    rgbaReadbackCache.ReadPixels(
-                        new Rect(0, 0, rt.width, rt.height),
-                        0,
-                        0,
-                        recalculateMipMaps: false
-                    );
-                    rgbaReadbackCache.Apply(updateMipmaps: false, makeNoLongerReadable: false);
-                    return rgbaReadbackCache;
-                }
-                finally
-                {
-                    RenderTexture.active = prev;
-                }
-            }
-            // Anything else (a Cubemap, RenderTextureArray, etc.) - log once per type and bail.
-            string typeName = source.GetType().Name;
-            if (lastWarnedTextureType != typeName)
-            {
-                QueuedLogger.LogError(
-                    $"GetTexture returned an unsupported texture type ({typeName}); frames will be skipped until the SDK returns a Texture2D or RenderTexture."
-                );
-                lastWarnedTextureType = typeName;
-            }
-            return null;
+            public int Generation;
+            public int FrameNumber;
+            public CameraOrientation Orientation;
+            public int Quality;
         }
+
+        /// <summary>
+        /// Non-blocking copy of the camera texture. Reused for every frame: the next readback
+        /// starts only after the previous frame is encoded (<see cref="captureBusy"/>).
+        /// </summary>
+        private readonly CameraFrameReadback streamReadback = new CameraFrameReadback();
+
+        /// <summary>Compresses frames off the main thread. Created with the first frame.</summary>
+        private LatestOnlyWorker<StreamFrame> encoder;
+
+        /// <summary>How long stopping the stream waits for the frame being encoded.</summary>
+        private static readonly TimeSpan EncoderStopTimeout = TimeSpan.FromSeconds(2);
+
+        /// <summary>A stop timed out; the stopped encoder must be cleaned up before reuse.</summary>
+        private bool encoderStopPending;
+
+        /// <summary>Encoder-owned JPEG compressor and rotation scratch buffer.</summary>
+        private LJTCompressor compressor;
+        private byte[] rotationBuffer;
+
+        /// <summary>A frame is being read back or encoded, so the readback buffer is in use.</summary>
+        private volatile bool captureBusy;
+
+        /// <summary>
+        /// Changes when capture pauses or stops, so a frame started before then is not published.
+        /// </summary>
+        private volatile int captureGeneration;
 
         /// <summary>
         /// Invokes an action on the main thread using the captured SynchronizationContext.

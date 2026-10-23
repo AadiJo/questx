@@ -1,116 +1,60 @@
 using System;
 using QuestX.Camera;
 using QuestX.Utils;
-using Unity.Collections;
-using Unity.Collections.LowLevel.Unsafe;
-using Unity.Jobs;
-using UnityEngine;
 
 namespace QuestX.Native.AprilTag
 {
+    /// <summary>
+    /// A libapriltag image_u8 that one detector owns and refills each frame.
+    /// </summary>
     public unsafe class ImageU8 : IDisposable
     {
         internal ImageU8Native* Handle { get; private set; }
-        private bool disposed;
-        private bool ownsHandle;
 
-        private ImageU8(ImageU8Native* img, bool ownsHandle = true)
+        private ImageU8(ImageU8Native* img)
         {
             Handle = img;
-            this.ownsHandle = ownsHandle;
         }
 
-        private static ImageU8Native* cachedImage;
-        private static int cachedWidth;
-        private static int cachedHeight;
+        public int Width => Handle == null ? 0 : Handle->width;
+        public int Height => Handle == null ? 0 : Handle->height;
 
         /// <summary>
-        /// Creates an ImageU8 from PassthroughCameraAccess.GetColors()
+        /// Returns <paramref name="image"/> refilled from a tightly packed, bottom-up RGBA
+        /// readback (the passthrough camera's layout), flipped to libapriltag's top-left origin.
+        /// Reallocates when the size changes. Returns null if the native image cannot be created.
         /// </summary>
-        public static ImageU8 FromPassthroughCamera(
-            NativeArray<Color32> colors,
-            int width,
-            int height,
-            bool flipVertically = true
-        )
+        public static ImageU8 FromBottomUpRgba(ImageU8 image, IntPtr rgba, int width, int height)
         {
-            if (!colors.IsCreated || colors.Length == 0)
+            if (image == null || image.Width != width || image.Height != height)
             {
-                QueuedLogger.LogError("Colors array is invalid");
-                return null;
-            }
-
-            // Reuse native image buffer
-            if (cachedImage == null || cachedWidth != width || cachedHeight != height)
-            {
-                if (cachedImage != null)
-                {
-                    AprilTagNatives.image_u8_destroy(cachedImage);
-                }
-
-                cachedImage = AprilTagNatives.image_u8_create(width, height);
-                cachedWidth = width;
-                cachedHeight = height;
-
-                if (cachedImage == null)
+                image?.Dispose();
+                var native = AprilTagNatives.image_u8_create(width, height);
+                if (native == null)
                 {
                     QueuedLogger.LogError("Failed to create native ImageU8");
                     return null;
                 }
+                image = new ImageU8(native);
             }
 
-            // Wrap destination buffer
-            NativeArray<byte> destData =
-                NativeArrayUnsafeUtility.ConvertExistingDataToNativeArray<byte>(
-                    (void*)cachedImage->buf,
-                    height * cachedImage->stride,
-                    Allocator.None
-                );
-
-#if ENABLE_UNITY_COLLECTIONS_CHECKS
-            NativeArrayUnsafeUtility.SetAtomicSafetyHandle(
-                ref destData,
-                AtomicSafetyHandle.GetTempMemoryHandle()
+            GrayscaleConversion.BottomUpRgbaToGray(
+                (byte*)rgba,
+                (byte*)image.Handle->buf,
+                width,
+                height,
+                image.Handle->stride
             );
-#endif
-
-            // Run parallel grayscale conversion
-            var job = new GrayscaleConversionJob
-            {
-                Source = colors.Reinterpret<byte>(4),
-                Destination = destData,
-                Width = width,
-                Height = height,
-                Stride = cachedImage->stride,
-                FlipVertically = flipVertically,
-            };
-
-            job.Schedule(height, 32).Complete();
-
-            return new ImageU8(cachedImage, ownsHandle: false);
-        }
-
-        public static void DisposeCache()
-        {
-            if (cachedImage != null)
-            {
-                AprilTagNatives.image_u8_destroy(cachedImage);
-                cachedImage = null;
-            }
+            return image;
         }
 
         public void Dispose()
         {
-            if (disposed)
-                return;
-
-            if (Handle != null && ownsHandle)
+            if (Handle != null)
             {
                 AprilTagNatives.image_u8_destroy(Handle);
+                Handle = null;
             }
-
-            Handle = null;
-            disposed = true;
         }
     }
 }

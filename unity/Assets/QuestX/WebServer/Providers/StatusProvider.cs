@@ -351,6 +351,14 @@ namespace QuestX.WebServer
                         detector = aprilTagDiagnostics?.DetectorName ?? "",
                         lastDetectMs = aprilTagDiagnostics?.LastDetectMilliseconds ?? 0,
                         averageDetectMs = aprilTagDiagnostics?.AverageDetectMilliseconds ?? 0,
+                        averageReadbackMs = aprilTagDiagnostics?.AverageReadbackMilliseconds ?? 0,
+                        averageSolveMs = aprilTagDiagnostics?.AverageSolveMilliseconds ?? 0,
+                        averagePreviewMs = aprilTagDiagnostics?.AveragePreviewMilliseconds ?? 0,
+                        averageLatencyMs = aprilTagDiagnostics?.AverageLatencyMilliseconds ?? 0,
+                        cameraFps = aprilTagDiagnostics?.CameraFramesPerSecond ?? 0,
+                        processedFps = aprilTagDiagnostics?.ProcessedFramesPerSecond ?? 0,
+                        measurementFps = aprilTagDiagnostics?.MeasurementsPerSecond ?? 0,
+                        busyFrameCount = aprilTagDiagnostics?.BusyFrameCount ?? 0,
                     },
 
                     passthroughStream = new

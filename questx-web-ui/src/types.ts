@@ -256,6 +256,18 @@ export interface HeadsetStatus {
     // Grayscale conversion plus detection: latest frame and moving average, milliseconds.
     lastDetectMs?: number
     averageDetectMs?: number
+    // Other pipeline stages, moving averages in milliseconds: GPU readback of the camera
+    // frame, pose solve with covariance, preview encoding, and exposure-to-publish latency.
+    averageReadbackMs?: number
+    averageSolveMs?: number
+    averagePreviewMs?: number
+    averageLatencyMs?: number
+    // Camera images delivered, frames detected and measurements published, per second.
+    cameraFps?: number
+    processedFps?: number
+    measurementFps?: number
+    // Due camera frames dropped because detection was still busy.
+    busyFrameCount?: number
   }
 
   passthroughStream: {
