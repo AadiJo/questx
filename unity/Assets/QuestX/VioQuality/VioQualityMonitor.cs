@@ -98,9 +98,12 @@ namespace QuestX.VioQuality
             points.Clear();
             int near = 0;
             bool anyReady = false;
+            // Sample is synchronous on the main thread; all rays share this eye pose.
+            Vector3 eyePosition = eye.position;
+            Quaternion eyeRotation = eye.rotation;
             foreach (var dir in rayDirections)
             {
-                var ray = new Ray(eye.position, eye.rotation * dir);
+                var ray = new Ray(eyePosition, eyeRotation * dir);
                 bool hit = raycastManager.Raycast(
                     ray,
                     out var result,
@@ -113,7 +116,7 @@ namespace QuestX.VioQuality
                     || result.normalConfidence < QuestXConstants.VioQuality.MIN_NORMAL_CONFIDENCE
                 )
                     continue;
-                float range = Vector3.Distance(eye.position, result.point);
+                float range = Vector3.Distance(eyePosition, result.point);
                 if (range < QuestXConstants.VioQuality.MIN_RANGE_METERS)
                 {
                     near++;
