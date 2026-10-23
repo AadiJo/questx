@@ -411,3 +411,79 @@ test('logs unmounted during initial load ignore a late rejection and install no 
   assert.equal(f.timers.size, 0)
   assert.equal(f.listeners.size, 0)
 })
+
+test('SceneViewer pauses RAF, resumes one loop, resizes and retains orbit state until disposal', async t => {
+  const frames = new Map()
+  let nextFrame = 0, renders = 0, controlsUpdates = 0, removed = false, disconnected = false
+  const sizes = []
+  globals(t, {
+    window: { devicePixelRatio: 1 },
+    requestAnimationFrame: fn => { frames.set(++nextFrame, fn); return nextFrame },
+    cancelAnimationFrame: id => frames.delete(id),
+    ResizeObserver: class { observe() {} disconnect() { disconnected = true } },
+  })
+  class WebGLRenderer {
+    domElement = { remove() { removed = true } }
+    setPixelRatio() {}
+    setSize(...size) { sizes.push(size) }
+    render() { renders++ }
+    dispose() {}
+  }
+  class OrbitControls {
+    target = new THREE.Vector3()
+    update() { controlsUpdates++ }
+    addEventListener(name, callback) { this[name] = callback }
+    dispose() {}
+  }
+  const { SceneViewer } = compile(await read('three/SceneViewer.ts'), {
+    three: { ...THREE, WebGLRenderer },
+    'three/examples/jsm/controls/OrbitControls.js': { OrbitControls },
+    './aprilTag36h11': { TAG_CELLS: 10 },
+    './fieldModels': {},
+    './mountMath': mountMath,
+    './robotModel': { RobotModel: THREE.Group },
+    './questModel': { makeQuestModel: () => new THREE.Group() },
+  })
+  const container = { clientWidth: 800, clientHeight: 600, appendChild() {} }
+  const viewer = new SceneViewer(container)
+  assert.equal(frames.size, 0)
+  assert.equal(renders, 0)
+  const frame = () => {
+    for (const [id, callback] of [...frames]) { frames.delete(id); callback() }
+  }
+  viewer.setActive(true)
+  viewer.setActive(true)
+  assert.equal(frames.size, 1)
+  const updatesBeforeFrames = controlsUpdates
+  for (let i = 0; i < 5; i++) frame()
+  assert.equal(renders, 5)
+  assert.equal(controlsUpdates - updatesBeforeFrames, 5, 'damping updates on each active frame')
+  viewer.controls.start()
+  viewer.camera.position.set(3, 4, 5)
+  viewer.controls.target.set(1, 2, 3)
+  viewer.setActive(false)
+  viewer.setActive(false)
+  const pausedUpdates = controlsUpdates
+  assert.equal(frames.size, 0)
+  assert.equal(viewer.controls.enabled, false)
+  for (let i = 0; i < 5; i++) frame()
+  assert.equal(renders, 5)
+  assert.equal(controlsUpdates, pausedUpdates)
+  container.clientWidth = 1200
+  viewer.setActive(true)
+  viewer.setActive(true)
+  assert.equal(frames.size, 1)
+  assert.deepEqual(sizes.at(-1), [1200, 600, false])
+  assert.equal(viewer.camera.aspect, 2)
+  assert.deepEqual(viewer.camera.position.toArray(), [3, 4, 5])
+  assert.deepEqual(viewer.controls.target.toArray(), [1, 2, 3])
+  frame()
+  assert.equal(renders, 6)
+  viewer.dispose()
+  viewer.setActive(true)
+  frame()
+  assert.equal(renders, 6)
+  assert.equal(frames.size, 0)
+  assert.equal(removed, true)
+  assert.equal(disconnected, true)
+})
