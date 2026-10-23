@@ -45,6 +45,7 @@ namespace QuestX.QuestX.AprilTag
             public CameraOrientation Orientation;
             public int Quality;
             public int Scale;
+            public long Generation;
         }
 
         private readonly object sync = new object();
@@ -61,9 +62,21 @@ namespace QuestX.QuestX.AprilTag
         private bool releaseRequested;
         private bool running = true;
         private long backoffUntilTicks;
+        private long generation;
+        private long droppedCount;
 
         /// <summary>Submissions replaced by a newer one before they were encoded.</summary>
-        public long DroppedCount { get; private set; }
+        public long DroppedCount => Interlocked.Read(ref droppedCount);
+
+        /// <summary>Capture with a frame; Submit rejects it if Reset occurred since capture.</summary>
+        public long Generation
+        {
+            get
+            {
+                lock (sync)
+                    return generation;
+            }
+        }
 
         /// <param name="onEncoded">Called with each published frame's scale-and-encode time, in ms.</param>
         public AprilTagPreviewEncoder(
@@ -101,7 +114,8 @@ namespace QuestX.QuestX.AprilTag
             AprilTagOverlayTag[] tags,
             CameraOrientation orientation,
             int quality,
-            int scale
+            int scale,
+            long? expectedGeneration = null
         )
         {
             if (pixels == IntPtr.Zero || width <= 0 || height <= 0 || stride < width)
@@ -110,13 +124,16 @@ namespace QuestX.QuestX.AprilTag
             }
             lock (sync)
             {
-                if (!running)
+                if (
+                    !running
+                    || (expectedGeneration.HasValue && expectedGeneration.Value != generation)
+                )
                 {
                     return;
                 }
                 if (hasPending)
                 {
-                    DroppedCount++;
+                    Interlocked.Increment(ref droppedCount);
                 }
                 var s = pending;
                 int size = width * height;
@@ -136,6 +153,7 @@ namespace QuestX.QuestX.AprilTag
                         );
                     }
                 }
+                s.Generation = generation;
                 s.Width = width;
                 s.Height = height;
                 s.CapturedAt = capturedAt;
@@ -148,12 +166,14 @@ namespace QuestX.QuestX.AprilTag
             }
         }
 
-        /// <summary>Drops any queued frame and frees the JPEG encoder until the next frame.</summary>
+        /// <summary>Invalidates queued and in-flight frames and releases the encoder on its worker.</summary>
         public void Reset()
         {
             lock (sync)
             {
+                generation++;
                 hasPending = false;
+                backoffUntilTicks = 0;
                 releaseRequested = true;
                 Monitor.Pulse(sync);
             }
@@ -195,10 +215,10 @@ namespace QuestX.QuestX.AprilTag
                     pending = working;
                     working = job;
                     hasPending = false;
-                }
-                if (DateTime.UtcNow.Ticks < backoffUntilTicks)
-                {
-                    continue;
+                    if (DateTime.UtcNow.Ticks < backoffUntilTicks)
+                    {
+                        continue;
+                    }
                 }
                 try
                 {
@@ -209,8 +229,15 @@ namespace QuestX.QuestX.AprilTag
                     // Preview failures must not stop detection; retry with a fresh encoder later.
                     encoder?.Dispose();
                     encoder = null;
-                    backoffUntilTicks = DateTime.UtcNow.Ticks + TimeSpan.TicksPerSecond;
-                    onError?.Invoke(ex);
+                    lock (sync)
+                    {
+                        // A failed old job must not clear the preview or back off a new run.
+                        if (running && job.Generation == generation)
+                        {
+                            backoffUntilTicks = DateTime.UtcNow.Ticks + TimeSpan.TicksPerSecond;
+                            onError?.Invoke(ex);
+                        }
+                    }
                 }
             }
             encoder?.Dispose();
@@ -249,7 +276,15 @@ namespace QuestX.QuestX.AprilTag
                     jpeg = encoder.Encode((IntPtr)pixels, width, width, height, job.Quality);
                 }
             }
-            publish(width, height, job.CapturedAt, ScaleTags(job.Tags, factor), jpeg);
+            lock (sync)
+            {
+                if (!running || job.Generation != generation)
+                {
+                    return;
+                }
+                // Reset and publication are serialized: once Reset returns no old job can publish.
+                publish(width, height, job.CapturedAt, ScaleTags(job.Tags, factor), jpeg);
+            }
             onEncoded?.Invoke((Stopwatch.GetTimestamp() - start) * 1000.0 / Stopwatch.Frequency);
         }
 
