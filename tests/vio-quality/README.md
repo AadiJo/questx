@@ -1,5 +1,31 @@
 # VIO quality (depth drift) checks
 
+## Portable monitor regression checks
+
+From the repository root, run:
+
+```sh
+dotnet run --project tests/vio-quality/VioQualityChecks.csproj -c Release
+```
+
+This .NET 8+ suite compiles the production monitor, estimator, sample, and constants.
+Counted Unity/OpenXR stand-ins compare the monitor against `UncachedMonitor.cs`, a frozen
+pre-optimization reference from `4e60c338e5253d689b272cb960562e69a909cfb5` (only renamed).
+Do not update the reference to mirror the optimized implementation.
+
+The checks compare IEEE bits of every ray, depth point, and complete sample across all hits,
+mixed misses/low confidence/near hits, no ready depth, inactive/unsupported depth, no hits,
+tracking loss/recovery, settling, and tracking flags. Position and rotation move between calls;
+tracking-space rotation/nonuniform scale, yaw/offset changes, and epoch changes exercise the
+unchanged inverse transforms and actual estimator. Assertions require one position and one
+rotation read per active sample, zero on early exits, all 160 rays, and the 15 Hz constant.
+The application scheduler itself is outside this portable suite.
+
+These are stand-in behavioral and operation-count checks, not Unity/OpenXR integration,
+IL2CPP performance, headset timing, or native transform precision tests. No new packages are required.
+
+## Synthetic depth drift checks
+
 `depth_drift_mirror.py` is a line-for-line Python mirror of
 `unity/Assets/QuestX/VioQuality/DepthDriftEstimator.cs`. `check_depth_drift.py` raycasts simple synthetic
 scenes (floor, walls, boxes, an optional moving robot) the way `VioQualityMonitor` does and injects known VIO drift and
