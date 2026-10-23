@@ -120,3 +120,4 @@ preview.SetStreamEnabled(false);
 var stopped = await Decode(await stopPending);
 Check(!preview.IsRequested && stopped.Jpeg.Length == 0 && !(bool)stopped.Meta["streamEnabled"], "Disabling stream wakes pending reads and stops work");
 Console.WriteLine($"PASS: {assertions} synchronized-preview checks.");
+Console.WriteLine($"PASS: {EncoderChecks.Run()} preview-encoder checks.");

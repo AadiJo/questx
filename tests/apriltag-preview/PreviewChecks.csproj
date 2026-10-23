@@ -3,9 +3,12 @@
     <OutputType>Exe</OutputType>
     <TargetFramework>net8.0</TargetFramework>
     <NuGetAudit>false</NuGetAudit>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../../unity/Assets/QuestX/AprilTag/AprilTagOverlay.cs" Link="AprilTagOverlay.cs" />
+    <Compile Include="../../unity/Assets/QuestX/AprilTag/AprilTagPreviewEncoder.cs" Link="AprilTagPreviewEncoder.cs" />
+    <Compile Include="../../unity/Assets/QuestX/Camera/CameraOrientation.cs" Link="CameraOrientation.cs" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
   </ItemGroup>
 </Project>

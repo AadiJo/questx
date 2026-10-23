@@ -108,11 +108,20 @@ namespace QuestX.QuestX.AprilTag
         /// </summary>
         private const double FrameScheduleToleranceSeconds = 0.004;
 
-        /// <summary>Worker-owned preview encoder and rotation scratch buffer.</summary>
-        private LJTCompressor overlayCompressor;
-        private byte[] overlayRotationBuffer;
+        /// <summary>
+        /// Scales and encodes the preview on its own low-priority thread. It keeps only the newest
+        /// frame, so a slow encode or viewer drops preview frames instead of delaying detection.
+        /// </summary>
+        private readonly AprilTagPreviewEncoder previewEncoder;
 
         private int overlayQuality = 75;
+
+        /// <summary>
+        /// The preview is a quarter of the detector resolution per side, about the size of a
+        /// Limelight stream; larger than 640x480 only with high-quality streams.
+        /// </summary>
+        private volatile int previewScale = 4;
+        private volatile bool highQualityStreams;
         private double overlayFrameIntervalMs = 1000.0 / 24;
         private double nextOverlayFrameAt;
 
@@ -236,6 +245,27 @@ namespace QuestX.QuestX.AprilTag
                 "capture-backend.txt"
             );
             UpdateAppClock();
+            previewEncoder = new AprilTagPreviewEncoder(
+                () => new LjtGrayEncoder(),
+                Overlay.Publish,
+                ex =>
+                {
+                    // Preview failures must not stop pose solving or telemetry.
+                    Overlay.Clear();
+                    lock (diagnosticsLock)
+                    {
+                        overlayRetryAtMs = AprilTagOverlay.MonotonicMilliseconds() + 1000;
+                    }
+                    QueuedLogger.LogWarning($"Synchronized AprilTag preview failed: {ex.Message}");
+                },
+                milliseconds =>
+                {
+                    lock (diagnosticsLock)
+                    {
+                        previewTime.Add(milliseconds);
+                    }
+                }
+            );
             for (int i = 0; i < frameSlots.Length; i++)
             {
                 frameSlots[i] = new FrameSlot();
@@ -248,6 +278,11 @@ namespace QuestX.QuestX.AprilTag
             configManager.OnEnablePassthroughStreamChanged += OnOverlayStreamEnabledChanged;
             configManager.OnCameraOrientationChanged += OnCameraOrientationChanged;
             configManager.OnEnableDebugLoggingChanged += OnEnableDebugLoggingChanged;
+            configManager.OnEnableHighQualityStreamsChanged += enabled =>
+            {
+                highQualityStreams = enabled;
+                Overlay.Clear();
+            };
 
             // Refresh PoseLib's cached intrinsics whenever the camera arbiter changes
             // the effective resolution. Meta SDK exposes per-resolution intrinsics
@@ -506,6 +541,7 @@ namespace QuestX.QuestX.AprilTag
             {
                 StopWorker(WorkerStopTimeout);
             }
+            previewEncoder.Dispose();
         }
 
         /// <summary>
@@ -562,9 +598,7 @@ namespace QuestX.QuestX.AprilTag
                 );
             }
             SetDetector(null, detectorBackend);
-            overlayCompressor?.Dispose();
-            overlayCompressor = null;
-            overlayRotationBuffer = null;
+            previewEncoder.Reset();
 
             lock (slotLock)
             {
@@ -2126,100 +2160,59 @@ namespace QuestX.QuestX.AprilTag
 
         private void OnOverlayStreamEnabledChanged(bool enabled)
         {
-            // The worker owns the preview encoder; it is freed when the detector stops.
             Overlay.SetStreamEnabled(enabled);
+            if (!enabled)
+            {
+                previewEncoder.Reset();
+            }
         }
 
         /// <summary>
-        /// Worker thread. Encodes the exact luma image the detector read, top-down and 1 byte
-        /// per pixel, before the detector reuses its buffer for the next frame.
+        /// Worker thread. Hands the luma image the detector read to the preview encoder, which
+        /// copies it before returning, so the detector may reuse its buffer for the next frame and
+        /// detection never waits on scaling or JPEG work.
         /// </summary>
-        private unsafe void PublishOverlayFrame(
-            GrayImage image,
-            FrameSlot slot,
-            AprilTagOverlayTag[] tags
-        )
+        private void PublishOverlayFrame(GrayImage image, FrameSlot slot, AprilTagOverlayTag[] tags)
         {
             if (!image.IsValid)
             {
                 return;
             }
-            long start = Stopwatch.GetTimestamp();
-            try
-            {
-                int width = image.Width;
-                int height = image.Height;
-                overlayCompressor ??= new LJTCompressor();
-                byte[] jpeg;
-                if (slot.Orientation == CameraOrientation.NORMAL)
-                {
-                    jpeg = overlayCompressor.Compress(
-                        image.Buffer,
-                        image.Stride,
-                        width,
-                        height,
-                        LJTPixelFormat.Gray,
-                        LJTSubsamplingOption.Gray,
-                        slot.OverlayQuality,
-                        LJTFlags.None
-                    );
-                }
-                else
-                {
-                    int bytes = width * height;
-                    if (overlayRotationBuffer == null || overlayRotationBuffer.Length != bytes)
-                    {
-                        overlayRotationBuffer = new byte[bytes];
-                    }
-                    CameraOrientationMath.RotateSize(
-                        slot.Orientation,
-                        image.Width,
-                        image.Height,
-                        out width,
-                        out height
-                    );
-                    fixed (byte* rotated = overlayRotationBuffer)
-                    {
-                        ImageRotation.Rotate(
-                            (byte*)image.Buffer,
-                            image.Width,
-                            image.Height,
-                            image.Stride,
-                            1,
-                            0,
-                            slot.Orientation,
-                            rotated
-                        );
-                        jpeg = overlayCompressor.Compress(
-                            (IntPtr)rotated,
-                            width,
-                            width,
-                            height,
-                            LJTPixelFormat.Gray,
-                            LJTSubsamplingOption.Gray,
-                            slot.OverlayQuality,
-                            LJTFlags.None
-                        );
-                    }
-                }
-                Overlay.Publish(width, height, slot.CapturedAtMs, tags, jpeg);
-                lock (diagnosticsLock)
-                {
-                    previewTime.Add(ElapsedMilliseconds(start));
-                }
-            }
-            catch (Exception ex)
-            {
-                // Preview failures must not stop pose solving or telemetry.
-                Overlay.Clear();
-                overlayCompressor?.Dispose();
-                overlayCompressor = null;
-                lock (diagnosticsLock)
-                {
-                    overlayRetryAtMs = AprilTagOverlay.MonotonicMilliseconds() + 1000;
-                }
-                QueuedLogger.LogWarning($"Synchronized AprilTag preview failed: {ex.Message}");
-            }
+            previewEncoder.Submit(
+                image.Buffer,
+                image.Width,
+                image.Height,
+                image.Stride,
+                slot.CapturedAtMs,
+                tags,
+                slot.Orientation,
+                slot.OverlayQuality,
+                AprilTagPreviewEncoder.ScaleFactor(
+                    image.Width,
+                    image.Height,
+                    previewScale,
+                    highQualityStreams ? 0 : AprilTagPreviewEncoder.StandardMaxPixels
+                )
+            );
+        }
+
+        private sealed class LjtGrayEncoder : IGrayJpegEncoder
+        {
+            private readonly LJTCompressor compressor = new LJTCompressor();
+
+            public byte[] Encode(IntPtr pixels, int stride, int width, int height, int quality) =>
+                compressor.Compress(
+                    pixels,
+                    stride,
+                    width,
+                    height,
+                    LJTPixelFormat.Gray,
+                    LJTSubsamplingOption.Gray,
+                    quality,
+                    LJTFlags.None
+                );
+
+            public void Dispose() => compressor.Dispose();
         }
     }
 }
