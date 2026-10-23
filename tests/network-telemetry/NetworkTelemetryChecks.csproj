@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <NuGetAudit>false</NuGetAudit>
+    <NetworkSource Condition="'$(NetworkSource)' == ''">../../unity/Assets/QuestX/Network</NetworkSource>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../measurement-checks/MeasurementChecks.csproj" />
+    <Compile Include="$(NetworkSource)/NetworkTableConnection.cs" Link="Production/NetworkTableConnection.cs" />
+    <Compile Include="$(NetworkSource)/MeasurementTelemetry.cs" Link="Production/MeasurementTelemetry.cs" />
+    <Compile Include="$(NetworkSource)/LimelightTelemetry.cs" Link="Production/LimelightTelemetry.cs" />
+    <Compile Include="../../unity/Assets/QuestX/Core/QuestXConstants.cs" Link="Production/QuestXConstants.cs" />
+    <Compile Include="../../unity/Assets/QuestX/Generated/Data.cs" Link="Generated/Data.cs" />
+    <Compile Include="../../unity/Assets/QuestX/Generated/Commands.cs" Link="Generated/Commands.cs" />
+    <None Include="Baseline.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>
