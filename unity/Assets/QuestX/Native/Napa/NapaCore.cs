@@ -50,6 +50,14 @@ namespace QuestX.Native.Napa
             if (!(sharpening >= 0.0 && sharpening <= 1.0))
                 throw new ArgumentOutOfRangeException(nameof(sharpening), "must be 0 to 1");
 
+            // A layout mismatch would make the library read past or short of the struct.
+            int nativeSize = NapaNatives.napa_params_size();
+            if (nativeSize != sizeof(NapaParamsNative))
+                throw new InvalidOperationException(
+                    $"napa_params is {nativeSize} bytes in the loaded library but "
+                        + $"{sizeof(NapaParamsNative)} in QuestX; see native/napa/README.md"
+                );
+
             parameters = new NapaParamsNative
             {
                 min_tag_px = minTagPixels,
@@ -57,6 +65,7 @@ namespace QuestX.Native.Napa
                 min_contrast = minContrast,
                 min_border_cells = minBorderCells,
                 sharpening_x100 = (int)Math.Round(sharpening * 100.0),
+                split_touching = 0,
             };
             handle = NapaNatives.napa_create();
             if (handle == IntPtr.Zero)

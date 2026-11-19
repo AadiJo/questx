@@ -1,6 +1,6 @@
 # NAPA native dependency
 
-QuestX consumes the published **napa-vision==0.4.1** PyPI wheels. The detector source is not
+QuestX consumes the published **napa-vision==0.6.0** PyPI wheels. The detector source is not
 vendored or built by QuestX. `dependency.lock.json` pins exact wheel URLs, SHA-256 hashes,
 and the native files inside each wheel. The existing C# P/Invoke adapter calls that native
 library directly; Python and numpy are not required on the headset or in the Unity Editor.
@@ -26,15 +26,20 @@ fails on missing or modified files. CI restores before Unity builds and Windows 
 
 Binaries are generated dependency outputs ignored by Git; Unity importer metadata remains
 tracked. No compiler, NDK, Python installation on Quest, or Python package import is involved.
-The upstream license and third-party notices are preserved as `napa-*.txt` in
-`unity/Assets/StreamingAssets`, so they accompany the packaged application.
+The upstream license, notice and third-party notices are preserved as `napa-*.txt` in
+`unity/Assets/StreamingAssets`, so they accompany the packaged application. Since 0.5.0, NAPA is
+GPL-3.0-only or commercially licensed (see `napa-NOTICE.txt`); earlier releases were PolyForm
+Noncommercial.
 
 To update, select a published version that provides both target wheels, update the lock's URLs,
 archive/member hashes and any changed member paths, then restore and run the checks below.
-If a bundled DLL filename changes, update its Unity importer metadata too. Never use a moving
+If a bundled DLL filename changes, update its Unity importer metadata too. Compare
+`napa_core.h` between the two release tags and mirror any `napa_params` or `napa_detection`
+change in `NapaNatives.cs`. `NapaCore` checks `napa_params_size()` and falls back to libapriltag
+on a mismatch rather than passing a struct of the wrong size. Never use a moving
 `latest` URL or rebuild an upstream source snapshot as a replacement for the published package.
 
-Release: https://pypi.org/project/napa-vision/0.4.1/
+Release: https://pypi.org/project/napa-vision/0.6.0/
 
 QuestX's separate managed pose covariance implementation remains based on upstream
 `covariance.py` and `solvers.py` at `c5f25e2`. It applies to both detectors' solved poses and is

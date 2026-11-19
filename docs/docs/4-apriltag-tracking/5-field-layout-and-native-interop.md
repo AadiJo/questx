@@ -74,7 +74,7 @@ QuestX uses four native C/C++ libraries accessed via P/Invoke (`[DllImport]`). A
 
 | Library | Source | Purpose | Platform Files |
 |---------|--------|---------|----------------|
-| **libnapa** | `napa-vision==0.4.1`, restored from PyPI | Default tag36h11 detector | `libnapa.so` (Quest), `napa.dll` (Editor) |
+| **libnapa** | `napa-vision==0.6.0`, restored from PyPI | Default tag36h11 detector | `libnapa.so` (Quest), `napa.dll` (Editor) |
 | **libapriltag** | University of Michigan | Alternative tag detector; tag bitmaps for checks | `libapriltag.so` (Quest), `apriltag.dll` (Editor) |
 | **libposelib** | PoseLib project | Multi-tag PnP pose estimation | `libposelib.so` (Quest), `poselib.dll` (Editor) |
 | **libntcore** | WPILib | NetworkTables 4 protocol | `libntcore.so` + deps (Quest), `ntcore.dll` + deps (Editor) |

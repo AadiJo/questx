@@ -24,6 +24,12 @@ namespace QuestX.Native.Napa
 
         /// <summary>Cell sharpening strength x100; upstream AprilTag uses 25.</summary>
         public int sharpening_x100;
+
+        /// <summary>
+        /// Decode dark shapes touching others only at a corner (AprilGrid, checkerboards):
+        /// 0 off (the default), 1 always, 2 only on frames where a decoded tag touches them.
+        /// </summary>
+        public int split_touching;
     }
 
     /// <summary>
@@ -46,6 +52,13 @@ namespace QuestX.Native.Napa
     public static unsafe class NapaNatives
     {
         private const string Library = "napa";
+
+        /// <summary>
+        /// Size in bytes of the <c>napa_params</c> layout the loaded library reads. It must equal
+        /// <c>sizeof(NapaParamsNative)</c>.
+        /// </summary>
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int napa_params_size();
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         public static extern IntPtr napa_create();
