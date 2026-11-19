@@ -1,38 +1,43 @@
 {
   "package": "napa-vision",
-  "version": "0.4.1",
+  "version": "0.6.1",
   "artifacts": [
     {
-      "filename": "napa_vision-0.4.1-py3-none-android_24_arm64_v8a.whl",
-      "url": "https://files.pythonhosted.org/packages/a2/3b/3be7ad468c4b530e8d3544ea67d0c5492483f6e66e0311b5df92c0194d4a/napa_vision-0.4.1-py3-none-android_24_arm64_v8a.whl",
-      "sha256": "69fbe482b1631d53eeeec48372322c75745334363d2800037dbe7ce5fcd298ab",
+      "filename": "napa_vision-0.6.1-py3-none-android_24_arm64_v8a.whl",
+      "url": "https://files.pythonhosted.org/packages/ad/10/f7252299828ae7faad4fc584932c1f9654a6a9eff0d109d2809b7402f68f/napa_vision-0.6.1-py3-none-android_24_arm64_v8a.whl",
+      "sha256": "656d0ef210211942d2ff8905b500b1b139a7c8f4788fb3f18cb8ecc372243343",
       "files": [
         {
           "member": "napa_vision/_native/_napa_core.cpython-313-aarch64-linux-android.so",
           "destination": "unity/Assets/Plugins/napa/Android/arm64-v8a/libnapa.so",
-          "sha256": "4333310259afc2df7356118a78947d36568301178e02f5e864cc468f5c5e0ee6"
+          "sha256": "cb8e2280b6298d2ea37a6c8e9f68b36f1e6ba3fff968b522d76535d6363feea9"
         },
         {
-          "member": "napa_vision-0.4.1.dist-info/licenses/LICENSE",
+          "member": "napa_vision-0.6.1.dist-info/licenses/LICENSE",
           "destination": "unity/Assets/StreamingAssets/napa-LICENSE.txt",
-          "sha256": "2e3e5119fc485796acb17e93242bdbee14a9eec5c4668269c7f9038eb739b3e7"
+          "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
         },
         {
-          "member": "napa_vision-0.4.1.dist-info/licenses/THIRD_PARTY_NOTICES",
+          "member": "napa_vision-0.6.1.dist-info/licenses/NOTICE",
+          "destination": "unity/Assets/StreamingAssets/napa-NOTICE.txt",
+          "sha256": "5dc6d348cf5f47d4b0ddc7ac6273af0cb8b316fe97a947d48f7ebe52ee31f1d4"
+        },
+        {
+          "member": "napa_vision-0.6.1.dist-info/licenses/THIRD_PARTY_NOTICES",
           "destination": "unity/Assets/StreamingAssets/napa-THIRD_PARTY_NOTICES.txt",
-          "sha256": "34c941a78ed91688021b7f5dbec69dab1a6802525c12beedceada35773348aff"
+          "sha256": "8ce7ed9ae209a5918c488baae970271552b4ca83e09e054e46bdd2d3690decb3"
         }
       ]
     },
     {
-      "filename": "napa_vision-0.4.1-py3-none-win_amd64.whl",
-      "url": "https://files.pythonhosted.org/packages/e3/89/4e2c54995f34adc820abe08cda7d02ef32718785d46adb4a884bc624790f/napa_vision-0.4.1-py3-none-win_amd64.whl",
-      "sha256": "fc3a0b54d68650459e59da3d12be0da4154c8f0d10202cd0ee7580cea0b3fe5a",
+      "filename": "napa_vision-0.6.1-py3-none-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/b5/e9/aec9abd79028772590f010f93a1d7321e1deba0091ecf55c484c2f593d02/napa_vision-0.6.1-py3-none-win_amd64.whl",
+      "sha256": "9646455ab3d7bef57e19638e90c823e85365f02c13828a4b7309a7f67f450736",
       "files": [
         {
           "member": "napa_vision/_native/_napa_core.cp311-win_amd64.pyd",
           "destination": "unity/Assets/Plugins/napa/Windows/x64/napa.dll",
-          "sha256": "97d7104c0fda70eb040a26130e0d69140a5060082f63be0fdfad4b0ba98c54a5"
+          "sha256": "4e2b35fa73e2c0cf3d904272d987847da2aca67a84353b95963843d15d6db238"
         },
         {
           "member": "napa_vision.libs/vcruntime140-052ad6a20d375957e82aa6a3c441ea54.dll",
