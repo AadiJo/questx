@@ -1,6 +1,6 @@
 # NAPA native dependency
 
-QuestX consumes the published **napa-vision==0.6.0** PyPI wheels. The detector source is not
+QuestX consumes the published **napa-vision==0.6.1** PyPI wheels. The detector source is not
 vendored or built by QuestX. `dependency.lock.json` pins exact wheel URLs, SHA-256 hashes,
 and the native files inside each wheel. The existing C# P/Invoke adapter calls that native
 library directly; Python and numpy are not required on the headset or in the Unity Editor.
@@ -39,7 +39,7 @@ change in `NapaNatives.cs`. `NapaCore` checks `napa_params_size()` and falls bac
 on a mismatch rather than passing a struct of the wrong size. Never use a moving
 `latest` URL or rebuild an upstream source snapshot as a replacement for the published package.
 
-Release: https://pypi.org/project/napa-vision/0.6.0/
+Release: https://pypi.org/project/napa-vision/0.6.1/
 
 QuestX's separate managed pose covariance implementation remains based on upstream
 `covariance.py` and `solvers.py` at `c5f25e2`. It applies to both detectors' solved poses and is
